@@ -430,9 +430,9 @@ too. Built in phases that each end runnable and tested.
 
 ## v0.4+ — exploration
 
-- [ ] kgdistiller integration: recognize `#kn[...]` / `#ref[...]` authority
-      markers, jump between marker and knowledge entry, surface graph
-      neighbors in a side panel.
+- [ ] Notes and kgdistiller integration: recognize the notes `#kn[...]` /
+      `#ref[...]` markers for navigation, and surface related kgdistiller
+      records (`kgd neighbors`) for the record citing the current source line.
 - [ ] Mobile story: feasibility studied 2026-09-29 (`docs/mobile-feasibility.md`):
       typst.ts in a Worker renders and exports on device (Typst 0.15 build),
       tinymist-web gives completion/hover but has no fonts or export yet;
