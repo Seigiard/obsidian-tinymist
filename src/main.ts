@@ -285,6 +285,7 @@ export default class TinymistPlugin extends Plugin {
   }
 
   async startLsp(restart: boolean): Promise<void> {
+    if (restart) this.resolvedBinary = undefined;
     if (this.lsp) {
       if (!restart && this.lsp.status === "running") return;
       this.lsp.stop();
