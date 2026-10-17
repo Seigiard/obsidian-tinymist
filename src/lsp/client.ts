@@ -6,6 +6,11 @@ export interface LspPosition {
   character: number;
 }
 
+export interface LspClientOptions {
+  /** Absolute paths sent to Tinymist's native compiler configuration. */
+  fontPaths?: readonly string[];
+}
+
 export interface LspRange {
   start: LspPosition;
   end: LspPosition;
@@ -88,6 +93,7 @@ export class LspClient {
     exportPdf: "never",
     formatterMode: "typstyle",
     customizedShowDocument: true,
+    fontPaths: [] as readonly string[],
     typstExtraArgs: [] as string[],
   };
 
@@ -95,7 +101,10 @@ export class LspClient {
     private binPath: string,
     private rootPath: string,
     private onDiagnostics: (uri: string) => void,
-  ) {}
+    options: LspClientOptions = {},
+  ) {
+    this.configuration.fontPaths = [...(options.fontPaths ?? [])];
+  }
 
   diagnostics(uri: string): LspDiagnostic[] {
     return this.diagnosticsByUri.get(uri) ?? [];

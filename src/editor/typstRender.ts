@@ -166,6 +166,21 @@ export class TypstRender {
     this.failed.clear();
   }
 
+  /** Drop every successful result after a compiler setting changes, keeping this instance alive. */
+  invalidate(): void {
+    const files = new Set<string>([
+      ...this.epochs.keys(),
+      ...this.reads.keys(),
+      ...[...this.cache.values()].map((entry) => entry.file),
+      ...[...this.failed.values()].map((entry) => entry.file),
+    ]);
+    this.cache.clear();
+    this.last.clear();
+    this.failed.clear();
+    for (const file of files) this.epochs.set(file, this.epoch(file) + 1);
+    if (files.size) this.notify();
+  }
+
   /**
    * Bump the epochs of the files with a renderer failure `which` selects (marked retried).
    * When the renderer answers a render, each failure not retried yet is tried once more (it
@@ -285,6 +300,7 @@ export class TypstRender {
     }
     if (outcome.ok) {
       if (!kept) return outcome;
+      if (epoch !== this.epoch(file)) return outcome;
       this.last.delete(formula);
       this.last.set(formula, outcome);
       if (this.last.size > CACHE_SIZE) this.last.delete(this.last.keys().next().value!);

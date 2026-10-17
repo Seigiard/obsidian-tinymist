@@ -4,6 +4,8 @@ import type TinymistPlugin from "./main";
 export interface TinymistSettings {
   /** Absolute path to the tinymist binary; empty means auto-detect. */
   binaryPath: string;
+  /** Absolute or Vault-relative font paths sent to Tinymist. */
+  fontPaths: readonly string[];
   /** Debounce for writing edits to disk; disk writes drive the preview. */
   saveDebounceMs: number;
   /** Passed to `tinymist preview --invert-colors` when not "never". */
@@ -22,6 +24,7 @@ export interface TinymistSettings {
 
 export const DEFAULT_SETTINGS: TinymistSettings = {
   binaryPath: "",
+  fontPaths: [],
   saveDebounceMs: 500,
   invertPreviewColors: "never",
   yoloTabCompletion: false,
@@ -53,6 +56,35 @@ export class TinymistSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.binaryPath = value;
             await this.plugin.saveSettings();
+          }),
+      );
+
+    let fontPathsDraft = this.plugin.settings.fontPaths.join("\n");
+    new Setting(containerEl)
+      .setName("Font paths")
+      .setDesc(
+        "One font file or folder per line. Use an absolute path or a path relative to the Vault root; blank lines are ignored and spaces in paths are kept. " +
+          "Changes apply only when you click the button and restart the language server.",
+      )
+      .addTextArea((text) =>
+        text
+          .setPlaceholder("fonts\n/Library/Fonts")
+          .setValue(fontPathsDraft)
+          .onChange((value) => {
+            fontPathsDraft = value;
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("Apply and restart language server")
+          .setCta()
+          .onClick(async () => {
+            button.setDisabled(true);
+            try {
+              await this.plugin.applyFontPaths(parseFontPaths(fontPathsDraft));
+            } finally {
+              button.setDisabled(false);
+            }
           }),
       );
 
@@ -187,4 +219,8 @@ export class TinymistSettingTab extends PluginSettingTab {
           }),
       );
   }
+}
+
+export function parseFontPaths(text: string): string[] {
+  return text.split(/\r?\n/).filter((path) => path.trim() !== "");
 }

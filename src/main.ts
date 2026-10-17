@@ -24,6 +24,7 @@ import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
 import {
   DEFAULT_SETTINGS,
+  parseFontPaths,
   TinymistSettings,
   TinymistSettingTab,
 } from "./settings";
@@ -44,6 +45,7 @@ export default class TinymistPlugin extends Plugin {
   private diagListeners = new Set<(uri: string) => void>();
   private statusBarEl: HTMLElement | null = null;
   private resolvedBinary: string | null | undefined;
+  private savedFontPaths: readonly string[] | undefined;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -53,7 +55,11 @@ export default class TinymistPlugin extends Plugin {
     });
     const root = this.vaultBasePath();
     if (root) {
-      this.fragments = new TypstFragmentRenderer({ bin: () => this.resolveBinary(), root });
+      this.fragments = new TypstFragmentRenderer({
+        bin: () => this.resolveBinary(),
+        root,
+        fontPaths: () => this.resolveFontPaths(root),
+      });
       this.typstRender = new TypstRender(this.fragments, root);
     }
 
@@ -213,16 +219,31 @@ export default class TinymistPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) as Partial<TinymistSettings> | null;
+    const fontPaths = Array.isArray(data?.fontPaths)
+      ? data.fontPaths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
+      : [];
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { fontPaths });
+    this.savedFontPaths = [...fontPaths];
   }
 
   async saveSettings(): Promise<void> {
+    const fontPaths = this.settings.fontPaths.filter((path) => path.trim() !== "");
+    const fontPathsChanged =
+      this.savedFontPaths === undefined || !samePaths(this.savedFontPaths, fontPaths);
+    this.settings.fontPaths = fontPaths;
+    this.savedFontPaths = [...fontPaths];
     this.resolvedBinary = undefined;
-    // The renderer restarts with the (possibly new) binary at its next render, and live
-    // views try again the formulas that failed for want of it.
     this.fragments?.stop();
-    this.typstRender?.retryFailed();
+    if (fontPathsChanged) this.typstRender?.invalidate();
+    else this.typstRender?.retryFailed();
     await this.saveData(this.settings);
+  }
+
+  async applyFontPaths(fontPaths: readonly string[]): Promise<void> {
+    this.settings.fontPaths = parseFontPaths(fontPaths.join("\n"));
+    await this.saveSettings();
+    await this.startLsp(true);
   }
 
   vaultBasePath(): string | null {
@@ -279,6 +300,13 @@ export default class TinymistPlugin extends Plugin {
     return this.resolvedBinary;
   }
 
+  resolveFontPaths(root: string | null = this.vaultBasePath()): string[] {
+    if (!root) return [];
+    return this.settings.fontPaths.map((path) =>
+      isAbsolute(path) ? path : join(root, path),
+    );
+  }
+
   onDiagnostics(cb: (uri: string) => void): () => void {
     this.diagListeners.add(cb);
     return () => this.diagListeners.delete(cb);
@@ -302,9 +330,14 @@ export default class TinymistPlugin extends Plugin {
       );
       return;
     }
-    const lsp = new LspClient(bin, root, (uri) => {
-      for (const cb of this.diagListeners) cb(uri);
-    });
+    const lsp = new LspClient(
+      bin,
+      root,
+      (uri) => {
+        for (const cb of this.diagListeners) cb(uri);
+      },
+      { fontPaths: this.resolveFontPaths(root) },
+    );
     lsp.onStatusChange = (s) => this.setStatusBar(s);
     this.lsp = lsp;
     try {
@@ -498,6 +531,10 @@ export default class TinymistPlugin extends Plugin {
   private setStatusBar(status: LspStatus | "stopped"): void {
     this.statusBarEl?.setText(`Tinymist: ${status}`);
   }
+}
+
+function samePaths(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((path, index) => path === b[index]);
 }
 
 class RenameModal extends Modal {
