@@ -227,7 +227,7 @@ export default class TinymistPlugin extends Plugin {
     this.savedFontPaths = [...fontPaths];
   }
 
-  async saveSettings(): Promise<void> {
+  async saveSettings(forceRenderInvalidation = false): Promise<void> {
     const fontPaths = this.settings.fontPaths.filter((path) => path.trim() !== "");
     const fontPathsChanged =
       this.savedFontPaths === undefined || !samePaths(this.savedFontPaths, fontPaths);
@@ -235,14 +235,14 @@ export default class TinymistPlugin extends Plugin {
     this.savedFontPaths = [...fontPaths];
     this.resolvedBinary = undefined;
     this.fragments?.stop();
-    if (fontPathsChanged) this.typstRender?.invalidate();
+    if (fontPathsChanged || forceRenderInvalidation) this.typstRender?.invalidate();
     else this.typstRender?.retryFailed();
     await this.saveData(this.settings);
   }
 
   async applyFontPaths(fontPaths: readonly string[]): Promise<void> {
     this.settings.fontPaths = parseFontPaths(fontPaths.join("\n"));
-    await this.saveSettings();
+    await this.saveSettings(true);
     await this.startLsp(true);
   }
 
