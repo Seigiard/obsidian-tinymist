@@ -15,6 +15,61 @@ export class Component {
   register(_cb: Callback): void {}
 }
 
+export class Plugin extends Component {
+  constructor(public app: unknown) {
+    super();
+  }
+  async loadData(): Promise<unknown> {
+    return null;
+  }
+  async saveData(_data: unknown): Promise<void> {}
+  addCommand(_command: unknown): void {}
+  addSettingTab(_tab: unknown): void {}
+  addStatusBarItem(): HTMLElement {
+    return document.createElement("div");
+  }
+  registerView(_type: string, _factory: unknown): void {}
+  registerExtensions(_extensions: string[], _viewType: string): void {}
+}
+
+export class PluginSettingTab {
+  containerEl = document.createElement("div");
+  constructor(_app: unknown, _plugin: Plugin) {}
+}
+
+export class Setting {}
+
+export class Modal {
+  constructor(_app: unknown) {}
+  open(): void {}
+  close(): void {}
+}
+
+export class ItemView extends Component {
+  contentEl = document.createElement("div") as HTMLElement & {
+    addClass(className: string): void;
+    createEl(tag: string, options?: { cls?: string }): HTMLElement;
+  };
+  constructor(_leaf: WorkspaceLeaf) {
+    super();
+    this.contentEl.addClass = (className) => this.contentEl.classList.add(className);
+    this.contentEl.createEl = (tag, options) => {
+      const el = document.createElement(tag);
+      if (options?.cls) el.className = options.cls;
+      this.contentEl.appendChild(el);
+      return el;
+    };
+  }
+  async onClose(): Promise<void> {}
+}
+
+export class FileSystemAdapter {
+  constructor(private basePath = "") {}
+  getBasePath(): string {
+    return this.basePath;
+  }
+}
+
 export class Scope {
   keys: { modifiers: string[]; key: string | null; func: Callback }[] = [];
   constructor(public parent?: Scope) {}
