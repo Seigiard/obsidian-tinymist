@@ -24,6 +24,7 @@ interface ReplaceRequest {
 interface AutomaticPdfFacade {
   setAutomaticPdf?: (path: string, enabled: boolean) => Promise<void>;
   rebuildPdf?: (path: string) => Promise<void>;
+  automaticPdfEnabled?: (path: string) => boolean;
   automaticPdfStatus?: (path: string) => "building" | "current" | "error" | "conflict" | "stale" | "missing";
 }
 
@@ -143,51 +144,6 @@ function bytes(app: TestApp, path: string): string | null {
 async function setEnabled(h: Harness, path: string, enabled: boolean): Promise<void> {
   await h.feature.setAutomaticPdf?.(path, enabled);
 }
-
-test("external compiler and Vault recorders distinguish bytes, events, renames, and failures", async () => {
-  // #given
-  const exporter = new ControlledExporter();
-  exporter.responses.push(encoder.encode("PDF-control"));
-  const app = testApp("/control");
-  let modifyEvents = 0;
-  app.vault.on("modify", () => modifyEvents++);
-
-  // #when
-  const exported = await exporter.exportPdf({ entryPath: "/control/a.typ", root: "/control" });
-  const pdf = await app.vault.createBinary("a.pdf", encoder.encode("PDF-A").buffer);
-  await app.vault.modifyBinary(pdf, encoder.encode("PDF-B").buffer);
-  await app.vault.emit("modify", new TFile("a.typ"));
-  await app.fileManager.renameFile(pdf, "renamed.pdf");
-  app.vault.failNextBinaryWrite = new Error("disk full");
-  let failure: string | null = null;
-  try {
-    await app.vault.createBinary("failed.pdf", encoder.encode("PDF-C").buffer);
-  } catch (error) {
-    failure = String(error);
-  }
-
-  // #then
-  assert.deepEqual(
-    {
-      exported: new TextDecoder().decode(exported),
-      requests: exporter.requests,
-      writes: app.vault.binaryWrites.map((write) => new TextDecoder().decode(write.data)),
-      renamedBytes: bytes(app, "renamed.pdf"),
-      renames: app.fileManager.renames,
-      modifyEvents,
-      failure,
-    },
-    {
-      exported: "PDF-control",
-      requests: [{ entryPath: "/control/a.typ", root: "/control" }],
-      writes: ["PDF-A", "PDF-B"],
-      renamedBytes: "PDF-B",
-      renames: [{ from: "a.pdf", to: "renamed.pdf" }],
-      modifyEvents: 1,
-      failure: "Error: disk full",
-    },
-  );
-});
 
 test("opt-in builds immediately, coalesces closed-file saves to the latest result, and disable suppresses output", async () => {
   // #given
@@ -411,6 +367,71 @@ test("declining replacement preserves a pre-existing PDF", async () => {
     );
   } finally {
     h.close();
+  }
+});
+
+test("disabling while replacement confirmation is open leaves no stale conflict status or notice", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external"));
+  h.plugin.exporter.responses.push(encoder.encode("PDF-new"));
+  const confirmation = deferred<boolean>();
+  h.plugin.confirmationResults.push(confirmation.promise);
+  Notice.shown.length = 0;
+  const enabling = h.feature.setAutomaticPdf?.("chapter.typ", true) ?? Promise.resolve();
+  await settleUntil(() => h.plugin.confirmations.length === 1);
+
+  // #when
+  await setEnabled(h, "chapter.typ", false);
+  confirmation.resolve(false);
+  await enabling;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        bytes: bytes(h.app, "chapter.pdf"),
+        writes: h.app.vault.binaryWrites.length,
+        status: h.feature.automaticPdfStatus?.("chapter.typ"),
+        notices: Notice.shown.length,
+      },
+      { bytes: "PDF-external", writes: 0, status: "current", notices: 0 },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("unloading while replacement confirmation is open leaves no stale notice or publication", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external"));
+  h.plugin.exporter.responses.push(encoder.encode("PDF-new"));
+  const confirmation = deferred<boolean>();
+  h.plugin.confirmationResults.push(confirmation.promise);
+  Notice.shown.length = 0;
+  const enabling = h.feature.setAutomaticPdf?.("chapter.typ", true) ?? Promise.resolve();
+  await settleUntil(() => h.plugin.confirmations.length === 1);
+
+  // #when
+  h.plugin.onunload();
+  confirmation.resolve(true);
+  await enabling;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        bytes: bytes(h.app, "chapter.pdf"),
+        writes: h.app.vault.binaryWrites.length,
+        notices: Notice.shown.length,
+      },
+      { bytes: "PDF-external", writes: 0, notices: 0 },
+    );
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
   }
 });
 
@@ -760,6 +781,464 @@ test("rename collision leaves both PDFs untouched and disabling invalidates pend
       exporterStops: 1,
     },
   );
+});
+
+test("accepting a file rename collision replaces the observed destination once", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-renamed"));
+  await setEnabled(h, source.path, true);
+  h.app.vault.binaryFiles.set("taken.pdf", encoder.encode("PDF-external"));
+  h.plugin.confirmationResults.push(true);
+  Notice.shown.length = 0;
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("taken.typ", "= Renamed\n");
+  source.path = "taken.typ";
+
+  // #when
+  await h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => bytes(h.app, "taken.pdf") === "PDF-renamed");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "taken.pdf"),
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        notices: Notice.shown.length,
+      },
+      {
+        confirmations: [{ path: "taken.pdf", bytes: "PDF-external" }],
+        oldBytes: "PDF-owned",
+        newBytes: "PDF-renamed",
+        writes: ["old.pdf", "taken.pdf"],
+        notices: 0,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a declined path-bound collision stays declined for autosaves but manual rebuild and changed bytes ask again", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, source.path, true);
+  h.app.vault.binaryFiles.set("taken.pdf", encoder.encode("PDF-owned"));
+  h.plugin.confirmationResults.push(false, false, false);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("taken.typ", "= Renamed\n");
+  source.path = "taken.typ";
+  await h.app.vault.emit("rename", source, "old.typ");
+  const afterRename = h.plugin.confirmations.length;
+
+  // #when
+  await h.app.vault.emit("modify", source);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const afterAutosave = h.plugin.confirmations.length;
+  await h.feature.rebuildPdf?.("taken.typ");
+  const afterManual = h.plugin.confirmations.length;
+  h.app.vault.binaryFiles.set("taken.pdf", encoder.encode("PDF-external-changed"));
+  await h.app.vault.emit("modify", source);
+  await settleUntil(() => h.plugin.confirmations.length === 3);
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmationCounts: [afterRename, afterAutosave, afterManual, h.plugin.confirmations.length],
+        observed: h.plugin.confirmations.map((request) => new TextDecoder().decode(request.observedBytes)),
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "taken.pdf"),
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        status: h.feature.automaticPdfStatus?.("taken.typ"),
+      },
+      {
+        confirmationCounts: [1, 1, 2, 3],
+        observed: ["PDF-owned", "PDF-owned", "PDF-external-changed"],
+        oldBytes: "PDF-owned",
+        newBytes: "PDF-external-changed",
+        writes: ["old.pdf"],
+        status: "conflict",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("accepting a folder rename collision prompts once and publishes in the final folder", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-new-folder"));
+  await setEnabled(h, "old/chapter.typ", true);
+  h.app.vault.binaryFiles.set("new/chapter.pdf", encoder.encode("PDF-external"));
+  h.plugin.confirmationResults.push(true);
+  Notice.shown.length = 0;
+  h.app.vault.files.delete("old/chapter.typ");
+  h.app.vault.files.set("new/chapter.typ", "= Renamed\n");
+
+  // #when
+  await h.app.vault.emit("rename", new TFolder("new"), "old");
+  await settleUntil(() => bytes(h.app, "new/chapter.pdf") === "PDF-new-folder");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => new TextDecoder().decode(request.observedBytes)),
+        oldBytes: bytes(h.app, "old/chapter.pdf"),
+        newBytes: bytes(h.app, "new/chapter.pdf"),
+        notices: Notice.shown.length,
+      },
+      {
+        confirmations: ["PDF-external"],
+        oldBytes: "PDF-owned",
+        newBytes: "PDF-new-folder",
+        notices: 0,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a dispatched Vault write records ownership even when disable supersedes its completion", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const write = deferred<void>();
+  h.app.vault.binaryWriteBarriers.push(write.promise);
+  h.plugin.exporter.responses.push(encoder.encode("PDF-dispatched"), encoder.encode("PDF-reenabled"));
+  const enabling = h.feature.setAutomaticPdf?.("chapter.typ", true) ?? Promise.resolve();
+  await settleUntil(() => h.app.vault.binaryWriteStarted.length === 1);
+
+  // #when
+  await setEnabled(h, "chapter.typ", false);
+  write.resolve();
+  await enabling;
+  await setEnabled(h, "chapter.typ", true);
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.length,
+        bytes: bytes(h.app, "chapter.pdf"),
+        writes: h.app.vault.binaryWrites.map((item) => new TextDecoder().decode(item.data)),
+        status: h.feature.automaticPdfStatus?.("chapter.typ"),
+      },
+      {
+        confirmations: 0,
+        bytes: "PDF-reenabled",
+        writes: ["PDF-dispatched", "PDF-reenabled"],
+        status: "current",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("an unrelated settings save requeues active and pending roots under current configuration", async () => {
+  // #given
+  const h = await harness();
+  const a = h.addSource("a.typ");
+  const b = h.addSource("b.typ");
+  h.plugin.exporter.responses.push(encoder.encode("A-initial"), encoder.encode("B-initial"));
+  await setEnabled(h, a.path, true);
+  await setEnabled(h, b.path, true);
+  const active = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(active.promise, encoder.encode("A-current"), encoder.encode("B-current"));
+  await h.app.vault.emit("modify", a);
+  await settleUntil(() => h.plugin.exporter.requests.length === 3);
+  await h.app.vault.emit("modify", b);
+
+  // #when
+  h.plugin.settings.cursorPreview = !h.plugin.settings.cursorPreview;
+  h.plugin.settings.binaryPath = "/current/tinymist";
+  await h.plugin.saveSettings();
+  active.resolve(encoder.encode("A-superseded"));
+  await settleUntil(() => h.plugin.exporter.requests.length === 5 && bytes(h.app, "b.pdf") === "B-current");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        requestCount: h.plugin.exporter.requests.length,
+        retriedEntries: h.plugin.exporter.requests.slice(3).map((request) => request.entryPath).sort(),
+        bytes: { a: bytes(h.app, "a.pdf"), b: bytes(h.app, "b.pdf") },
+        statuses: {
+          a: h.feature.automaticPdfStatus?.("a.typ"),
+          b: h.feature.automaticPdfStatus?.("b.typ"),
+        },
+        maxActive: h.plugin.exporter.maxActive,
+        factorySettings: h.plugin.exporterFactorySettings,
+      },
+      {
+        requestCount: 5,
+        retriedEntries: [join(h.root, "a.typ"), join(h.root, "b.typ")].sort(),
+        bytes: { a: "A-current", b: "B-current" },
+        statuses: { a: "current", b: "current" },
+        maxActive: 1,
+        factorySettings: ["", "/current/tinymist"],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("renaming an opted-in Typst source to another extension invalidates its in-flight publication", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const pending = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), pending.promise);
+  await setEnabled(h, source.path, true);
+  await h.app.vault.emit("modify", source);
+  await settleUntil(() => h.plugin.exporter.requests.length === 2);
+  h.app.vault.files.delete("chapter.typ");
+  h.app.vault.files.set("chapter.txt", "= No longer Typst\n");
+  source.path = "chapter.txt";
+
+  // #when
+  await h.app.vault.emit("rename", source, "chapter.typ");
+  pending.resolve(encoder.encode("PDF-after-extension-change"));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  // #then
+  try {
+    const entries = (h.app.pluginData.automaticPdf as { entries?: Record<string, unknown> } | undefined)?.entries ?? {};
+    assert.deepEqual(
+      {
+        bytes: bytes(h.app, "chapter.pdf"),
+        writeCount: h.app.vault.binaryWrites.length,
+        enabledOld: h.feature.automaticPdfEnabled?.("chapter.typ"),
+        enabledNew: h.feature.automaticPdfEnabled?.("chapter.txt"),
+        storedPaths: Object.keys(entries),
+      },
+      {
+        bytes: "PDF-owned",
+        writeCount: 1,
+        enabledOld: false,
+        enabledNew: false,
+        storedPaths: [],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("two rapid folder renames keep every opted-in source on the final prefix", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/a.typ");
+  h.addSource("old/b.typ");
+  h.plugin.exporter.responses.push(encoder.encode("A-owned"), encoder.encode("B-owned"));
+  await setEnabled(h, "old/a.typ", true);
+  await setEnabled(h, "old/b.typ", true);
+  const read = deferred<void>();
+  h.app.vault.binaryReadBarriers.push(read.promise);
+  h.app.vault.files.delete("old/a.typ");
+  h.app.vault.files.delete("old/b.typ");
+  h.app.vault.files.set("middle/a.typ", "= A\n");
+  h.app.vault.files.set("middle/b.typ", "= B\n");
+  const firstRename = h.app.vault.emit("rename", new TFolder("middle"), "old");
+  await settleUntil(() => h.app.vault.binaryReadStarted.length >= 1);
+  h.app.vault.files.delete("middle/a.typ");
+  h.app.vault.files.delete("middle/b.typ");
+  h.app.vault.files.set("final/a.typ", "= A\n");
+  h.app.vault.files.set("final/b.typ", "= B\n");
+
+  // #when
+  const secondRename = h.app.vault.emit("rename", new TFolder("final"), "middle");
+  read.resolve();
+  await Promise.all([firstRename, secondRename]);
+  h.plugin.exporter.responses.push(encoder.encode("A-final"), encoder.encode("B-final"));
+  await h.app.vault.emit("modify", new TFile("final/a.typ"));
+  await h.app.vault.emit("modify", new TFile("final/b.typ"));
+  await settleUntil(() => bytes(h.app, "final/a.pdf") === "A-final" && bytes(h.app, "final/b.pdf") === "B-final");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        enabled: [
+          h.feature.automaticPdfEnabled?.("final/a.typ"),
+          h.feature.automaticPdfEnabled?.("final/b.typ"),
+        ],
+        intermediateEnabled: [
+          h.feature.automaticPdfEnabled?.("middle/a.typ"),
+          h.feature.automaticPdfEnabled?.("middle/b.typ"),
+        ],
+        finalBytes: [bytes(h.app, "final/a.pdf"), bytes(h.app, "final/b.pdf")],
+        oldWritePaths: h.app.vault.binaryWrites
+          .map((write) => write.path)
+          .filter((path) => path.startsWith("old/") || path.startsWith("middle/")),
+      },
+      {
+        enabled: [true, true],
+        intermediateEnabled: [false, false],
+        finalBytes: ["A-final", "B-final"],
+        oldWritePaths: ["old/a.pdf", "old/b.pdf"],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("disabling a renamed source while its owned PDF read is pending prevents a stale move", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, source.path, true);
+  const read = deferred<void>();
+  h.app.vault.binaryReadBarriers.push(read.promise);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("renamed.typ", "= Renamed\n");
+  source.path = "renamed.typ";
+  const renaming = h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => h.app.vault.binaryReadStarted.includes("old.pdf"));
+
+  // #when
+  await setEnabled(h, "renamed.typ", false);
+  read.resolve();
+  await renaming;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        renames: h.app.fileManager.renames,
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "renamed.pdf"),
+        enabled: h.feature.automaticPdfEnabled?.("renamed.typ"),
+      },
+      { renames: [], oldBytes: "PDF-owned", newBytes: null, enabled: false },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("deleting a renamed source while its owned PDF read is pending prevents a stale move", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, source.path, true);
+  const read = deferred<void>();
+  h.app.vault.binaryReadBarriers.push(read.promise);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("renamed.typ", "= Renamed\n");
+  source.path = "renamed.typ";
+  const renaming = h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => h.app.vault.binaryReadStarted.includes("old.pdf"));
+
+  // #when
+  h.app.vault.files.delete("renamed.typ");
+  await h.app.vault.emit("delete", source);
+  read.resolve();
+  await renaming;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        renames: h.app.fileManager.renames,
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "renamed.pdf"),
+        enabled: h.feature.automaticPdfEnabled?.("renamed.typ"),
+      },
+      { renames: [], oldBytes: "PDF-owned", newBytes: null, enabled: false },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("unloading while an owned PDF read is pending prevents a stale move and notice", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, source.path, true);
+  const read = deferred<void>();
+  h.app.vault.binaryReadBarriers.push(read.promise);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("renamed.typ", "= Renamed\n");
+  source.path = "renamed.typ";
+  Notice.shown.length = 0;
+  const renaming = h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => h.app.vault.binaryReadStarted.includes("old.pdf"));
+
+  // #when
+  h.plugin.onunload();
+  read.resolve();
+  await renaming;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        renames: h.app.fileManager.renames,
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "renamed.pdf"),
+        notices: Notice.shown.length,
+      },
+      { renames: [], oldBytes: "PDF-owned", newBytes: null, notices: 0 },
+    );
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
+
+test("an owned PDF changed after an asynchronous read is not moved with its source", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-new-path"));
+  await setEnabled(h, source.path, true);
+  const read = deferred<void>();
+  h.app.vault.binaryReadBarriers.push(read.promise);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("renamed.typ", "= Renamed\n");
+  source.path = "renamed.typ";
+  const renaming = h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => h.app.vault.binaryReadStarted.includes("old.pdf"));
+
+  // #when
+  h.app.vault.binaryFiles.set("old.pdf", encoder.encode("PDF-external-after-read"));
+  read.resolve();
+  await renaming;
+  await settleUntil(() => bytes(h.app, "renamed.pdf") === "PDF-new-path");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        renames: h.app.fileManager.renames,
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "renamed.pdf"),
+      },
+      { renames: [], oldBytes: "PDF-external-after-read", newBytes: "PDF-new-path" },
+    );
+  } finally {
+    h.close();
+  }
 });
 
 test("deleting a source retains its PDF and removes the opt-in across reload", async () => {

@@ -142,6 +142,10 @@ export class TestVault {
   binaryFiles = new Map<string, Uint8Array>();
   writes: { path: string; data: string }[] = [];
   binaryWrites: { path: string; data: Uint8Array }[] = [];
+  binaryReadStarted: string[] = [];
+  binaryWriteStarted: { path: string; data: Uint8Array }[] = [];
+  binaryReadBarriers: Promise<void>[] = [];
+  binaryWriteBarriers: Promise<void>[] = [];
   failNextBinaryWrite: Error | null = null;
   adapter: FileSystemAdapter;
   private events = new Map<string, Set<EventCallback>>();
@@ -161,12 +165,19 @@ export class TestVault {
   async readBinary(file: TFile): Promise<ArrayBuffer> {
     const data = this.binaryFiles.get(file.path);
     if (!data) throw new Error(`Missing binary file: ${file.path}`);
-    return data.slice().buffer;
+    const copy = data.slice();
+    this.binaryReadStarted.push(file.path);
+    const barrier = this.binaryReadBarriers.shift();
+    if (barrier) await barrier;
+    return copy.buffer;
   }
 
   async createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
     this.throwBinaryWriteFailure();
     const copy = new Uint8Array(data.slice(0));
+    this.binaryWriteStarted.push({ path, data: copy });
+    const barrier = this.binaryWriteBarriers.shift();
+    if (barrier) await barrier;
     this.binaryFiles.set(path, copy);
     this.binaryWrites.push({ path, data: copy });
     return new TFile(path);
@@ -175,6 +186,9 @@ export class TestVault {
   async modifyBinary(file: TFile, data: ArrayBuffer): Promise<void> {
     this.throwBinaryWriteFailure();
     const copy = new Uint8Array(data.slice(0));
+    this.binaryWriteStarted.push({ path: file.path, data: copy });
+    const barrier = this.binaryWriteBarriers.shift();
+    if (barrier) await barrier;
     this.binaryFiles.set(file.path, copy);
     this.binaryWrites.push({ path: file.path, data: copy });
   }
@@ -425,6 +439,11 @@ export abstract class TextFileView extends Component {
   }
 
   async onRename(_file: TFile): Promise<void> {}
+
+  // Represent the documented base file-view contribution without copying Obsidian internals.
+  onPaneMenu(menu: Menu, _source: string): void {
+    menu.addItem((item) => item.setTitle("Base file action"));
+  }
 
   async onClose(): Promise<void> {
     if (this.requestTimer) clearTimeout(this.requestTimer);

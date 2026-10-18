@@ -15,23 +15,7 @@ interface TestTypstView extends TypstView {
   loadFile(file: TFile): Promise<void>;
 }
 
-test("menu recorder preserves an independently configured item and callback", async () => {
-  // #given
-  const menu = new Menu();
-  const clicks: string[] = [];
-  menu.addItem((item) => item.setTitle("Control item").setChecked(true).onClick(() => clicks.push("clicked")));
-
-  // #when
-  await menu.items[0].trigger();
-
-  // #then
-  assert.deepEqual(
-    { item: { title: menu.items[0].title, checked: menu.items[0].checked }, clicks },
-    { item: { title: "Control item", checked: true }, clicks: ["clicked"] },
-  );
-});
-
-function typstView(): { view: TypstView; previewCalls: string[]; pdfCalls: string[] } {
+function typstView(enabled = false): { view: TypstView; previewCalls: string[]; pdfCalls: string[] } {
   const app = testApp();
   const previewCalls: string[] = [];
   const pdfCalls: string[] = [];
@@ -50,6 +34,7 @@ function typstView(): { view: TypstView; previewCalls: string[]; pdfCalls: strin
     typstRender: null,
     setAutomaticPdf: async (path: string, enabled: boolean) => pdfCalls.push(`set:${path}:${enabled}`),
     rebuildPdf: async (path: string) => pdfCalls.push(`rebuild:${path}`),
+    automaticPdfEnabled: () => enabled,
     automaticPdfStatus: () => "missing",
   };
   return {
@@ -91,6 +76,55 @@ test("the real pane menu drives Automatic PDF export and Rebuild PDF without cha
         previewCalls: [],
       },
     );
+  } finally {
+    await view.onClose();
+  }
+});
+
+test("the pane menu shows the enabled checkmark and disables automatic PDF export when clicked", async () => {
+  // #given
+  const { view: rawView, previewCalls, pdfCalls } = typstView(true);
+  const view = rawView as TestTypstView;
+  const menu = new Menu();
+  try {
+    await view.loadFile(new TFile("notes/chapter.typ") as never);
+
+    // #when
+    (view as unknown as PaneMenuView).onPaneMenu?.(menu, "more-options");
+    const automatic = menu.items.find((item) => item.title === "Automatic PDF export");
+    await automatic?.trigger();
+
+    // #then
+    assert.deepEqual(
+      {
+        automatic: automatic && { checked: automatic.checked, disabled: automatic.disabled },
+        pdfCalls,
+        previewCalls,
+      },
+      {
+        automatic: { checked: true, disabled: false },
+        pdfCalls: ["set:notes/chapter.typ:false"],
+        previewCalls: [],
+      },
+    );
+  } finally {
+    await view.onClose();
+  }
+});
+
+test("the Typst pane menu preserves the superclass file-view contribution exactly once", async () => {
+  // #given
+  const { view: rawView } = typstView();
+  const view = rawView as TestTypstView;
+  const menu = new Menu();
+  try {
+    await view.loadFile(new TFile("notes/chapter.typ") as never);
+
+    // #when
+    (view as unknown as PaneMenuView).onPaneMenu?.(menu, "more-options");
+
+    // #then
+    assert.equal(menu.items.filter((item) => item.title === "Base file action").length, 1);
   } finally {
     await view.onClose();
   }
