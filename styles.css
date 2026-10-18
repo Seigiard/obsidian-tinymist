@@ -633,6 +633,11 @@ SOFTWARE.
 }
 
 /* Rename modal */
+.tym-pdf-confirm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2, 8px);
+}
 .tym-rename-input {
   width: 100%;
   font-size: var(--font-ui-medium);
