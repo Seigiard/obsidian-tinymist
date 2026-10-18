@@ -223,6 +223,28 @@ test("preview header exposes one labeled keyboard checkbox for the selected sour
   }
 });
 
+test("preview header places automatic PDF export before native More options", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const view = h.preview("chapter.typ");
+
+  // #when
+  const input = checkbox(view);
+  const label = input.closest("label");
+  const actions = view.containerEl.querySelector(".view-header .view-actions");
+  const moreOptions = actions?.querySelector('button[aria-label="More options"]') ?? null;
+
+  // #then
+  try {
+    assert.deepEqual([...(actions?.children ?? [])], [label, moreOptions]);
+  } finally {
+    await view.onClose();
+    view.unload();
+    h.close();
+  }
+});
+
 test("preview selection, not the active editor or wrapper, determines the checked source", async () => {
   // #given
   const h = await harness();

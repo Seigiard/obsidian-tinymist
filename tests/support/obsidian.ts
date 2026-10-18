@@ -421,6 +421,12 @@ export class ItemView extends Component {
     super();
     const headerEl = document.createElement("div");
     headerEl.className = "view-header";
+    const actionsEl = document.createElement("div");
+    actionsEl.className = "view-actions";
+    const moreOptionsEl = document.createElement("button");
+    moreOptionsEl.setAttribute("aria-label", "More options");
+    actionsEl.appendChild(moreOptionsEl);
+    headerEl.appendChild(actionsEl);
     this.contentEl.className = "view-content";
     this.containerEl.append(headerEl, this.contentEl);
     document.body.appendChild(this.containerEl);
