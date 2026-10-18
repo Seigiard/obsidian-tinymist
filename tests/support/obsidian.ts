@@ -11,10 +11,19 @@ type Callback = (...args: unknown[]) => unknown;
 type EventCallback = (...args: unknown[]) => unknown;
 
 export class Component {
+  private cleanup: Callback[] = [];
+
   load(): void {}
-  unload(): void {}
-  registerEvent(_ref: unknown): void {}
-  register(_cb: Callback): void {}
+  unload(): void {
+    for (const callback of this.cleanup.splice(0).reverse()) callback();
+  }
+  registerEvent(ref: unknown): void {
+    const detach = (ref as { detach?: unknown } | null)?.detach;
+    if (typeof detach === "function") this.register(() => detach.call(ref));
+  }
+  register(cb: Callback): void {
+    this.cleanup.push(cb);
+  }
 }
 
 export class TAbstractFile {
@@ -209,11 +218,11 @@ export class TestVault {
     return [...this.files.keys(), ...this.binaryFiles.keys()].map((path) => new TFile(path));
   }
 
-  on(name: string, callback: EventCallback): { name: string; callback: EventCallback } {
+  on(name: string, callback: EventCallback): { name: string; callback: EventCallback; detach(): void } {
     let callbacks = this.events.get(name);
     if (!callbacks) this.events.set(name, (callbacks = new Set()));
     callbacks.add(callback);
-    return { name, callback };
+    return { name, callback, detach: () => callbacks.delete(callback) };
   }
 
   async emit(name: string, ...args: unknown[]): Promise<void> {
@@ -289,11 +298,11 @@ export class TestWorkspace {
   private events = new Map<string, Set<EventCallback>>();
   private layoutReady: Callback[] = [];
 
-  on(name: string, callback: EventCallback): { name: string; callback: EventCallback } {
+  on(name: string, callback: EventCallback): { name: string; callback: EventCallback; detach(): void } {
     let callbacks = this.events.get(name);
     if (!callbacks) this.events.set(name, (callbacks = new Set()));
     callbacks.add(callback);
-    return { name, callback };
+    return { name, callback, detach: () => callbacks.delete(callback) };
   }
 
   onLayoutReady(callback: Callback): void {
@@ -405,13 +414,21 @@ export class Setting {
 }
 
 export class ItemView extends Component {
+  containerEl = document.createElement("div");
   contentEl = document.createElement("div");
 
   constructor(public leaf: WorkspaceLeaf) {
     super();
+    const headerEl = document.createElement("div");
+    headerEl.className = "view-header";
+    this.contentEl.className = "view-content";
+    this.containerEl.append(headerEl, this.contentEl);
+    document.body.appendChild(this.containerEl);
   }
 
-  async onClose(): Promise<void> {}
+  async onClose(): Promise<void> {
+    this.containerEl.remove();
+  }
 }
 
 export abstract class TextFileView extends Component {
