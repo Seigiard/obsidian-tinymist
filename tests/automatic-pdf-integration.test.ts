@@ -1375,6 +1375,58 @@ test("a rejected identical-byte foreign copy never becomes owned after its sourc
   }
 });
 
+test("a rejected identical-byte foreign PDF remains unowned after its source folder changes", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/a.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, "old/a.typ", true);
+  h.app.vault.files.delete("old/a.typ");
+  h.app.vault.files.set("new/a.typ", "= Renamed\n");
+  h.app.vault.binaryFiles.set("new/a.pdf", encoder.encode("PDF-owned"));
+  h.plugin.confirmationResults.push(false, false);
+  Notice.shown.length = 0;
+
+  // #when
+  await h.app.vault.emit("rename", new TFolder("new"), "old");
+  const afterRename = h.plugin.confirmations.length;
+  await h.app.vault.emit("modify", new TFile("new/a.typ"));
+  const afterAutosave = h.plugin.confirmations.length;
+  await h.feature.rebuildPdf?.("new/a.typ");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmationCounts: [afterRename, afterAutosave, h.plugin.confirmations.length],
+        observed: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        bytes: { old: bytes(h.app, "old/a.pdf"), foreign: bytes(h.app, "new/a.pdf") },
+        renames: h.app.fileManager.renames,
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        status: h.feature.automaticPdfStatus?.("new/a.typ"),
+        notices: Notice.shown.length,
+      },
+      {
+        confirmationCounts: [1, 1, 2],
+        observed: [
+          { path: "new/a.pdf", bytes: "PDF-owned" },
+          { path: "new/a.pdf", bytes: "PDF-owned" },
+        ],
+        bytes: { old: "PDF-owned", foreign: "PDF-owned" },
+        renames: [],
+        writes: ["old/a.pdf"],
+        status: "conflict",
+        notices: 1,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("accepting a folder rename collision prompts once and publishes in the final folder", async () => {
   // #given
   const h = await harness();
@@ -1598,6 +1650,10 @@ test("two rapid physical folder renames keep owned PDFs on the final prefix with
           h.feature.automaticPdfEnabled?.("middle/b.typ"),
         ],
         finalBytes: [bytes(h.app, "final/a.pdf"), bytes(h.app, "final/b.pdf")],
+        statuses: [
+          h.feature.automaticPdfStatus?.("final/a.typ"),
+          h.feature.automaticPdfStatus?.("final/b.typ"),
+        ],
         firstMiddleReadBlocked,
         requests: h.plugin.exporter.requests.map((request) => request.entryPath),
         confirmations: h.plugin.confirmations.length,
@@ -1610,6 +1666,7 @@ test("two rapid physical folder renames keep owned PDFs on the final prefix with
         enabled: [true, true],
         intermediateEnabled: [false, false],
         finalBytes: ["A-final", "B-final"],
+        statuses: ["current", "current"],
         firstMiddleReadBlocked: true,
         requests: [
           join(h.root, "old/a.typ"),
