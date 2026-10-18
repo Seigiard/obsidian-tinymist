@@ -331,8 +331,10 @@ export class AutomaticPdfController {
       this.dropPending(oldSourcePath);
       entry.generation++;
       this.revokeAuthorization(entry);
+      const oldPdf = pdfPath(oldSourcePath);
       entry.pendingMove =
-        entry.ownedPath !== undefined && entry.ownedHash !== undefined
+        entry.ownedHash !== undefined &&
+        (entry.ownedPath === oldPdf || entry.pendingMove?.destinationPath === oldPdf)
           ? { destinationPath: pdfPath(newSourcePath), hash: entry.ownedHash }
           : undefined;
       entry.destinationPath = pdfPath(newSourcePath);
@@ -374,8 +376,10 @@ export class AutomaticPdfController {
     this.dropPending(oldPath);
     entry.generation++;
     this.revokeAuthorization(entry);
+    const oldPdf = pdfPath(oldPath);
     entry.pendingMove =
-      entry.ownedPath !== undefined && entry.ownedHash !== undefined
+      entry.ownedHash !== undefined &&
+      (entry.ownedPath === oldPdf || entry.pendingMove?.destinationPath === oldPdf)
         ? { destinationPath: pdfPath(newPath), hash: entry.ownedHash }
         : undefined;
     entry.destinationPath = pdfPath(newPath);
@@ -647,7 +651,8 @@ export class AutomaticPdfController {
     if (!accepted) {
       if (!this.isCurrent(job, entry)) return null;
       this.rememberDecline(entry, observed);
-      this.notifyConflict(entry, observed.path);
+      if (entry.enabled || !job.manual) this.notifyConflict(entry, observed.path);
+      else entry.status = "conflict";
       await this.persist();
       return null;
     }
