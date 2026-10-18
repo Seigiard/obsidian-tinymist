@@ -818,6 +818,107 @@ test("file rename moves only unchanged owned output and stale exports never recr
   }
 });
 
+test("disabled and manual-only renamed sources stay quiet until an explicit rebuild replaces foreign PDFs", async () => {
+  // #given
+  const h = await harness();
+  const disabled = h.addSource("off/owned.typ");
+  const manualOnly = h.addSource("manual/owned.typ");
+  const safe = h.addSource("safe/owned.typ");
+  h.plugin.exporter.responses.push(
+    encoder.encode("PDF-disabled-owned"),
+    encoder.encode("PDF-manual-owned"),
+    encoder.encode("PDF-safe-owned"),
+    encoder.encode("PDF-disabled-rebuilt"),
+    encoder.encode("PDF-manual-rebuilt"),
+  );
+  await setEnabled(h, disabled.path, true);
+  await setEnabled(h, disabled.path, false);
+  await h.feature.rebuildPdf?.(manualOnly.path);
+  await setEnabled(h, safe.path, true);
+  await setEnabled(h, safe.path, false);
+  h.app.vault.files.delete("off/owned.typ");
+  h.app.vault.files.set("off/foreign.typ", "= Disabled\n");
+  h.app.vault.binaryFiles.set("off/foreign.pdf", encoder.encode("PDF-disabled-foreign"));
+  disabled.path = "off/foreign.typ";
+  h.app.vault.files.delete("manual/owned.typ");
+  h.app.vault.files.set("manual/foreign.typ", "= Manual\n");
+  h.app.vault.binaryFiles.set("manual/foreign.pdf", encoder.encode("PDF-manual-foreign"));
+  manualOnly.path = "manual/foreign.typ";
+  h.app.vault.files.delete("safe/owned.typ");
+  h.app.vault.files.set("safe/renamed.typ", "= Safe\n");
+  safe.path = "safe/renamed.typ";
+  Notice.shown.length = 0;
+
+  // #when
+  await h.app.vault.emit("rename", disabled, "off/owned.typ");
+  await h.app.vault.emit("rename", manualOnly, "manual/owned.typ");
+  await h.app.vault.emit("rename", safe, "safe/owned.typ");
+  const quiet = {
+    confirmations: h.plugin.confirmations.length,
+    notices: Notice.shown.length,
+    requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+    writes: h.app.vault.binaryWrites.map((write) => write.path),
+  };
+  h.plugin.confirmationResults.push(true, true);
+  await h.feature.rebuildPdf?.("off/foreign.typ");
+  await h.feature.rebuildPdf?.("manual/foreign.typ");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        quiet,
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        enabled: [
+          h.feature.automaticPdfEnabled?.("off/foreign.typ"),
+          h.feature.automaticPdfEnabled?.("manual/foreign.typ"),
+          h.feature.automaticPdfEnabled?.("safe/renamed.typ"),
+        ],
+        bytes: {
+          disabledOld: bytes(h.app, "off/owned.pdf"),
+          disabledForeign: bytes(h.app, "off/foreign.pdf"),
+          manualOld: bytes(h.app, "manual/owned.pdf"),
+          manualForeign: bytes(h.app, "manual/foreign.pdf"),
+          safeOld: bytes(h.app, "safe/owned.pdf"),
+          safeRenamed: bytes(h.app, "safe/renamed.pdf"),
+        },
+        renames: h.app.fileManager.renames,
+      },
+      {
+        quiet: {
+          confirmations: 0,
+          notices: 0,
+          requests: [
+            join(h.root, "off/owned.typ"),
+            join(h.root, "manual/owned.typ"),
+            join(h.root, "safe/owned.typ"),
+          ],
+          writes: ["off/owned.pdf", "manual/owned.pdf", "safe/owned.pdf"],
+        },
+        confirmations: [
+          { path: "off/foreign.pdf", bytes: "PDF-disabled-foreign" },
+          { path: "manual/foreign.pdf", bytes: "PDF-manual-foreign" },
+        ],
+        enabled: [false, false, false],
+        bytes: {
+          disabledOld: "PDF-disabled-owned",
+          disabledForeign: "PDF-disabled-rebuilt",
+          manualOld: "PDF-manual-owned",
+          manualForeign: "PDF-manual-rebuilt",
+          safeOld: null,
+          safeRenamed: "PDF-safe-owned",
+        },
+        renames: [{ from: "safe/owned.pdf", to: "safe/renamed.pdf" }],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("folder rename recognizes the PDF moved by the Vault and recompiles only in the new folder", async () => {
   // #given
   const h = await harness();
@@ -1223,7 +1324,7 @@ test("accepting a file rename collision replaces the observed destination once",
   }
 });
 
-test("a declined path-bound collision stays declined for autosaves but manual rebuild and changed bytes ask again", async () => {
+test("a rejected identical-byte foreign copy never becomes owned after its source namespace changes", async () => {
   // #given
   const h = await harness();
   const source = h.addSource("old.typ");
@@ -1255,6 +1356,7 @@ test("a declined path-bound collision stays declined for autosaves but manual re
         observed: h.plugin.confirmations.map((request) => new TextDecoder().decode(request.observedBytes)),
         oldBytes: bytes(h.app, "old.pdf"),
         newBytes: bytes(h.app, "taken.pdf"),
+        renames: h.app.fileManager.renames,
         writes: h.app.vault.binaryWrites.map((write) => write.path),
         status: h.feature.automaticPdfStatus?.("taken.typ"),
       },
@@ -1263,6 +1365,7 @@ test("a declined path-bound collision stays declined for autosaves but manual re
         observed: ["PDF-owned", "PDF-owned", "PDF-external-changed"],
         oldBytes: "PDF-owned",
         newBytes: "PDF-external-changed",
+        renames: [],
         writes: ["old.pdf"],
         status: "conflict",
       },
@@ -1437,34 +1540,49 @@ test("renaming an opted-in Typst source to another extension invalidates its in-
   }
 });
 
-test("two rapid folder renames keep every opted-in source on the final prefix", async () => {
+test("two rapid physical folder renames keep owned PDFs on the final prefix without consent", async () => {
   // #given
   const h = await harness();
   h.addSource("old/a.typ");
   h.addSource("old/b.typ");
-  h.plugin.exporter.responses.push(encoder.encode("A-owned"), encoder.encode("B-owned"));
+  h.plugin.exporter.responses.push(
+    encoder.encode("A-owned"),
+    encoder.encode("B-owned"),
+    encoder.encode("A-final"),
+    encoder.encode("B-final"),
+  );
   await setEnabled(h, "old/a.typ", true);
   await setEnabled(h, "old/b.typ", true);
+  const ownedA = h.app.vault.binaryFiles.get("old/a.pdf");
+  const ownedB = h.app.vault.binaryFiles.get("old/b.pdf");
   const read = deferred<void>();
   h.app.vault.binaryReadBarriers.push(read.promise);
   h.app.vault.files.delete("old/a.typ");
   h.app.vault.files.delete("old/b.typ");
   h.app.vault.files.set("middle/a.typ", "= A\n");
   h.app.vault.files.set("middle/b.typ", "= B\n");
+  h.app.vault.binaryFiles.delete("old/a.pdf");
+  h.app.vault.binaryFiles.delete("old/b.pdf");
+  if (ownedA) h.app.vault.binaryFiles.set("middle/a.pdf", ownedA);
+  if (ownedB) h.app.vault.binaryFiles.set("middle/b.pdf", ownedB);
   const firstRename = h.app.vault.emit("rename", new TFolder("middle"), "old");
-  await settleUntil(() => h.app.vault.binaryReadStarted.length >= 1);
+  const firstMiddleReadBlocked = await settleUntil(() => h.app.vault.binaryReadStarted.includes("middle/a.pdf"));
   h.app.vault.files.delete("middle/a.typ");
   h.app.vault.files.delete("middle/b.typ");
   h.app.vault.files.set("final/a.typ", "= A\n");
   h.app.vault.files.set("final/b.typ", "= B\n");
+  const middleA = h.app.vault.binaryFiles.get("middle/a.pdf");
+  const middleB = h.app.vault.binaryFiles.get("middle/b.pdf");
+  h.app.vault.binaryFiles.delete("middle/a.pdf");
+  h.app.vault.binaryFiles.delete("middle/b.pdf");
+  if (middleA) h.app.vault.binaryFiles.set("final/a.pdf", middleA);
+  if (middleB) h.app.vault.binaryFiles.set("final/b.pdf", middleB);
+  Notice.shown.length = 0;
 
   // #when
   const secondRename = h.app.vault.emit("rename", new TFolder("final"), "middle");
   read.resolve();
   await Promise.all([firstRename, secondRename]);
-  h.plugin.exporter.responses.push(encoder.encode("A-final"), encoder.encode("B-final"));
-  await h.app.vault.emit("modify", new TFile("final/a.typ"));
-  await h.app.vault.emit("modify", new TFile("final/b.typ"));
   await settleUntil(() => bytes(h.app, "final/a.pdf") === "A-final" && bytes(h.app, "final/b.pdf") === "B-final");
 
   // #then
@@ -1480,6 +1598,10 @@ test("two rapid folder renames keep every opted-in source on the final prefix", 
           h.feature.automaticPdfEnabled?.("middle/b.typ"),
         ],
         finalBytes: [bytes(h.app, "final/a.pdf"), bytes(h.app, "final/b.pdf")],
+        firstMiddleReadBlocked,
+        requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+        confirmations: h.plugin.confirmations.length,
+        notices: Notice.shown.length,
         oldWritePaths: h.app.vault.binaryWrites
           .map((write) => write.path)
           .filter((path) => path.startsWith("old/") || path.startsWith("middle/")),
@@ -1488,6 +1610,15 @@ test("two rapid folder renames keep every opted-in source on the final prefix", 
         enabled: [true, true],
         intermediateEnabled: [false, false],
         finalBytes: ["A-final", "B-final"],
+        firstMiddleReadBlocked: true,
+        requests: [
+          join(h.root, "old/a.typ"),
+          join(h.root, "old/b.typ"),
+          join(h.root, "final/a.typ"),
+          join(h.root, "final/b.typ"),
+        ],
+        confirmations: 0,
+        notices: 0,
         oldWritePaths: ["old/a.pdf", "old/b.pdf"],
       },
     );
