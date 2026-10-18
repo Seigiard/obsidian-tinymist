@@ -2108,3 +2108,167 @@ test("saving PDF opt-in preserves unrelated settings and does not restart the pr
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a superseded rename decline cannot authorize an equal-byte foreign PDF after a folder move", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old/a.typ");
+  const read = deferred<void>();
+  let renaming: Promise<void> | null = null;
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-foreign-overwritten"));
+  try {
+    await setEnabled(h, source.path, true);
+    h.app.vault.binaryFiles.set("taken/a.pdf", encoder.encode("PDF-owned"));
+    h.plugin.confirmationResults.push(false, false);
+    h.app.vault.binaryReadBarriers.push(read.promise);
+    h.app.vault.files.delete("old/a.typ");
+    h.app.vault.files.set("taken/a.typ", "= Taken\n");
+    source.path = "taken/a.typ";
+    renaming = h.app.vault.emit("rename", source, "old/a.typ");
+    const oldReadReached = await settleUntil(() => h.app.vault.binaryReadStarted.includes("old/a.pdf"));
+    h.app.vault.files.set("taken/a.typ", "= Latest taken\n");
+    await h.app.vault.emit("modify", source);
+    const takenDeclined = await settleUntil(() => h.plugin.confirmations.length === 1);
+    h.app.vault.files.delete("taken/a.typ");
+    h.app.vault.files.set("final/a.typ", "= Final\n");
+    const foreign = h.app.vault.binaryFiles.get("taken/a.pdf");
+    h.app.vault.binaryFiles.delete("taken/a.pdf");
+    if (foreign) h.app.vault.binaryFiles.set("final/a.pdf", foreign);
+
+    // #when
+    await h.app.vault.emit("rename", new TFolder("final"), "taken");
+    const finalDeclined = await settleUntil(() => h.plugin.confirmations.length === 2);
+    const beforeOldReadRelease = {
+      old: bytes(h.app, "old/a.pdf"),
+      final: bytes(h.app, "final/a.pdf"),
+      writes: h.app.vault.binaryWrites.map((write) => write.path),
+      status: h.feature.automaticPdfStatus?.("final/a.typ"),
+    };
+    read.resolve();
+    await renaming;
+
+    // #then
+    assert.deepEqual(
+      {
+        oldReadReached,
+        takenDeclined,
+        finalDeclined,
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        beforeOldReadRelease,
+        afterOldReadRelease: {
+          old: bytes(h.app, "old/a.pdf"),
+          final: bytes(h.app, "final/a.pdf"),
+          writes: h.app.vault.binaryWrites.map((write) => write.path),
+          status: h.feature.automaticPdfStatus?.("final/a.typ"),
+        },
+      },
+      {
+        oldReadReached: true,
+        takenDeclined: true,
+        finalDeclined: true,
+        confirmations: [
+          { path: "taken/a.pdf", bytes: "PDF-owned" },
+          { path: "final/a.pdf", bytes: "PDF-owned" },
+        ],
+        beforeOldReadRelease: {
+          old: "PDF-owned",
+          final: "PDF-owned",
+          writes: ["old/a.pdf"],
+          status: "conflict",
+        },
+        afterOldReadRelease: {
+          old: "PDF-owned",
+          final: "PDF-owned",
+          writes: ["old/a.pdf"],
+          status: "conflict",
+        },
+      },
+    );
+  } finally {
+    read.resolve();
+    await renaming;
+    h.close();
+  }
+});
+
+test("an unanswered old-path replacement cannot authorize a foreign PDF after a folder move", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old/a.typ");
+  const read = deferred<void>();
+  const oldPermission = deferred<boolean>();
+  let renaming: Promise<void> | null = null;
+  let folderMove: Promise<void> | null = null;
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-foreign-overwritten"));
+  try {
+    await setEnabled(h, source.path, true);
+    h.app.vault.binaryFiles.set("taken/a.pdf", encoder.encode("PDF-owned"));
+    h.plugin.confirmationResults.push(oldPermission.promise, false);
+    h.app.vault.binaryReadBarriers.push(read.promise);
+    h.app.vault.files.delete("old/a.typ");
+    h.app.vault.files.set("taken/a.typ", "= Taken\n");
+    source.path = "taken/a.typ";
+    renaming = h.app.vault.emit("rename", source, "old/a.typ");
+    const oldReadReached = await settleUntil(() => h.app.vault.binaryReadStarted.includes("old/a.pdf"));
+    h.app.vault.files.set("taken/a.typ", "= Latest taken\n");
+    await h.app.vault.emit("modify", source);
+    const oldPathPrompted = await settleUntil(() => h.plugin.confirmations.length === 1);
+    h.app.vault.files.delete("taken/a.typ");
+    h.app.vault.files.set("final/a.typ", "= Final\n");
+    const foreign = h.app.vault.binaryFiles.get("taken/a.pdf");
+    h.app.vault.binaryFiles.delete("taken/a.pdf");
+    if (foreign) h.app.vault.binaryFiles.set("final/a.pdf", foreign);
+
+    // #when
+    folderMove = h.app.vault.emit("rename", new TFolder("final"), "taken");
+    const finalPathPromptedBeforeOldAcceptance = await settleUntil(() => h.plugin.confirmations.length === 2);
+    oldPermission.resolve(true);
+    read.resolve();
+    await Promise.all([renaming, folderMove]);
+    const finalSettled = await settleUntil(
+      () =>
+        h.feature.automaticPdfStatus?.("final/a.typ") === "conflict" ||
+        h.app.vault.binaryWrites.some((write) => write.path === "final/a.pdf"),
+    );
+
+    // #then
+    assert.deepEqual(
+      {
+        oldReadReached,
+        oldPathPrompted,
+        finalPathPromptedBeforeOldAcceptance,
+        finalSettled,
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        old: bytes(h.app, "old/a.pdf"),
+        final: bytes(h.app, "final/a.pdf"),
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        status: h.feature.automaticPdfStatus?.("final/a.typ"),
+      },
+      {
+        oldReadReached: true,
+        oldPathPrompted: true,
+        finalPathPromptedBeforeOldAcceptance: true,
+        finalSettled: true,
+        confirmations: [
+          { path: "taken/a.pdf", bytes: "PDF-owned" },
+          { path: "final/a.pdf", bytes: "PDF-owned" },
+        ],
+        old: "PDF-owned",
+        final: "PDF-owned",
+        writes: ["old/a.pdf"],
+        status: "conflict",
+      },
+    );
+  } finally {
+    oldPermission.resolve(true);
+    read.resolve();
+    await Promise.all([renaming, folderMove]);
+    h.close();
+  }
+});
