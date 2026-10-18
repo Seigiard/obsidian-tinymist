@@ -15,11 +15,29 @@ const PREVIEW_URL = "http://127.0.0.1:4321";
 class PreviewControlPlugin extends TinymistPlugin {
   readonly setCalls: Array<{ path: string; enabled: boolean }> = [];
   rejectNextSet: Error | null = null;
+  private exportBarrier: Promise<void> | null = null;
+  private releaseExportBarrier: (() => void) | null = null;
 
   createAutomaticPdfExporter(): AutomaticPdfExporter {
     return {
-      exportPdf: async () => new TextEncoder().encode("PDF-test"),
+      exportPdf: async () => {
+        const barrier = this.exportBarrier;
+        if (barrier) await barrier;
+        return new TextEncoder().encode("PDF-test");
+      },
       stop: () => {},
+    };
+  }
+
+  deferExporter(): () => void {
+    this.exportBarrier = new Promise((resolve) => {
+      this.releaseExportBarrier = resolve;
+    });
+    return () => {
+      const release = this.releaseExportBarrier;
+      this.exportBarrier = null;
+      this.releaseExportBarrier = null;
+      release?.();
     };
   }
 
@@ -314,6 +332,53 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
     reopened.unload();
     await editor.onClose();
     h.close();
+  }
+});
+
+test("source menu enable updates the preview checkbox before export completes", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const editor = new TypstView(new WorkspaceLeaf(h.app) as never, h.plugin);
+  await editor.setState({ file: source.path }, { history: false });
+  const view = h.preview(source.path);
+  const menu = new Menu();
+  editor.onPaneMenu(menu as never, "more-options");
+  const menuToggle = menu.items.find((item) => item.title === "Automatic PDF export");
+  assert.ok(menuToggle, "source menu automatic PDF item is present");
+  const releaseExporter = h.plugin.deferExporter();
+  let writeSettled = false;
+  let menuWrite: Promise<void> | null = null;
+
+  // #when
+  try {
+    menuWrite = menuToggle.trigger().then(() => {
+      writeSettled = true;
+    });
+    await settle();
+
+    // #then
+    assert.deepEqual(
+      {
+        enabled: h.plugin.automaticPdfEnabled(source.path),
+        checked: checkbox(view).checked,
+        writeSettled,
+      },
+      { enabled: true, checked: true, writeSettled: false },
+    );
+  } finally {
+    releaseExporter();
+    let writeError: unknown;
+    try {
+      await menuWrite;
+    } catch (error) {
+      writeError = error;
+    }
+    await view.onClose();
+    view.unload();
+    await editor.onClose();
+    h.close();
+    if (writeError) throw writeError;
   }
 });
 
