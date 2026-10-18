@@ -13,6 +13,14 @@ import {
   TFile,
   WorkspaceLeaf,
 } from "obsidian";
+import {
+  AutomaticPdfController,
+  AutomaticPdfReplaceRequest,
+  AutomaticPdfStatus,
+  AutomaticPdfStoredState,
+  NativeAutomaticPdfExporter,
+  AutomaticPdfExporter,
+} from "./automatic-pdf";
 import { HistoryCache } from "./editor/shared/editorKit";
 import { YoloBridge } from "./editor/shared/yoloBridge";
 import { FileEvent, TypstRender } from "./editor/typstRender";
@@ -40,6 +48,7 @@ export default class TinymistPlugin extends Plugin {
   fragments: TypstFragmentRenderer | null = null;
   /** Formula renders for the hover, cached across views. */
   typstRender: TypstRender | null = null;
+  private automaticPdfController: AutomaticPdfController | null = null;
 
   private diagListeners = new Set<(uri: string) => void>();
   private statusBarEl: HTMLElement | null = null;
@@ -56,6 +65,19 @@ export default class TinymistPlugin extends Plugin {
       this.fragments = new TypstFragmentRenderer({ bin: () => this.resolveBinary(), root });
       this.typstRender = new TypstRender(this.fragments, root);
     }
+    this.automaticPdfController = new AutomaticPdfController({
+      vault: this.app.vault,
+      fileManager: this.app.fileManager,
+      root: () => this.vaultBasePath(),
+      onLayoutReady: (callback) => this.app.workspace.onLayoutReady(callback),
+      registerEvent: (event) => this.registerEvent(event),
+      createExporter: () => this.createAutomaticPdfExporter(),
+      confirmReplace: (request) => this.confirmAutomaticPdfReplace(request),
+      persist: (state) => this.persistAutomaticPdfState(state),
+      notice: (message) => new Notice(message, 8000),
+      storedState: () => this.settings.automaticPdf,
+    });
+    this.automaticPdfController.start();
 
     this.registerView(VIEW_TYPE_TYPST, (leaf) => new TypstView(leaf, this));
     this.registerView(
@@ -204,6 +226,8 @@ export default class TinymistPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.automaticPdfController?.dispose();
+    this.automaticPdfController = null;
     this.yolo.destroy();
     this.lsp?.stop();
     this.lsp = null;
@@ -218,10 +242,53 @@ export default class TinymistPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     this.resolvedBinary = undefined;
+    this.automaticPdfController?.configurationChanged();
     // The renderer restarts with the (possibly new) binary at its next render, and live
     // views try again the formulas that failed for want of it.
     this.fragments?.stop();
     this.typstRender?.retryFailed();
+    await this.saveData(this.settings);
+  }
+
+  async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
+    await this.automaticPdfController?.setAutomaticPdf(path, enabled);
+  }
+
+  async rebuildPdf(path: string): Promise<void> {
+    await this.automaticPdfController?.rebuildPdf(path);
+  }
+
+  automaticPdfStatus(path: string): AutomaticPdfStatus {
+    return this.automaticPdfController?.automaticPdfStatus(path) ?? "missing";
+  }
+
+  automaticPdfEnabled(path: string): boolean {
+    return this.automaticPdfController?.automaticPdfEnabled(path) ?? false;
+  }
+
+  /** Factory seam for the controller and for native compatibility checks. */
+  createAutomaticPdfExporter(): AutomaticPdfExporter {
+    const root = this.vaultBasePath();
+    const binary = this.resolveBinary();
+    if (!root || !binary) {
+      return {
+        exportPdf: async () => {
+          throw new Error("Tinymist binary or filesystem vault is unavailable");
+        },
+        stop: () => {},
+      };
+    }
+    return new NativeAutomaticPdfExporter(binary, root, this.lsp?.cloneConfiguration());
+  }
+
+  async confirmAutomaticPdfReplace(request: AutomaticPdfReplaceRequest): Promise<boolean> {
+    return new Promise((resolve) => {
+      new AutomaticPdfConfirmModal(this.app, request, resolve).open();
+    });
+  }
+
+  private async persistAutomaticPdfState(state: AutomaticPdfStoredState): Promise<void> {
+    this.settings.automaticPdf = state;
     await this.saveData(this.settings);
   }
 
@@ -497,6 +564,41 @@ export default class TinymistPlugin extends Plugin {
 
   private setStatusBar(status: LspStatus | "stopped"): void {
     this.statusBarEl?.setText(`Tinymist: ${status}`);
+  }
+}
+
+class AutomaticPdfConfirmModal extends Modal {
+  private answered = false;
+
+  constructor(
+    app: App,
+    private readonly request: AutomaticPdfReplaceRequest,
+    private readonly answer: (accepted: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Replace sibling PDF?");
+    this.contentEl.createEl("p", {
+      text:
+        `The PDF next to ${this.request.sourcePath} already exists or changed outside ` +
+        "Automatic PDF export. Replace it?",
+    });
+    const buttons = this.contentEl.createDiv({ cls: "tym-pdf-confirm-buttons" });
+    buttons.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.finish(false));
+    buttons.createEl("button", { text: "Replace" }).addEventListener("click", () => this.finish(true));
+  }
+
+  onClose(): void {
+    this.finish(false);
+  }
+
+  private finish(accepted: boolean): void {
+    if (this.answered) return;
+    this.answered = true;
+    this.answer(accepted);
+    this.close();
   }
 }
 

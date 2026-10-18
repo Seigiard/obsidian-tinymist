@@ -58,6 +58,20 @@ export interface ExportSvgResult {
   total_pages?: number;
 }
 
+export interface ExportPdfResult {
+  data?: string;
+  path?: string;
+}
+
+/** Settings sent to tinymist. The index permits future compiler settings to be cloned. */
+export interface LspConfiguration {
+  exportPdf: string;
+  formatterMode: string;
+  customizedShowDocument: boolean;
+  typstExtraArgs: string[];
+  [key: string]: unknown;
+}
+
 interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
@@ -84,7 +98,7 @@ export class LspClient {
   serverCapabilities: Record<string, unknown> | null = null;
   /** The file tinymist compiles as main (null: whichever file is focused). */
   mainFile: string | null = null;
-  private configuration = {
+  private configuration: LspConfiguration = {
     exportPdf: "never",
     formatterMode: "typstyle",
     customizedShowDocument: true,
@@ -95,7 +109,22 @@ export class LspClient {
     private binPath: string,
     private rootPath: string,
     private onDiagnostics: (uri: string) => void,
-  ) {}
+    configuration?: LspConfiguration,
+  ) {
+    if (configuration) {
+      this.configuration = {
+        ...configuration,
+        typstExtraArgs: [...configuration.typstExtraArgs],
+      };
+    }
+  }
+
+  cloneConfiguration(): LspConfiguration {
+    return {
+      ...this.configuration,
+      typstExtraArgs: [...this.configuration.typstExtraArgs],
+    };
+  }
 
   diagnostics(uri: string): LspDiagnostic[] {
     return this.diagnosticsByUri.get(uri) ?? [];
@@ -228,6 +257,30 @@ export class LspClient {
     // A configuration change resets tinymist's entry: label completion comes back
     // empty, and every request fails while a main was pinned, until it is set again.
     this.pinMain(this.mainFile);
+  }
+
+  /** Configure only this client's export input; unlike setPreviewSource it never pins a main. */
+  setExportInput(source?: string): void {
+    const retained: string[] = [];
+    const args = this.configuration.typstExtraArgs;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === "--root" && args[i + 1] === this.rootPath) {
+        i++;
+        continue;
+      }
+      if (arg === "--input" && args[i + 1]?.startsWith("preview-source=")) {
+        i++;
+        continue;
+      }
+      retained.push(arg);
+    }
+    if (source) {
+      retained.push("--root", this.rootPath, "--input", `preview-source=${source}`);
+    }
+    if (JSON.stringify(retained) === JSON.stringify(args)) return;
+    this.configuration.typstExtraArgs = retained;
+    this.notify("workspace/didChangeConfiguration", { settings: this.configuration });
   }
 
   /** Pin tinymist's main file (null: follow the focused file again). */
@@ -369,6 +422,15 @@ export class LspClient {
     timeoutMs = 15000,
   ): Promise<ExportSvgResult | null> {
     return this.executeCommand("tinymist.exportSvg", [path, opts, { write: false }], timeoutMs);
+  }
+
+  /** Decode-only native PDF export. Tinymist receives write:false as its third argument. */
+  exportPdf(path: string, timeoutMs = 30000): Promise<ExportPdfResult | null> {
+    return this.executeCommand<ExportPdfResult>(
+      "tinymist.exportPdf",
+      [path, {}, { write: false }],
+      timeoutMs,
+    );
   }
 
   executeCommand<T = unknown>(

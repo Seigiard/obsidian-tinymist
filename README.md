@@ -31,6 +31,7 @@ Tinymist's real compiler and incremental preview.
 | Live reading mode | Rendered math and text constructs, with source revealed when you edit them. |
 | Math and paper hovers | Project-aware formula rendering and previews of content calls such as figures and theorem boxes. |
 | Incremental preview | Tinymist's SVG preview in a side pane, including unsaved changes. |
+| Automatic sibling PDF | Opt in per `.typ` file to build a same-stem PDF beside it after saved changes, with confirmation before replacing existing or externally changed bytes. |
 | Source navigation | Move the editor cursor to scroll the preview; click the preview to return to the corresponding source. |
 | Multi-file books | Chapters can use the book main's imports and a project-owned preview template. |
 | Optional YOLO bridge | AI ghost text in `.typ` files using your separately configured YOLO plugin; off by default. |
@@ -45,6 +46,9 @@ Tinymist's real compiler and incremental preview.
 4. Use the editor's preview action or **Typst Live: Open preview**.
 5. Use the book/code action to switch reading modes. Hover over math, or enable
    **Cursor preview** to see the formula around the cursor while typing.
+6. In a Typst pane menu, enable **Automatic PDF export** for a file when you
+   want a sibling PDF. Use **Rebuild PDF** for an explicit rebuild after an
+   imported theme, widget, or image changes.
 
 Try a small document:
 
@@ -146,9 +150,11 @@ installed program that the plugin starts for language intelligence and preview.
 ## Limits
 
 This release has no mobile support, dedicated find-references UI, outline panel,
-or built-in PDF/SVG/PNG export commands. Use Tinymist/Typst's own tools for
-exports. AI completion is optional and depends on the installed YOLO version
-and your model service. See [the roadmap](docs/roadmap.md) for work in progress.
+or general PDF/SVG/PNG export commands. Automatic PDF export is an opt-in
+same-stem build for saved `.typ` files; it does not watch all imported
+dependencies. Use **Rebuild PDF** after dependency-only changes. AI completion
+is optional and depends on the installed YOLO version and your model service.
+See [the roadmap](docs/roadmap.md) for work in progress.
 
 ## Feedback and contributions
 
