@@ -343,6 +343,199 @@ test("replacement consent is bound to the observed destination bytes", async () 
   }
 });
 
+test("accepted initial replacement authorizes the latest coalesced save for unchanged destination bytes", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const firstExport = deferred<Uint8Array>();
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external-A"));
+  h.plugin.exporter.responses.push(firstExport.promise, encoder.encode("PDF-latest"));
+  h.plugin.confirmationResults.push(true);
+  const enabling = h.feature.setAutomaticPdf?.(source.path, true) ?? Promise.resolve();
+  await settleUntil(() => h.plugin.confirmations.length === 1 && h.plugin.exporter.requests.length === 1);
+
+  // #when
+  h.app.vault.files.set(source.path, "= Latest source\n");
+  await h.app.vault.emit("modify", source);
+  firstExport.resolve(encoder.encode("PDF-superseded"));
+  await settleUntil(() => bytes(h.app, "chapter.pdf") === "PDF-latest");
+  await enabling;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        writes: h.app.vault.binaryWrites.map((write) => ({
+          path: write.path,
+          bytes: new TextDecoder().decode(write.data),
+        })),
+        finalBytes: bytes(h.app, "chapter.pdf"),
+        status: h.feature.automaticPdfStatus?.(source.path),
+      },
+      {
+        confirmations: [{ path: "chapter.pdf", bytes: "PDF-external-A" }],
+        writes: [{ path: "chapter.pdf", bytes: "PDF-latest" }],
+        finalBytes: "PDF-latest",
+        status: "current",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("accepted final recheck authorizes a save that supersedes its pending confirmation", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const firstExport = deferred<Uint8Array>();
+  const permission = deferred<boolean>();
+  h.plugin.exporter.responses.push(firstExport.promise, encoder.encode("PDF-latest"));
+  h.plugin.confirmationResults.push(permission.promise);
+  const enabling = h.feature.setAutomaticPdf?.(source.path, true) ?? Promise.resolve();
+  await settleUntil(() => h.plugin.exporter.requests.length === 1);
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external-B"));
+  firstExport.resolve(encoder.encode("PDF-superseded"));
+  await settleUntil(() => h.plugin.confirmations.length === 1);
+
+  // #when
+  h.app.vault.files.set(source.path, "= Latest source\n");
+  await h.app.vault.emit("modify", source);
+  permission.resolve(true);
+  await settleUntil(() => bytes(h.app, "chapter.pdf") === "PDF-latest");
+  await enabling;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        writes: h.app.vault.binaryWrites.map((write) => ({
+          path: write.path,
+          bytes: new TextDecoder().decode(write.data),
+        })),
+        finalBytes: bytes(h.app, "chapter.pdf"),
+        status: h.feature.automaticPdfStatus?.(source.path),
+      },
+      {
+        confirmations: [{ path: "chapter.pdf", bytes: "PDF-external-B" }],
+        writes: [{ path: "chapter.pdf", bytes: "PDF-latest" }],
+        finalBytes: "PDF-latest",
+        status: "current",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("accepted rename-collision replacement authorizes a newer save before its export starts", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  const renamedExport = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), renamedExport.promise, encoder.encode("PDF-latest"));
+  await setEnabled(h, source.path, true);
+  h.app.vault.binaryFiles.set("taken.pdf", encoder.encode("PDF-external"));
+  h.plugin.confirmationResults.push(true);
+  h.app.vault.files.delete("old.typ");
+  h.app.vault.files.set("taken.typ", "= Renamed\n");
+  source.path = "taken.typ";
+  await h.app.vault.emit("rename", source, "old.typ");
+  await settleUntil(() => h.plugin.confirmations.length === 1 && h.plugin.exporter.requests.length === 2);
+
+  // #when
+  h.app.vault.files.set(source.path, "= Latest renamed source\n");
+  await h.app.vault.emit("modify", source);
+  renamedExport.resolve(encoder.encode("PDF-superseded"));
+  await settleUntil(() => bytes(h.app, "taken.pdf") === "PDF-latest");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        oldBytes: bytes(h.app, "old.pdf"),
+        newBytes: bytes(h.app, "taken.pdf"),
+        writes: h.app.vault.binaryWrites.map((write) => ({
+          path: write.path,
+          bytes: new TextDecoder().decode(write.data),
+        })),
+        status: h.feature.automaticPdfStatus?.(source.path),
+      },
+      {
+        confirmations: [{ path: "taken.pdf", bytes: "PDF-external" }],
+        oldBytes: "PDF-owned",
+        newBytes: "PDF-latest",
+        writes: [
+          { path: "old.pdf", bytes: "PDF-owned" },
+          { path: "taken.pdf", bytes: "PDF-latest" },
+        ],
+        status: "current",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("changed destination bytes require a new replacement decision after an accepted stale export", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const firstExport = deferred<Uint8Array>();
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external-A"));
+  h.plugin.exporter.responses.push(firstExport.promise, encoder.encode("PDF-latest"));
+  h.plugin.confirmationResults.push(true, true);
+  const enabling = h.feature.setAutomaticPdf?.(source.path, true) ?? Promise.resolve();
+  await settleUntil(() => h.plugin.confirmations.length === 1 && h.plugin.exporter.requests.length === 1);
+
+  // #when
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-external-B"));
+  h.app.vault.files.set(source.path, "= Latest source\n");
+  await h.app.vault.emit("modify", source);
+  firstExport.resolve(encoder.encode("PDF-superseded"));
+  await settleUntil(() => bytes(h.app, "chapter.pdf") === "PDF-latest");
+  await enabling;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        writes: h.app.vault.binaryWrites.map((write) => ({
+          path: write.path,
+          bytes: new TextDecoder().decode(write.data),
+        })),
+        finalBytes: bytes(h.app, "chapter.pdf"),
+      },
+      {
+        confirmations: [
+          { path: "chapter.pdf", bytes: "PDF-external-A" },
+          { path: "chapter.pdf", bytes: "PDF-external-B" },
+        ],
+        writes: [{ path: "chapter.pdf", bytes: "PDF-latest" }],
+        finalBytes: "PDF-latest",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("declining replacement preserves a pre-existing PDF", async () => {
   // #given
   const h = await harness();
@@ -370,7 +563,7 @@ test("declining replacement preserves a pre-existing PDF", async () => {
   }
 });
 
-test("disabling while replacement confirmation is open leaves no stale conflict status or notice", async () => {
+test("disabling during replacement confirmation revokes accepted authority before re-enable", async () => {
   // #given
   const h = await harness();
   h.addSource("chapter.typ");
@@ -384,8 +577,9 @@ test("disabling while replacement confirmation is open leaves no stale conflict 
 
   // #when
   await setEnabled(h, "chapter.typ", false);
-  confirmation.resolve(false);
+  confirmation.resolve(true);
   await enabling;
+  await setEnabled(h, "chapter.typ", true);
 
   // #then
   try {
@@ -393,10 +587,11 @@ test("disabling while replacement confirmation is open leaves no stale conflict 
       {
         bytes: bytes(h.app, "chapter.pdf"),
         writes: h.app.vault.binaryWrites.length,
+        confirmations: h.plugin.confirmations.length,
         status: h.feature.automaticPdfStatus?.("chapter.typ"),
         notices: Notice.shown.length,
       },
-      { bytes: "PDF-external", writes: 0, status: "current", notices: 0 },
+      { bytes: "PDF-new", writes: 1, confirmations: 2, status: "current", notices: 0 },
     );
   } finally {
     h.close();
