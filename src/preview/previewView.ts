@@ -67,7 +67,8 @@ export class PreviewView extends ItemView {
   private mountPdfControl(): void {
     const header = this.containerEl.querySelector<HTMLElement>(".view-header");
     if (!header) return;
-    const host = header.querySelector<HTMLElement>(".view-actions") ?? header;
+    const actions = header.querySelector<HTMLElement>(".view-actions");
+    const host = actions ?? header;
     const label = document.createElement("label");
     label.className = "tym-preview-pdf-control";
     const input = document.createElement("input");
@@ -76,7 +77,9 @@ export class PreviewView extends ItemView {
     this.pdfChangeHandler = () => this.changePdfSetting(input);
     input.addEventListener("change", this.pdfChangeHandler);
     label.append(input, document.createTextNode("Automatic PDF export"));
-    host.append(label);
+    const finalNativeAction = actions?.lastElementChild;
+    if (finalNativeAction) actions.insertBefore(label, finalNativeAction);
+    else host.append(label);
     this.pdfControl = input;
     this.pdfControlLabel = label;
     this.syncPdfControl();
