@@ -1510,6 +1510,7 @@ test("a disabled source asks before a manually rebuilt foreign PDF follows a fol
   await h.app.vault.emit("rename", new TFolder("final"), "taken");
   const quiet = {
     confirmations: h.plugin.confirmations.length,
+    notices: Notice.shown.length,
     requests: h.plugin.exporter.requests.map((request) => request.entryPath),
     writes: h.app.vault.binaryWrites.map((write) => write.path),
   };
@@ -1534,6 +1535,7 @@ test("a disabled source asks before a manually rebuilt foreign PDF follows a fol
       {
         quiet: {
           confirmations: 0,
+          notices: 0,
           requests: [join(h.root, "old/a.typ")],
           writes: ["old/a.pdf"],
         },
@@ -1542,7 +1544,7 @@ test("a disabled source asks before a manually rebuilt foreign PDF follows a fol
         writes: ["old/a.pdf"],
         enabled: false,
         status: "conflict",
-        notices: 0,
+        notices: 1,
       },
     );
   } finally {
