@@ -385,6 +385,10 @@ export class AutomaticPdfController {
     const oldDestinationPath = pdfPath(oldSourcePath);
     const newDestinationPath = pdfPath(newSourcePath);
     if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
+    // Obsidian can dispatch the rename before its descendant index catches up
+    // with the already-moved bytes. Let that synchronous dispatch settle before
+    // taking either destination snapshot; this is not a timing-based retry.
+    await Promise.resolve();
     const oldDestination = await this.readDestination(oldDestinationPath);
     if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
     const newDestination = await this.readDestination(newDestinationPath);
