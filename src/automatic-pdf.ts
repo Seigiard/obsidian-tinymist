@@ -69,6 +69,10 @@ interface Entry extends AutomaticPdfStoredEntry {
   authorizationEpoch: number;
   authorizedPath?: string;
   authorizedHash?: string;
+  pendingMove?: {
+    destinationPath: string;
+    hash: string;
+  };
 }
 
 interface PendingJob {
@@ -327,6 +331,10 @@ export class AutomaticPdfController {
       this.dropPending(oldSourcePath);
       entry.generation++;
       this.revokeAuthorization(entry);
+      entry.pendingMove =
+        entry.ownedPath !== undefined && entry.ownedHash !== undefined
+          ? { destinationPath: pdfPath(newSourcePath), hash: entry.ownedHash }
+          : undefined;
       entry.destinationPath = pdfPath(newSourcePath);
       this.entries.set(newSourcePath, entry);
       operations.push({ entry, oldSourcePath, newSourcePath, generation: entry.generation });
@@ -366,6 +374,10 @@ export class AutomaticPdfController {
     this.dropPending(oldPath);
     entry.generation++;
     this.revokeAuthorization(entry);
+    entry.pendingMove =
+      entry.ownedPath !== undefined && entry.ownedHash !== undefined
+        ? { destinationPath: pdfPath(newPath), hash: entry.ownedHash }
+        : undefined;
     entry.destinationPath = pdfPath(newPath);
     this.entries.set(newPath, entry);
     const generation = entry.generation;
@@ -414,11 +426,13 @@ export class AutomaticPdfController {
           await this.host.fileManager.renameFile(file, newDestinationPath);
           entry.destinationPath = newDestinationPath;
           entry.ownedPath = newDestinationPath;
+          entry.pendingMove = undefined;
           return true;
         } catch (error) {
           if (notifyMoveFailure) {
             this.host.notice(`Automatic PDF export could not move ${oldDestinationPath}: ${String(error)}`);
           }
+          entry.pendingMove = undefined;
           return true;
         }
       }
@@ -427,15 +441,21 @@ export class AutomaticPdfController {
     if (
       !oldDestination.exists &&
       newDestination.exists &&
-      entry.ownedPath === oldDestinationPath &&
-      newDestination.hash === entry.ownedHash
+      entry.pendingMove?.destinationPath === newDestinationPath &&
+      newDestination.hash === entry.pendingMove.hash
     ) {
       entry.destinationPath = newDestinationPath;
       entry.ownedPath = newDestinationPath;
+      entry.pendingMove = undefined;
       return true;
     }
 
     if (newDestination.exists) {
+      if (!entry.enabled) {
+        entry.pendingMove = undefined;
+        entry.destinationPath = newDestinationPath;
+        return false;
+      }
       const authorizationEpoch = entry.authorizationEpoch;
       const accepted = await this.confirmReplace({
         sourcePath: newSourcePath,
@@ -445,6 +465,7 @@ export class AutomaticPdfController {
       if (!accepted) {
         if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
         this.rememberDecline(entry, newDestination);
+        entry.pendingMove = undefined;
         this.notifyConflict(entry, newDestinationPath);
         return false;
       }
@@ -457,10 +478,12 @@ export class AutomaticPdfController {
         return false;
       }
       this.rememberAuthorization(entry, reread);
+      entry.pendingMove = undefined;
       entry.destinationPath = newDestinationPath;
       return true;
     }
 
+    entry.pendingMove = undefined;
     entry.destinationPath = newDestinationPath;
     return true;
   }
