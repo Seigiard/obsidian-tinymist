@@ -53,6 +53,7 @@ export default class TinymistPlugin extends Plugin {
   private diagListeners = new Set<(uri: string) => void>();
   private statusBarEl: HTMLElement | null = null;
   private resolvedBinary: string | null | undefined;
+  private readonly automaticPdfListeners = new Set<() => void>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -189,11 +190,17 @@ export default class TinymistPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) =>
-        this.history.rename(oldPath, file.path),
+        {
+          this.history.rename(oldPath, file.path);
+          this.preview.onVaultRename(file.path, oldPath);
+        },
       ),
     );
     this.registerEvent(
-      this.app.vault.on("delete", (file) => this.history.delete(file.path)),
+      this.app.vault.on("delete", (file) => {
+        this.history.delete(file.path);
+        this.preview.onVaultDelete(file.path);
+      }),
     );
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.syncPinnedMain()),
@@ -228,10 +235,12 @@ export default class TinymistPlugin extends Plugin {
   onunload(): void {
     this.automaticPdfController?.dispose();
     this.automaticPdfController = null;
+    this.automaticPdfListeners.clear();
     this.yolo.destroy();
     this.lsp?.stop();
     this.lsp = null;
     this.preview.stop();
+    this.preview.dispose();
     this.fragments?.dispose();
     this.typstRender?.dispose();
   }
@@ -252,6 +261,12 @@ export default class TinymistPlugin extends Plugin {
 
   async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
     await this.automaticPdfController?.setAutomaticPdf(path, enabled);
+    for (const listener of this.automaticPdfListeners) listener();
+  }
+
+  onAutomaticPdfChange(listener: () => void): () => void {
+    this.automaticPdfListeners.add(listener);
+    return () => this.automaticPdfListeners.delete(listener);
   }
 
   async rebuildPdf(path: string): Promise<void> {
@@ -352,6 +367,7 @@ export default class TinymistPlugin extends Plugin {
   }
 
   async startLsp(restart: boolean): Promise<void> {
+    if (restart) this.preview.onLspRestart();
     if (this.lsp) {
       if (!restart && this.lsp.status === "running") return;
       this.lsp.stop();
@@ -381,7 +397,6 @@ export default class TinymistPlugin extends Plugin {
       new Notice("Tinymist: failed to start language server. See console.");
       return;
     }
-    this.preview.onLspRestart();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TYPST)) {
       if (leaf.view instanceof TypstView) leaf.view.reannounce();
     }

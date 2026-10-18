@@ -31,7 +31,7 @@ Tinymist's real compiler and incremental preview.
 | Live reading mode | Rendered math and text constructs, with source revealed when you edit them. |
 | Math and paper hovers | Project-aware formula rendering and previews of content calls such as figures and theorem boxes. |
 | Incremental preview | Tinymist's SVG preview in a side pane, including unsaved changes. |
-| Automatic sibling PDF | Opt in per `.typ` file to build a same-stem PDF beside it after saved changes, with confirmation before replacing existing or externally changed bytes. |
+| Automatic sibling PDF | Opt in per `.typ` file from its source menu or the open preview header to build a same-stem PDF beside it after saved changes, with confirmation before replacing existing or externally changed bytes. |
 | Source navigation | Move the editor cursor to scroll the preview; click the preview to return to the corresponding source. |
 | Multi-file books | Chapters can use the book main's imports and a project-owned preview template. |
 | Optional YOLO bridge | AI ghost text in `.typ` files using your separately configured YOLO plugin; off by default. |
@@ -46,9 +46,9 @@ Tinymist's real compiler and incremental preview.
 4. Use the editor's preview action or **Typst Live: Open preview**.
 5. Use the book/code action to switch reading modes. Hover over math, or enable
    **Cursor preview** to see the formula around the cursor while typing.
-6. In a Typst pane menu, enable **Automatic PDF export** for a file when you
-   want a sibling PDF. Use **Rebuild PDF** for an explicit rebuild after an
-   imported theme, widget, or image changes.
+6. In a Typst pane menu or the open preview header, enable **Automatic PDF export**
+   for the selected file when you want a sibling PDF. Use **Rebuild PDF** for an
+   explicit rebuild after an imported theme, widget, or image changes.
 
 Try a small document:
 

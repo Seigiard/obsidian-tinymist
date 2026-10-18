@@ -44,8 +44,8 @@ Obsidian 前端。把 `.typ` 文件放在笔记旁，使用语言服务编辑，
 4. 点击编辑器的预览按钮，或运行 **Typst Live: Open preview**。
 5. 用书本/代码按钮切换阅读模式。悬停公式查看渲染，也可启用 **Cursor preview**，
    在输入时查看光标附近的公式。
-6. 在 Typst 窗格菜单中为文件开启 **Automatic PDF export**。导入的主题、组件或图片只变更
-   时，使用 **Rebuild PDF** 手动重建。
+6. 在 Typst 窗格菜单或打开的预览标题栏中为当前文件开启 **Automatic PDF export**。
+   导入的主题、组件或图片只变更时，使用 **Rebuild PDF** 手动重建。
 
 可先试一个小文档：
 
