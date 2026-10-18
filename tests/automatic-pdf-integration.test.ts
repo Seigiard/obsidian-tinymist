@@ -860,6 +860,208 @@ test("folder rename recognizes the PDF moved by the Vault and recompiles only in
   }
 });
 
+test("folder rename waits for the Vault index after owned descendants move physically", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/a.typ", "= A\n");
+  h.addSource("old/b.typ", "= B\n");
+  h.plugin.exporter.responses.push(
+    encoder.encode("PDF-owned-A"),
+    encoder.encode("PDF-owned-B"),
+    encoder.encode("PDF-new-A"),
+    encoder.encode("PDF-new-B"),
+  );
+  await setEnabled(h, "old/a.typ", true);
+  await setEnabled(h, "old/b.typ", true);
+  const ownedA = h.app.vault.binaryFiles.get("old/a.pdf");
+  const ownedB = h.app.vault.binaryFiles.get("old/b.pdf");
+  h.app.vault.files.delete("old/a.typ");
+  h.app.vault.files.delete("old/b.typ");
+  h.app.vault.files.set("new/a.typ", "= A\n");
+  h.app.vault.files.set("new/b.typ", "= B\n");
+  h.app.vault.binaryFiles.delete("old/a.pdf");
+  h.app.vault.binaryFiles.delete("old/b.pdf");
+  if (ownedA) h.app.vault.binaryFiles.set("new/a.pdf", ownedA);
+  if (ownedB) h.app.vault.binaryFiles.set("new/b.pdf", ownedB);
+  Notice.shown.length = 0;
+  h.app.vault.beginFolderRenameIndexDelay("old", "new");
+  const oldIndexedPdf = h.app.vault.getAbstractFileByPath("old/a.pdf");
+  const newIndexedPdf = h.app.vault.getAbstractFileByPath("new/a.pdf");
+  let oldReadError: string | null = null;
+  if (oldIndexedPdf instanceof TFile) {
+    try {
+      await h.app.vault.readBinary(oldIndexedPdf);
+    } catch (error) {
+      oldReadError = String(error);
+    }
+  }
+  const newPhysicalBytes = new TextDecoder().decode(
+    new Uint8Array(await h.app.vault.readBinary(new TFile("new/a.pdf"))),
+  );
+
+  // #when
+  const renamed = h.app.vault.dispatchFolderRenameAfterPhysicalMove(new TFolder("new"), "old");
+  const indexAfterDispatch = {
+    old: h.app.vault.getAbstractFileByPath("old/a.pdf")?.path ?? null,
+    next: h.app.vault.getAbstractFileByPath("new/a.pdf")?.path ?? null,
+  };
+  await renamed;
+  const rebuilt = await settleUntil(
+    () => bytes(h.app, "new/a.pdf") === "PDF-new-A" && bytes(h.app, "new/b.pdf") === "PDF-new-B",
+  );
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        delayedIndex: {
+          old: oldIndexedPdf?.path ?? null,
+          next: newIndexedPdf?.path ?? null,
+          oldReadError,
+          newPhysicalBytes,
+        },
+        indexAfterDispatch,
+        rebuilt,
+        requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+        writesAfterRename: h.app.vault.binaryWrites.slice(2).map((write) => ({
+          path: write.path,
+          bytes: new TextDecoder().decode(write.data),
+        })),
+        statuses: [
+          h.feature.automaticPdfStatus?.("new/a.typ"),
+          h.feature.automaticPdfStatus?.("new/b.typ"),
+        ],
+        confirmations: h.plugin.confirmations.length,
+        renames: h.app.fileManager.renames,
+        notices: Notice.shown.length,
+      },
+      {
+        delayedIndex: {
+          old: "old/a.pdf",
+          next: null,
+          oldReadError: "Error: Missing binary file: old/a.pdf",
+          newPhysicalBytes: "PDF-owned-A",
+        },
+        indexAfterDispatch: { old: null, next: "new/a.pdf" },
+        rebuilt: true,
+        requests: [
+          join(h.root, "old/a.typ"),
+          join(h.root, "old/b.typ"),
+          join(h.root, "new/a.typ"),
+          join(h.root, "new/b.typ"),
+        ],
+        writesAfterRename: [
+          { path: "new/a.pdf", bytes: "PDF-new-A" },
+          { path: "new/b.pdf", bytes: "PDF-new-B" },
+        ],
+        statuses: ["current", "current"],
+        confirmations: 0,
+        renames: [],
+        notices: 0,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("folder rename asks before replacing a physically moved foreign PDF after the index settles", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, "old/chapter.typ", true);
+  h.app.vault.files.delete("old/chapter.typ");
+  h.app.vault.files.set("new/chapter.typ", "= Source\n");
+  h.app.vault.binaryFiles.delete("old/chapter.pdf");
+  h.app.vault.binaryFiles.set("new/chapter.pdf", encoder.encode("PDF-foreign"));
+  h.plugin.confirmationResults.push(false);
+  Notice.shown.length = 0;
+  h.app.vault.beginFolderRenameIndexDelay("old", "new");
+
+  // #when
+  await h.app.vault.dispatchFolderRenameAfterPhysicalMove(new TFolder("new"), "old");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        bytes: bytes(h.app, "new/chapter.pdf"),
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        writesAfterRename: h.app.vault.binaryWrites.slice(1).length,
+        requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+        status: h.feature.automaticPdfStatus?.("new/chapter.typ"),
+        notices: Notice.shown.length,
+      },
+      {
+        bytes: "PDF-foreign",
+        confirmations: [{ path: "new/chapter.pdf", bytes: "PDF-foreign" }],
+        writesAfterRename: 0,
+        requests: [join(h.root, "old/chapter.typ")],
+        status: "conflict",
+        notices: 1,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("folder rename keeps a post-settlement binary read error as an error", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("old/chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  await setEnabled(h, "old/chapter.typ", true);
+  const owned = h.app.vault.binaryFiles.get("old/chapter.pdf");
+  h.app.vault.files.delete("old/chapter.typ");
+  h.app.vault.files.set("new/chapter.typ", "= Source\n");
+  h.app.vault.binaryFiles.delete("old/chapter.pdf");
+  if (owned) h.app.vault.binaryFiles.set("new/chapter.pdf", owned);
+  const readBinary = h.app.vault.readBinary.bind(h.app.vault);
+  let newPathReadFaultObserved = false;
+  h.app.vault.readBinary = async (file: TFile): Promise<ArrayBuffer> => {
+    if (file.path === "new/chapter.pdf") {
+      newPathReadFaultObserved = true;
+      throw new Error("EIO: disk read failed");
+    }
+    return readBinary(file);
+  };
+  Notice.shown.length = 0;
+  h.app.vault.beginFolderRenameIndexDelay("old", "new");
+
+  // #when
+  await h.app.vault.dispatchFolderRenameAfterPhysicalMove(new TFolder("new"), "old");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        bytes: bytes(h.app, "new/chapter.pdf"),
+        newPathReadFaultObserved,
+        writesAfterRename: h.app.vault.binaryWrites.slice(1).length,
+        requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+        status: h.feature.automaticPdfStatus?.("new/chapter.typ"),
+        notices: Notice.shown.length,
+      },
+      {
+        bytes: "PDF-owned",
+        newPathReadFaultObserved: true,
+        writesAfterRename: 0,
+        requests: [join(h.root, "old/chapter.typ")],
+        status: "stale",
+        notices: 1,
+      },
+    );
+  } finally {
+    h.app.vault.readBinary = readBinary;
+    h.close();
+  }
+});
+
 test("an externally altered PDF is not moved when its source is renamed", async () => {
   // #given
   const h = await harness();

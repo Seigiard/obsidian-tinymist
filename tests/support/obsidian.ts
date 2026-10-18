@@ -149,6 +149,7 @@ export class TestVault {
   failNextBinaryWrite: Error | null = null;
   adapter: FileSystemAdapter;
   private events = new Map<string, Set<EventCallback>>();
+  private folderRenameIndexDelay: { oldPath: string; newPath: string } | null = null;
 
   constructor(basePath = "/vault") {
     this.adapter = new FileSystemAdapter(basePath, this.files);
@@ -164,11 +165,11 @@ export class TestVault {
 
   async readBinary(file: TFile): Promise<ArrayBuffer> {
     const data = this.binaryFiles.get(file.path);
-    if (!data) throw new Error(`Missing binary file: ${file.path}`);
-    const copy = data.slice();
+    const copy = data?.slice();
     this.binaryReadStarted.push(file.path);
     const barrier = this.binaryReadBarriers.shift();
     if (barrier) await barrier;
+    if (!copy) throw new Error(`Missing binary file: ${file.path}`);
     return copy.buffer;
   }
 
@@ -194,8 +195,10 @@ export class TestVault {
   }
 
   getAbstractFileByPath(path: string): TAbstractFile | null {
-    if (this.files.has(path) || this.binaryFiles.has(path)) return new TFile(path);
-    const prefix = path.endsWith("/") ? path : `${path}/`;
+    const indexedPath = this.indexedPhysicalPath(path);
+    if (!indexedPath) return null;
+    if (this.files.has(indexedPath) || this.binaryFiles.has(indexedPath)) return new TFile(path);
+    const prefix = indexedPath.endsWith("/") ? indexedPath : `${indexedPath}/`;
     for (const candidate of [...this.files.keys(), ...this.binaryFiles.keys()]) {
       if (candidate.startsWith(prefix)) return new TFolder(path);
     }
@@ -216,6 +219,33 @@ export class TestVault {
   async emit(name: string, ...args: unknown[]): Promise<void> {
     const pending = [...(this.events.get(name) ?? [])].map((callback) => callback(...args));
     await Promise.all(pending);
+  }
+
+  beginFolderRenameIndexDelay(oldPath: string, newPath: string): void {
+    this.folderRenameIndexDelay = { oldPath, newPath };
+  }
+
+  dispatchFolderRenameAfterPhysicalMove(file: TFolder, oldPath: string): Promise<void> {
+    const pending = [...(this.events.get("rename") ?? [])].map((callback) => {
+      try {
+        return Promise.resolve(callback(file, oldPath));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    });
+    this.folderRenameIndexDelay = null;
+    return Promise.all(pending).then(() => undefined);
+  }
+
+  private indexedPhysicalPath(path: string): string | null {
+    const delay = this.folderRenameIndexDelay;
+    if (!delay) return path;
+    if (path === delay.newPath || path.startsWith(`${delay.newPath}/`)) return null;
+    if (path === delay.oldPath) return delay.newPath;
+    if (path.startsWith(`${delay.oldPath}/`)) {
+      return `${delay.newPath}/${path.slice(delay.oldPath.length + 1)}`;
+    }
+    return path;
   }
 
   private throwBinaryWriteFailure(): void {
