@@ -651,8 +651,7 @@ export class AutomaticPdfController {
     if (!accepted) {
       if (!this.isCurrent(job, entry)) return null;
       this.rememberDecline(entry, observed);
-      if (entry.enabled || !job.manual) this.notifyConflict(entry, observed.path);
-      else entry.status = "conflict";
+      this.notifyConflict(entry, observed.path);
       await this.persist();
       return null;
     }
