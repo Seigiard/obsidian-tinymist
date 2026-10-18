@@ -133,7 +133,8 @@ export class TypstView extends TextFileView {
     return "sigma";
   }
 
-  onPaneMenu(menu: Menu, _source: string): void {
+  onPaneMenu(menu: Menu, source: string): void {
+    super.onPaneMenu(menu, source);
     const path = this.file?.path;
     if (!path) return;
     const enabled = this.plugin.automaticPdfEnabled?.(path) ?? false;
