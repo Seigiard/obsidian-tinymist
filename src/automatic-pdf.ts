@@ -66,6 +66,7 @@ interface Entry extends AutomaticPdfStoredEntry {
   status: AutomaticPdfStatus;
   generation: number;
   errorNotified: boolean;
+  authorizationEpoch: number;
   authorizedPath?: string;
   authorizedHash?: string;
 }
@@ -159,6 +160,7 @@ export class AutomaticPdfController {
         status: "missing",
         generation: 0,
         errorNotified: false,
+        authorizationEpoch: 0,
       });
     }
   }
@@ -179,7 +181,10 @@ export class AutomaticPdfController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const entry of this.entries.values()) entry.generation++;
+    for (const entry of this.entries.values()) {
+      entry.generation++;
+      this.revokeAuthorization(entry);
+    }
     this.resolvePending();
     this.exporter?.stop();
     this.exporter = null;
@@ -208,12 +213,11 @@ export class AutomaticPdfController {
   async setAutomaticPdf(sourcePath: string, enabled: boolean): Promise<void> {
     if (this.disposed || !sourcePath.endsWith(".typ")) return;
     const entry = this.entry(sourcePath);
+    this.revokeAuthorization(entry);
     entry.enabled = enabled;
     entry.generation++;
     if (!enabled) {
       this.dropPending(sourcePath);
-      entry.authorizedPath = undefined;
-      entry.authorizedHash = undefined;
       entry.declinedPath = undefined;
       entry.declinedHash = undefined;
       entry.status = this.destinationExists(entry.destinationPath ?? pdfPath(sourcePath))
@@ -225,8 +229,6 @@ export class AutomaticPdfController {
 
     entry.declinedPath = undefined;
     entry.declinedHash = undefined;
-    entry.authorizedPath = undefined;
-    entry.authorizedHash = undefined;
     entry.errorNotified = false;
     await this.persist();
     await this.enqueue(sourcePath, false);
@@ -247,6 +249,7 @@ export class AutomaticPdfController {
         status: "missing",
         generation: 0,
         errorNotified: false,
+        authorizationEpoch: 0,
       };
       this.entries.set(sourcePath, entry);
     }
@@ -277,7 +280,10 @@ export class AutomaticPdfController {
     if (!paths.length) return;
     for (const path of paths) {
       const entry = this.entries.get(path);
-      if (entry) entry.generation++;
+      if (entry) {
+        entry.generation++;
+        this.revokeAuthorization(entry);
+      }
       this.dropPending(path);
       this.entries.delete(path);
     }
@@ -294,6 +300,7 @@ export class AutomaticPdfController {
       const entry = this.entries.get(oldPath);
       if (!entry) return;
       entry.generation++;
+      this.revokeAuthorization(entry);
       this.dropPending(oldPath);
       this.entries.delete(oldPath);
       await this.persist();
@@ -319,9 +326,8 @@ export class AutomaticPdfController {
       this.entries.delete(oldSourcePath);
       this.dropPending(oldSourcePath);
       entry.generation++;
+      this.revokeAuthorization(entry);
       entry.destinationPath = pdfPath(newSourcePath);
-      entry.authorizedPath = undefined;
-      entry.authorizedHash = undefined;
       this.entries.set(newSourcePath, entry);
       operations.push({ entry, oldSourcePath, newSourcePath, generation: entry.generation });
     }
@@ -359,9 +365,8 @@ export class AutomaticPdfController {
     this.entries.delete(oldPath);
     this.dropPending(oldPath);
     entry.generation++;
+    this.revokeAuthorization(entry);
     entry.destinationPath = pdfPath(newPath);
-    entry.authorizedPath = undefined;
-    entry.authorizedHash = undefined;
     this.entries.set(newPath, entry);
     const generation = entry.generation;
     const shouldBuild = await this.reconcileMovedPdf(entry, oldPath, newPath, true, generation);
@@ -427,27 +432,27 @@ export class AutomaticPdfController {
     }
 
     if (newDestination.exists) {
+      const authorizationEpoch = entry.authorizationEpoch;
       const accepted = await this.confirmReplace({
         sourcePath: newSourcePath,
         destinationPath: newDestinationPath,
         observedBytes: cloneBytes(newDestination.bytes ?? new Uint8Array()),
       });
-      if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
       if (!accepted) {
+        if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
         this.rememberDecline(entry, newDestination);
         this.notifyConflict(entry, newDestinationPath);
         return false;
       }
+      if (!this.authorizationIsLiveForPath(entry, newSourcePath, authorizationEpoch)) return false;
       const reread = await this.readDestination(newDestinationPath);
-      if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
+      if (!this.authorizationIsLiveForPath(entry, newSourcePath, authorizationEpoch)) return false;
       if (reread.error || !sameSnapshot(newDestination, reread)) {
+        if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
         this.notifyConflict(entry, newDestinationPath);
         return false;
       }
-      entry.authorizedPath = newDestinationPath;
-      entry.authorizedHash = reread.hash ?? undefined;
-      entry.declinedPath = undefined;
-      entry.declinedHash = undefined;
+      this.rememberAuthorization(entry, reread);
       entry.destinationPath = newDestinationPath;
       return true;
     }
@@ -586,6 +591,7 @@ export class AutomaticPdfController {
     observed: DestinationSnapshot,
   ): Promise<DestinationSnapshot | null> {
     if (!this.isCurrent(job, entry)) return null;
+    const authorizationEpoch = entry.authorizationEpoch;
     if (
       !observed.exists ||
       (observed.path === entry.ownedPath && observed.hash === entry.ownedHash)
@@ -604,8 +610,6 @@ export class AutomaticPdfController {
       entry.authorizedPath === observed.path &&
       entry.authorizedHash === observed.hash
     ) {
-      entry.authorizedPath = undefined;
-      entry.authorizedHash = undefined;
       return observed;
     }
     const accepted = await this.confirmReplace({
@@ -613,22 +617,23 @@ export class AutomaticPdfController {
       destinationPath: observed.path,
       observedBytes: cloneBytes(observed.bytes ?? new Uint8Array()),
     });
-    if (!this.isCurrent(job, entry)) return null;
     if (!accepted) {
+      if (!this.isCurrent(job, entry)) return null;
       this.rememberDecline(entry, observed);
       this.notifyConflict(entry, observed.path);
       await this.persist();
       return null;
     }
+    if (!this.authorizationIsLive(job, entry, authorizationEpoch)) return null;
     const current = await this.readDestination(observed.path);
-    if (!this.isCurrent(job, entry)) return null;
+    if (!this.authorizationIsLive(job, entry, authorizationEpoch)) return null;
     if (current.error || !sameSnapshot(observed, current)) {
+      if (!this.isCurrent(job, entry)) return null;
       this.notifyConflict(entry, observed.path);
       return null;
     }
-    entry.declinedPath = undefined;
-    entry.declinedHash = undefined;
-    return current;
+    this.rememberAuthorization(entry, current);
+    return this.isCurrent(job, entry) ? current : null;
   }
 
   private async authorizeFinal(
@@ -637,33 +642,36 @@ export class AutomaticPdfController {
     authorized: DestinationSnapshot,
     current: DestinationSnapshot,
   ): Promise<DestinationSnapshot | null> {
+    if (!this.isCurrent(job, entry)) return null;
     if (sameSnapshot(authorized, current)) return current;
     if (current.error) return null;
     if (!current.exists) {
       this.notifyConflict(entry, current.path);
       return null;
     }
+    const authorizationEpoch = entry.authorizationEpoch;
     const accepted = await this.confirmReplace({
       sourcePath: job.sourcePath,
       destinationPath: current.path,
       observedBytes: cloneBytes(current.bytes ?? new Uint8Array()),
     });
-    if (!this.isCurrent(job, entry)) return null;
     if (!accepted) {
+      if (!this.isCurrent(job, entry)) return null;
       this.rememberDecline(entry, current);
       this.notifyConflict(entry, current.path);
       await this.persist();
       return null;
     }
+    if (!this.authorizationIsLive(job, entry, authorizationEpoch)) return null;
     const reread = await this.readDestination(current.path);
-    if (!this.isCurrent(job, entry)) return null;
+    if (!this.authorizationIsLive(job, entry, authorizationEpoch)) return null;
     if (reread.error || !sameSnapshot(current, reread)) {
+      if (!this.isCurrent(job, entry)) return null;
       this.notifyConflict(entry, current.path);
       return null;
     }
-    entry.declinedPath = undefined;
-    entry.declinedHash = undefined;
-    return reread;
+    this.rememberAuthorization(entry, reread);
+    return this.isCurrent(job, entry) ? reread : null;
   }
 
   private isCurrent(job: PendingJob, entry: Entry): boolean {
@@ -787,6 +795,35 @@ export class AutomaticPdfController {
       this.entries.get(sourcePath) === entry &&
       entry.generation === generation
     );
+  }
+
+  private authorizationIsLive(job: PendingJob, entry: Entry, authorizationEpoch: number): boolean {
+    return this.authorizationIsLiveForPath(entry, job.sourcePath, authorizationEpoch);
+  }
+
+  private authorizationIsLiveForPath(
+    entry: Entry,
+    sourcePath: string,
+    authorizationEpoch: number,
+  ): boolean {
+    return (
+      !this.disposed &&
+      this.entries.get(sourcePath) === entry &&
+      entry.authorizationEpoch === authorizationEpoch
+    );
+  }
+
+  private revokeAuthorization(entry: Entry): void {
+    entry.authorizationEpoch++;
+    entry.authorizedPath = undefined;
+    entry.authorizedHash = undefined;
+  }
+
+  private rememberAuthorization(entry: Entry, observed: DestinationSnapshot): void {
+    entry.authorizedPath = observed.path;
+    entry.authorizedHash = observed.hash ?? undefined;
+    entry.declinedPath = undefined;
+    entry.declinedHash = undefined;
   }
 
   private rememberDecline(entry: Entry, observed: DestinationSnapshot): void {
