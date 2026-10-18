@@ -24,6 +24,7 @@ export class PreviewManager {
   url: string | null = null;
   filePath: string | null = null;
   private taskId: string | null = null;
+  private taskFilePath: string | null = null;
   private handlersRegistered = false;
   private disposed = false;
   private readonly changeListeners = new Set<() => void>();
@@ -57,6 +58,7 @@ export class PreviewManager {
       const { taskId } = (params as { taskId?: string }) ?? {};
       if (taskId && taskId === this.taskId) {
         this.taskId = null;
+        this.taskFilePath = null;
         this.url = null;
         this.filePath = null;
         this.notifyChange();
@@ -72,6 +74,7 @@ export class PreviewManager {
   onLspRestart(): void {
     this.handlersRegistered = false;
     this.taskId = null;
+    this.taskFilePath = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
@@ -108,6 +111,7 @@ export class PreviewManager {
   dispose(): void {
     this.disposed = true;
     this.taskId = null;
+    this.taskFilePath = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
@@ -119,7 +123,7 @@ export class PreviewManager {
     if (!lsp || lsp.status !== "running") {
       throw new Error("language server is not running");
     }
-    if (this.taskId && this.filePath === filePath && this.url) {
+    if (this.taskId && this.taskFilePath === filePath && this.url) {
       return this.url;
     }
     await this.stop();
@@ -163,6 +167,7 @@ export class PreviewManager {
     }
 
     this.taskId = taskId;
+    this.taskFilePath = filePath;
     this.filePath = filePath;
     this.url = `http://127.0.0.1:${port}`;
     this.notifyChange();
@@ -184,6 +189,7 @@ export class PreviewManager {
   async stop(): Promise<void> {
     const taskId = this.taskId;
     this.taskId = null;
+    this.taskFilePath = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
