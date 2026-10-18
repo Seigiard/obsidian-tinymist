@@ -1427,6 +1427,129 @@ test("a rejected identical-byte foreign PDF remains unowned after its source fol
   }
 });
 
+test("a declined file collision still requires consent after its foreign PDF moves with a folder", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old/a.typ");
+  h.plugin.exporter.responses.push(
+    encoder.encode("PDF-owned"),
+    encoder.encode("PDF-file-collision"),
+    encoder.encode("PDF-folder-collision"),
+    encoder.encode("PDF-manual-collision"),
+  );
+  await setEnabled(h, source.path, true);
+  h.app.vault.binaryFiles.set("taken/a.pdf", encoder.encode("PDF-owned"));
+  h.plugin.confirmationResults.push(false, false, false);
+  h.app.vault.files.delete("old/a.typ");
+  h.app.vault.files.set("taken/a.typ", "= Taken\n");
+  source.path = "taken/a.typ";
+  await h.app.vault.emit("rename", source, "old/a.typ");
+  h.app.vault.files.delete("taken/a.typ");
+  h.app.vault.files.set("final/a.typ", "= Final\n");
+  const foreign = h.app.vault.binaryFiles.get("taken/a.pdf");
+  h.app.vault.binaryFiles.delete("taken/a.pdf");
+  if (foreign) h.app.vault.binaryFiles.set("final/a.pdf", foreign);
+
+  // #when
+  await h.app.vault.emit("rename", new TFolder("final"), "taken");
+  const afterFolderMove = h.plugin.confirmations.length;
+  await h.app.vault.emit("modify", new TFile("final/a.typ"));
+  const afterAutosave = h.plugin.confirmations.length;
+  await h.feature.rebuildPdf?.("final/a.typ");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        confirmationCounts: [afterFolderMove, afterAutosave, h.plugin.confirmations.length],
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        bytes: { old: bytes(h.app, "old/a.pdf"), final: bytes(h.app, "final/a.pdf") },
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        status: h.feature.automaticPdfStatus?.("final/a.typ"),
+      },
+      {
+        confirmationCounts: [2, 2, 3],
+        confirmations: [
+          { path: "taken/a.pdf", bytes: "PDF-owned" },
+          { path: "final/a.pdf", bytes: "PDF-owned" },
+          { path: "final/a.pdf", bytes: "PDF-owned" },
+        ],
+        bytes: { old: "PDF-owned", final: "PDF-owned" },
+        writes: ["old/a.pdf"],
+        status: "conflict",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a disabled source asks before a manually rebuilt foreign PDF follows a folder move", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old/a.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-manual-collision"));
+  await setEnabled(h, source.path, true);
+  await setEnabled(h, source.path, false);
+  h.app.vault.binaryFiles.set("taken/a.pdf", encoder.encode("PDF-owned"));
+  h.app.vault.files.delete("old/a.typ");
+  h.app.vault.files.set("taken/a.typ", "= Taken\n");
+  source.path = "taken/a.typ";
+  await h.app.vault.emit("rename", source, "old/a.typ");
+  h.app.vault.files.delete("taken/a.typ");
+  h.app.vault.files.set("final/a.typ", "= Final\n");
+  const foreign = h.app.vault.binaryFiles.get("taken/a.pdf");
+  h.app.vault.binaryFiles.delete("taken/a.pdf");
+  if (foreign) h.app.vault.binaryFiles.set("final/a.pdf", foreign);
+  Notice.shown.length = 0;
+
+  // #when
+  await h.app.vault.emit("rename", new TFolder("final"), "taken");
+  const quiet = {
+    confirmations: h.plugin.confirmations.length,
+    requests: h.plugin.exporter.requests.map((request) => request.entryPath),
+    writes: h.app.vault.binaryWrites.map((write) => write.path),
+  };
+  h.plugin.confirmationResults.push(false);
+  await h.feature.rebuildPdf?.("final/a.typ");
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        quiet,
+        confirmations: h.plugin.confirmations.map((request) => ({
+          path: request.destinationPath,
+          bytes: new TextDecoder().decode(request.observedBytes),
+        })),
+        bytes: { old: bytes(h.app, "old/a.pdf"), final: bytes(h.app, "final/a.pdf") },
+        writes: h.app.vault.binaryWrites.map((write) => write.path),
+        enabled: h.feature.automaticPdfEnabled?.("final/a.typ"),
+        status: h.feature.automaticPdfStatus?.("final/a.typ"),
+        notices: Notice.shown.length,
+      },
+      {
+        quiet: {
+          confirmations: 0,
+          requests: [join(h.root, "old/a.typ")],
+          writes: ["old/a.pdf"],
+        },
+        confirmations: [{ path: "final/a.pdf", bytes: "PDF-owned" }],
+        bytes: { old: "PDF-owned", final: "PDF-owned" },
+        writes: ["old/a.pdf"],
+        enabled: false,
+        status: "conflict",
+        notices: 0,
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("accepting a folder rename collision prompts once and publishes in the final folder", async () => {
   // #given
   const h = await harness();
