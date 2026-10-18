@@ -376,12 +376,7 @@ export class AutomaticPdfController {
     this.dropPending(oldPath);
     entry.generation++;
     this.revokeAuthorization(entry);
-    const oldPdf = pdfPath(oldPath);
-    entry.pendingMove =
-      entry.ownedHash !== undefined &&
-      (entry.ownedPath === oldPdf || entry.pendingMove?.destinationPath === oldPdf)
-        ? { destinationPath: pdfPath(newPath), hash: entry.ownedHash }
-        : undefined;
+    entry.pendingMove = undefined;
     entry.destinationPath = pdfPath(newPath);
     this.entries.set(newPath, entry);
     const generation = entry.generation;
