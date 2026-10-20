@@ -1,4 +1,5 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
+import type { AutomaticPdfStoredState } from "./automatic-pdf";
 import type TinymistPlugin from "./main";
 
 export interface TinymistSettings {
@@ -20,6 +21,8 @@ export interface TinymistSettings {
   cursorPreview: boolean;
   /** The mode newly opened Typst files start in (each tab then keeps its own). */
   editingMode: "source" | "live";
+  /** Per-file automatic PDF opt-ins and last plugin-owned output fingerprints. */
+  automaticPdf?: AutomaticPdfStoredState;
 }
 
 export const DEFAULT_SETTINGS: TinymistSettings = {

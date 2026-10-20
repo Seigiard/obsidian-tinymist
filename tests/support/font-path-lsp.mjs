@@ -30,7 +30,11 @@ function respond(message) {
   }
   if (message.method === "workspace/executeCommand") {
     const command = message.params?.command;
-    const result = command === "tinymist.exportSvg" ? { items: [{ page: 0, data: page }] } : null;
+    const result = command === "tinymist.exportSvg"
+      ? { items: [{ page: 0, data: page }] }
+      : command === "tinymist.exportPdf"
+        ? { data: Buffer.from("%PDF-1.7\nfont configuration fixture\n").toString("base64") }
+        : null;
     send({ jsonrpc: "2.0", id: message.id, result });
   }
 }

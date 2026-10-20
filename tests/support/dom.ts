@@ -42,4 +42,26 @@ if (!dom.window.Element.prototype.scrollIntoView) {
   dom.window.Element.prototype.scrollIntoView = () => {};
 }
 
+const html = dom.window.HTMLElement.prototype as HTMLElement & {
+  addClass(className: string): void;
+  createEl<K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    options?: { cls?: string; text?: string; attr?: Record<string, string> },
+  ): HTMLElementTagNameMap[K];
+};
+html.addClass = function (className: string): void {
+  this.classList.add(className);
+};
+html.createEl = function <K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  options: { cls?: string; text?: string; attr?: Record<string, string> } = {},
+): HTMLElementTagNameMap[K] {
+  const child = document.createElement(tag);
+  if (options.cls) child.className = options.cls;
+  if (options.text !== undefined) child.textContent = options.text;
+  for (const [name, value] of Object.entries(options.attr ?? {})) child.setAttribute(name, value);
+  this.appendChild(child);
+  return child;
+};
+
 export { dom };

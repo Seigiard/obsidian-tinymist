@@ -1,7 +1,7 @@
 import { ChangeSet, EditorState, Extension, Text } from "@codemirror/state";
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { join } from "path";
-import { Notice, Scope, TextFileView, TFile, ViewStateResult, WorkspaceLeaf, setIcon } from "obsidian";
+import { Menu, Notice, Scope, TextFileView, TFile, ViewStateResult, WorkspaceLeaf, setIcon } from "obsidian";
 import { pathToUri, uriToPath } from "../lsp/client";
 import type TinymistPlugin from "../main";
 import {
@@ -131,6 +131,25 @@ export class TypstView extends TextFileView {
 
   getIcon(): string {
     return "sigma";
+  }
+
+  onPaneMenu(menu: Menu, source: string): void {
+    super.onPaneMenu(menu, source);
+    const path = this.file?.path;
+    if (!path) return;
+    const enabled = this.plugin.automaticPdfEnabled?.(path) ?? false;
+    const status = this.plugin.automaticPdfStatus?.(path) ?? "missing";
+    menu.addItem((item) =>
+      item
+        .setTitle("Automatic PDF export")
+        .setChecked(enabled)
+        .onClick(() => this.plugin.setAutomaticPdf?.(path, !enabled)),
+    );
+    menu.addItem((item) =>
+      item.setTitle("Rebuild PDF").onClick(() => this.plugin.rebuildPdf?.(path)),
+    );
+    const label = status[0].toUpperCase() + status.slice(1);
+    menu.addItem((item) => item.setTitle(`PDF: ${label}`).setDisabled(true));
   }
 
   /** The CodeMirror view, for plugin commands. */

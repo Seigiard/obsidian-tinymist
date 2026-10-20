@@ -633,6 +633,11 @@ SOFTWARE.
 }
 
 /* Rename modal */
+.tym-pdf-confirm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2, 8px);
+}
 .tym-rename-input {
   width: 100%;
   font-size: var(--font-ui-medium);
@@ -659,6 +664,33 @@ SOFTWARE.
 .tym-preview-content {
   padding: 0;
   height: 100%;
+}
+.tym-preview-pdf-control {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1, 4px);
+  padding-inline: var(--size-4-1, 4px);
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  line-height: 1.2;
+  cursor: pointer;
+}
+.tym-preview-pdf-control input {
+  margin: 0;
+}
+.tym-preview-pdf-control input:focus-visible {
+  outline: max(2px, 0.08em) solid var(--interactive-accent);
+  outline-offset: 0.25em;
+}
+.tym-preview-pdf-control:has(input:disabled) {
+  cursor: default;
+  opacity: 0.65;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tym-preview-pdf-control:active {
+    transform: scale(0.98);
+  }
 }
 .tym-preview-frame {
   width: 100%;

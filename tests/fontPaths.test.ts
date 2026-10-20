@@ -1,3 +1,4 @@
+import "./support/dom";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import { LspClient } from "../src/lsp/client";
 import { TypstFragmentRenderer } from "../src/lsp/fragmentRenderer";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS, TinymistSettings } from "../src/settings";
+import { testApp } from "./support/obsidian";
 
 interface FontPathLspClientConstructor {
   new (
@@ -53,6 +55,29 @@ const FIRST_RENDERED_SVG =
   '<svg viewBox="0 0 16 16" width="16pt" height="16pt" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M 1 1h 2v 2h -2Z"/></svg>';
 const SECOND_RENDERED_SVG =
   '<svg viewBox="0 0 16 16" width="16pt" height="16pt" xmlns="http://www.w3.org/2000/svg"><path fill="#0d0e0f" d="M 2 2h 3v 3h -3Z"/></svg>';
+
+for (const primaryFonts of [null, ["/fonts/previous"]]) {
+  test(`automatic PDF uses current font settings ${primaryFonts ? "while the primary still has its previous configuration" : "before the primary starts"}`, async () => {
+    await withFakeServer(async (vault, messages) => {
+      const plugin = new TinymistPlugin(testApp(vault) as never, {} as never);
+      plugin.settings = { ...DEFAULT_SETTINGS, binaryPath: LSP_FIXTURE, fontPaths: ["vault fonts/current"] };
+      plugin.lsp = primaryFonts ? new LspClient(LSP_FIXTURE, vault, () => {}, { fontPaths: primaryFonts }) : null;
+      const exporter = plugin.createAutomaticPdfExporter();
+      try {
+        const pdf = await exporter.exportPdf({ entryPath: join(vault, "chapter.typ"), root: vault });
+        assert.equal(Buffer.from(pdf).subarray(0, 8).toString(), "%PDF-1.7");
+        assert.deepEqual(
+          messages("initialize")[0]?.message.params?.initializationOptions?.fontPaths,
+          [join(vault, "vault fonts/current")],
+        );
+        if (plugin.lsp) assert.deepEqual(plugin.lsp.cloneConfiguration().fontPaths, primaryFonts);
+      } finally {
+        exporter.stop();
+        plugin.lsp?.stop();
+      }
+    });
+  });
+}
 
 function renderPage(): string {
   return [
