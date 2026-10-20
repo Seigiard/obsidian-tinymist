@@ -15,6 +15,52 @@ export class Component {
   register(_cb: Callback): void {}
 }
 
+export class FileSystemAdapter {
+  constructor(private basePath: string) {}
+  getBasePath(): string {
+    return this.basePath;
+  }
+}
+
+export class Plugin extends Component {}
+
+export class Modal extends Component {}
+
+export class PluginSettingTab extends Component {
+  containerEl = document.createElement("div");
+  constructor(_app: unknown, _plugin: unknown) {
+    super();
+  }
+}
+
+export class Setting {
+  constructor(_containerEl: HTMLElement) {}
+  setName(_name: string): this { return this; }
+  setDesc(_description: string): this { return this; }
+  setHeading(): this { return this; }
+  addText(_cb: (text: { setPlaceholder(value: string): unknown; setValue(value: string): unknown; onChange(cb: (value: string) => unknown): unknown }) => unknown): this { return this; }
+  addToggle(_cb: (toggle: { setValue(value: boolean): unknown; onChange(cb: (value: boolean) => unknown): unknown }) => unknown): this { return this; }
+  addDropdown(_cb: (dropdown: { addOptions(options: Record<string, string>): unknown; setValue(value: string): unknown; onChange(cb: (value: string) => unknown): unknown }) => unknown): this { return this; }
+}
+
+export class ItemView extends Component {
+  contentEl = document.createElement("div") as HTMLElement & {
+    addClass(className: string): void;
+    createEl(tag: string, options?: { cls?: string }): HTMLElement;
+  };
+  constructor(_leaf: WorkspaceLeaf) {
+    super();
+    this.contentEl.addClass = (className) => this.contentEl.classList.add(className);
+    this.contentEl.createEl = (tag, options) => {
+      const child = document.createElement(tag);
+      if (options?.cls) child.className = options.cls;
+      this.contentEl.appendChild(child);
+      return child;
+    };
+  }
+  async onClose(): Promise<void> {}
+}
+
 export class Scope {
   keys: { modifiers: string[]; key: string | null; func: Callback }[] = [];
   constructor(public parent?: Scope) {}
