@@ -6,6 +6,11 @@ export interface LspPosition {
   character: number;
 }
 
+export interface LspClientOptions {
+  /** Absolute paths sent to Tinymist's native compiler configuration. */
+  fontPaths?: readonly string[];
+}
+
 export interface LspRange {
   start: LspPosition;
   end: LspPosition;
@@ -64,7 +69,7 @@ export interface ExportPdfResult {
 }
 
 /** Settings sent to tinymist. The index permits future compiler settings to be cloned. */
-export interface LspConfiguration {
+export interface LspConfiguration extends LspClientOptions {
   exportPdf: string;
   formatterMode: string;
   customizedShowDocument: boolean;
@@ -102,6 +107,7 @@ export class LspClient {
     exportPdf: "never",
     formatterMode: "typstyle",
     customizedShowDocument: true,
+    fontPaths: [] as readonly string[],
     typstExtraArgs: [] as string[],
   };
 
@@ -109,19 +115,20 @@ export class LspClient {
     private binPath: string,
     private rootPath: string,
     private onDiagnostics: (uri: string) => void,
-    configuration?: LspConfiguration,
+    options: Partial<LspConfiguration> = {},
   ) {
-    if (configuration) {
-      this.configuration = {
-        ...configuration,
-        typstExtraArgs: [...configuration.typstExtraArgs],
-      };
-    }
+    this.configuration = {
+      ...this.configuration,
+      ...options,
+      fontPaths: [...(options.fontPaths ?? [])],
+      typstExtraArgs: [...(options.typstExtraArgs ?? [])],
+    };
   }
 
   cloneConfiguration(): LspConfiguration {
     return {
       ...this.configuration,
+      fontPaths: [...(this.configuration.fontPaths ?? [])],
       typstExtraArgs: [...this.configuration.typstExtraArgs],
     };
   }

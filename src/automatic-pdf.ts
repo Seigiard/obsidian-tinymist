@@ -867,7 +867,7 @@ export class NativeAutomaticPdfExporter implements AutomaticPdfExporter {
   constructor(
     private readonly binaryPath: string,
     private readonly rootPath: string,
-    private readonly configuration?: LspConfiguration,
+    private readonly configuration?: Partial<LspConfiguration>,
   ) {}
 
   exportPdf(request: AutomaticPdfExportRequest): Promise<Uint8Array> {

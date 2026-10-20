@@ -104,6 +104,17 @@ scripts/install-dev.sh /absolute/path/to/vault
 排版由你的模板决定。没有包装模板时直接预览当前文件。包含该章节的 `main.typ`
 可以提供书稿范围的导入和标签。添加或删除模板后，请重新打开预览。
 
+## 项目字体路径
+
+如果项目使用 Vault 中保存的字体，请打开 **设置 → Typst Live → Font paths**。
+每行填写一个字体文件或文件夹。每项可以是绝对路径，也可以是相对于 Vault 根目录的路径。
+相对路径在 Vault 移动后仍便于复用；路径中的空格会保留，空行会忽略。插件会通过 Tinymist
+原生的 `fontPaths` 配置，把这些路径发送给两个 Tinymist 语言服务器进程。
+
+输入时只修改草稿。点击 **Apply and restart language server** 后，插件才会保存路径、重启主服务器，
+在下一次渲染时重启片段渲染器，并清除使用旧路径生成的成功公式渲染结果。已有的 **Restart language server**
+命令也会使用已保存的路径。每次按键都不会重启编译器或清除渲染缓存。
+
 ## 可选 AI 补全
 
 先安装和配置 [YOLO](https://github.com/qiulinfan/obsidian-yolo)，再开启 Typst Live 的

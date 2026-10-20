@@ -112,6 +112,19 @@ Your template owns the styling. Without a wrapper, the selected file is previewe
 directly. A `main.typ` that includes a chapter can supply book-wide labels and
 imports. Reopen the preview after adding or removing a wrapper.
 
+## Project font paths
+
+If a project uses fonts stored in the Vault, open **Settings → Typst Live → Font paths**.
+Enter one font file or folder per line. Each entry may be an absolute path or a path relative
+to the Vault root. Relative paths are portable when the Vault moves; spaces in paths are kept,
+and blank lines are ignored. The paths are sent to both Tinymist language-server processes
+through Tinymist's native `fontPaths` configuration.
+
+Typing changes a draft only. Click **Apply and restart language server** to save the paths,
+restart the main server, restart the fragment renderer on its next render, and clear successful
+formula renders made with the old paths. The existing **Restart language server** command also
+uses the saved paths. No compiler restart or render-cache invalidation happens for each keystroke.
+
 ## Optional AI completion
 
 Install and configure [YOLO](https://github.com/qiulinfan/obsidian-yolo), then

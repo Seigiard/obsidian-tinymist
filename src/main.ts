@@ -32,6 +32,7 @@ import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
 import {
   DEFAULT_SETTINGS,
+  parseFontPaths,
   TinymistSettings,
   TinymistSettingTab,
 } from "./settings";
@@ -53,6 +54,7 @@ export default class TinymistPlugin extends Plugin {
   private diagListeners = new Set<(uri: string) => void>();
   private statusBarEl: HTMLElement | null = null;
   private resolvedBinary: string | null | undefined;
+  private savedFontPaths: readonly string[] | undefined;
   private readonly automaticPdfListeners = new Set<() => void>();
 
   async onload(): Promise<void> {
@@ -63,7 +65,11 @@ export default class TinymistPlugin extends Plugin {
     });
     const root = this.vaultBasePath();
     if (root) {
-      this.fragments = new TypstFragmentRenderer({ bin: () => this.resolveBinary(), root });
+      this.fragments = new TypstFragmentRenderer({
+        bin: () => this.resolveBinary(),
+        root,
+        fontPaths: () => this.resolveFontPaths(root),
+      });
       this.typstRender = new TypstRender(this.fragments, root);
     }
     this.automaticPdfController = new AutomaticPdfController({
@@ -246,17 +252,34 @@ export default class TinymistPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) as Partial<TinymistSettings> | null;
+    const fontPaths = Array.isArray(data?.fontPaths)
+      ? data.fontPaths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
+      : [];
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { fontPaths });
+    this.savedFontPaths = [...fontPaths];
   }
 
-  async saveSettings(): Promise<void> {
+  async saveSettings(forceRenderInvalidation = false): Promise<void> {
+    const fontPaths = this.settings.fontPaths.filter((path) => path.trim() !== "");
+    const fontPathsChanged =
+      this.savedFontPaths === undefined || !samePaths(this.savedFontPaths, fontPaths);
+    this.settings.fontPaths = fontPaths;
+    this.savedFontPaths = [...fontPaths];
     this.resolvedBinary = undefined;
     this.automaticPdfController?.configurationChanged();
     // The renderer restarts with the (possibly new) binary at its next render, and live
     // views try again the formulas that failed for want of it.
     this.fragments?.stop();
-    this.typstRender?.retryFailed();
+    if (fontPathsChanged || forceRenderInvalidation) this.typstRender?.invalidate();
+    else this.typstRender?.retryFailed();
     await this.saveData(this.settings);
+  }
+
+  async applyFontPaths(fontPaths: readonly string[]): Promise<void> {
+    this.settings.fontPaths = parseFontPaths(fontPaths.join("\n"));
+    await this.saveSettings(true);
+    await this.startLsp(true);
   }
 
   async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
@@ -298,7 +321,11 @@ export default class TinymistPlugin extends Plugin {
         stop: () => {},
       };
     }
-    return new NativeAutomaticPdfExporter(binary, root, this.lsp?.cloneConfiguration());
+    return new NativeAutomaticPdfExporter(binary, root, {
+      ...this.lsp?.cloneConfiguration(),
+      // Font Apply can requeue exports before the primary LSP has restarted.
+      fontPaths: this.resolveFontPaths(root),
+    });
   }
 
   async confirmAutomaticPdfReplace(request: AutomaticPdfReplaceRequest): Promise<boolean> {
@@ -366,12 +393,20 @@ export default class TinymistPlugin extends Plugin {
     return this.resolvedBinary;
   }
 
+  resolveFontPaths(root: string | null = this.vaultBasePath()): string[] {
+    if (!root) return [];
+    return this.settings.fontPaths.map((path) =>
+      isAbsolute(path) ? path : join(root, path),
+    );
+  }
+
   onDiagnostics(cb: (uri: string) => void): () => void {
     this.diagListeners.add(cb);
     return () => this.diagListeners.delete(cb);
   }
 
   async startLsp(restart: boolean): Promise<void> {
+    if (restart) this.resolvedBinary = undefined;
     if (restart) this.preview.onLspRestart();
     if (this.lsp) {
       if (!restart && this.lsp.status === "running") return;
@@ -390,9 +425,14 @@ export default class TinymistPlugin extends Plugin {
       );
       return;
     }
-    const lsp = new LspClient(bin, root, (uri) => {
-      for (const cb of this.diagListeners) cb(uri);
-    });
+    const lsp = new LspClient(
+      bin,
+      root,
+      (uri) => {
+        for (const cb of this.diagListeners) cb(uri);
+      },
+      { fontPaths: this.resolveFontPaths(root) },
+    );
     lsp.onStatusChange = (s) => this.setStatusBar(s);
     this.lsp = lsp;
     try {
@@ -585,6 +625,10 @@ export default class TinymistPlugin extends Plugin {
   private setStatusBar(status: LspStatus | "stopped"): void {
     this.statusBarEl?.setText(`Tinymist: ${status}`);
   }
+}
+
+function samePaths(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((path, index) => path === b[index]);
 }
 
 class AutomaticPdfConfirmModal extends Modal {
