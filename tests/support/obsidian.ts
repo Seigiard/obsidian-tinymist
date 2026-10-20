@@ -32,17 +32,29 @@ export class Plugin extends Component {
   registerExtensions(_extensions: string[], _viewType: string): void {}
 }
 
-export class PluginSettingTab {
+export class PluginSettingTab extends Component {
   containerEl = document.createElement("div");
-  constructor(_app: unknown, _plugin: Plugin) {}
+  constructor(_app: unknown, _plugin: Plugin) {
+    super();
+  }
 }
 
-export class Setting {}
-
-export class Modal {
-  constructor(_app: unknown) {}
+export class Modal extends Component {
+  constructor(_app: unknown) {
+    super();
+  }
   open(): void {}
   close(): void {}
+}
+
+export class Setting {
+  constructor(_containerEl: HTMLElement) {}
+  setName(_name: string): this { return this; }
+  setDesc(_description: string): this { return this; }
+  setHeading(): this { return this; }
+  addText(_cb: (text: { setPlaceholder(value: string): unknown; setValue(value: string): unknown; onChange(cb: (value: string) => unknown): unknown }) => unknown): this { return this; }
+  addToggle(_cb: (toggle: { setValue(value: boolean): unknown; onChange(cb: (value: boolean) => unknown): unknown }) => unknown): this { return this; }
+  addDropdown(_cb: (dropdown: { addOptions(options: Record<string, string>): unknown; setValue(value: string): unknown; onChange(cb: (value: string) => unknown): unknown }) => unknown): this { return this; }
 }
 
 export class ItemView extends Component {
