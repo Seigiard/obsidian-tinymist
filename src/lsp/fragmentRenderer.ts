@@ -35,6 +35,8 @@ export interface FragmentRendererOptions {
   bin(): string | null;
   /** The vault root: the workspace, as for the editor's server (root-absolute imports). */
   root: string;
+  /** Absolute font paths, read when a new fragment compiler starts. */
+  fontPaths?(): readonly string[];
   /** Stop the process after this long without a render (5 min). */
   idleMs?: number;
   /** A render that takes longer fails (5 s). */
@@ -200,7 +202,9 @@ export class TypstFragmentRenderer {
     const client = this.client;
     if (client?.status === "running") return Promise.resolve(client);
     if (!this.starting) {
-      const next = new LspClient(bin, this.opts.root, () => {});
+      const next = new LspClient(bin, this.opts.root, () => {}, {
+        fontPaths: this.opts.fontPaths?.() ?? [],
+      });
       this.client = next;
       this.clientBin = bin;
       this.opened.clear();

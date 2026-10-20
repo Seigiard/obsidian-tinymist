@@ -15,22 +15,36 @@ export class Component {
   register(_cb: Callback): void {}
 }
 
-export class FileSystemAdapter {
-  constructor(private basePath: string) {}
-  getBasePath(): string {
-    return this.basePath;
+export class Plugin extends Component {
+  constructor(public app: unknown) {
+    super();
   }
+  async loadData(): Promise<unknown> {
+    return null;
+  }
+  async saveData(_data: unknown): Promise<void> {}
+  addCommand(_command: unknown): void {}
+  addSettingTab(_tab: unknown): void {}
+  addStatusBarItem(): HTMLElement {
+    return document.createElement("div");
+  }
+  registerView(_type: string, _factory: unknown): void {}
+  registerExtensions(_extensions: string[], _viewType: string): void {}
 }
-
-export class Plugin extends Component {}
-
-export class Modal extends Component {}
 
 export class PluginSettingTab extends Component {
   containerEl = document.createElement("div");
-  constructor(_app: unknown, _plugin: unknown) {
+  constructor(_app: unknown, _plugin: Plugin) {
     super();
   }
+}
+
+export class Modal extends Component {
+  constructor(_app: unknown) {
+    super();
+  }
+  open(): void {}
+  close(): void {}
 }
 
 export class Setting {
@@ -52,13 +66,20 @@ export class ItemView extends Component {
     super();
     this.contentEl.addClass = (className) => this.contentEl.classList.add(className);
     this.contentEl.createEl = (tag, options) => {
-      const child = document.createElement(tag);
-      if (options?.cls) child.className = options.cls;
-      this.contentEl.appendChild(child);
-      return child;
+      const el = document.createElement(tag);
+      if (options?.cls) el.className = options.cls;
+      this.contentEl.appendChild(el);
+      return el;
     };
   }
   async onClose(): Promise<void> {}
+}
+
+export class FileSystemAdapter {
+  constructor(private basePath = "") {}
+  getBasePath(): string {
+    return this.basePath;
+  }
 }
 
 export class Scope {
