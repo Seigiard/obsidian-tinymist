@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -125,7 +125,9 @@ test("PATH discovery finds an executable when direct common-location probes are 
     const discovered = plugin.resolveBinary();
 
     // #then
-    assert.equal(discovered, binary);
+    assert.ok(discovered);
+    // where.exe expands a runner's 8.3 TEMP path (RUNNER~1) to its long form.
+    assert.equal(realpathSync.native(discovered), realpathSync.native(binary));
   } finally {
     fs.existsSync = exists;
     if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
