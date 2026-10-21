@@ -2,6 +2,7 @@
 import "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { normalize } from "node:path";
 import { undoDepth } from "@codemirror/commands";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { EditorSelection } from "@codemirror/state";
@@ -271,7 +272,7 @@ test("render hover: the formula under the pointer through the plugin's TypstRend
     const svg = await hoverAt(8);
     assert.ok(svg, "rendered");
     assert.equal(svg.querySelector("path")!.getAttribute("fill"), "currentColor");
-    assert.deepEqual(calls.map((c) => c.dir), ["/vault"]);
+    assert.deepEqual(calls.map((c) => c.dir), [normalize("/vault")]);
     assert.ok(calls[0].source.endsWith("$x^2$\n"));
     settings.hoverRender = false;
     assert.equal(await hoverAt(8), null, "setting off");
@@ -486,7 +487,7 @@ test("editing mode: the setting's default, the view state, the header action and
     view.file = new TFile("sub/a.typ");
     await view.onRename(view.file as never);
     await waitUntil(() => dirs.length === n + 2 && liveWidgets(view.cm!) === 2, "widgets after the move");
-    assert.deepEqual(dirs.slice(n), ["/vault/sub", "/vault/sub"]);
+    assert.deepEqual(dirs.slice(n), [normalize("/vault/sub"), normalize("/vault/sub")]);
   } finally {
     await view.onClose();
     typstRender.dispose();

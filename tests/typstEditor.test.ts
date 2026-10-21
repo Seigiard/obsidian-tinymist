@@ -2,7 +2,7 @@ import "./support/dom";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { currentCompletions, selectedCompletionIndex, startCompletion } from "@codemirror/autocomplete";
 import { toggleComment } from "@codemirror/commands";
@@ -31,7 +31,7 @@ import {
   typstEditorExtensions,
   typstMathSpans,
 } from "../src/editor/typstEditor";
-import { LspClient, canonicalUri } from "../src/lsp/client";
+import { LspClient, canonicalUri, pathToUri } from "../src/lsp/client";
 import { bookMain } from "../src/preview/previewEntry";
 import { press, sleep, waitFor } from "./support/keyMatrix";
 
@@ -774,16 +774,17 @@ test("bookMain: the nearest main.typ that includes the chapter", () => {
 });
 
 test("diagnostic URIs are canonical whatever the server's percent-encoding", () => {
-  assert.equal(canonicalUri("file:///a/L^+(mu).typ"), canonicalUri("file:///a/L%5E+(mu).typ"));
-  assert.equal(canonicalUri("file:///a/joint%26cond.typ"), "file:///a/joint&cond.typ");
+  const prefix = pathToUri(resolve("uri-fixtures"));
+  assert.equal(canonicalUri(prefix + "/L^+(mu).typ"), canonicalUri(prefix + "/L%5E+(mu).typ"));
+  assert.equal(canonicalUri(prefix + "/joint%26cond.typ"), prefix + "/joint&cond.typ");
   assert.equal(canonicalUri("untitled:1"), "untitled:1");
 });
 
 test("styles.css embeds the shared editor.css verbatim", () => {
-  const styles = readFileSync("styles.css", "utf8");
+  const styles = readFileSync("styles.css", "utf8").replace(/\r\n/g, "\n");
   const begin = "/* shared:editor.css begin */\n";
   const start = styles.indexOf(begin) + begin.length;
   const end = styles.indexOf("/* shared:editor.css end */");
   assert.ok(start >= begin.length && end > start, "markers missing");
-  assert.equal(styles.slice(start, end), readFileSync("src/editor/shared/editor.css", "utf8"));
+  assert.equal(styles.slice(start, end), readFileSync("src/editor/shared/editor.css", "utf8").replace(/\r\n/g, "\n"));
 });

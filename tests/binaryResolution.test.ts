@@ -6,6 +6,7 @@ import { test } from "node:test";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { FileSystemAdapter, Notice } from "./support/obsidian";
+import { nodeFixture } from "./support/nodeFixture";
 
 function pluginFor(root: string, binaryPath: string): TinymistPlugin {
   const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin;
@@ -47,24 +48,22 @@ process.stdin.on("data", (chunk) => {
   chmodSync(path, 0o755);
 }
 
-function useWindowsDiscoveryPaths(): () => void {
-  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-  return () => Object.defineProperty(process, "platform", descriptor);
-}
-
-function hideDirectBinaryCandidates(): () => void {
-  const fs = require("fs") as typeof import("fs");
+function withoutFallback(binary: string): () => void {
+  const fs = require("node:fs") as typeof import("node:fs");
+  const cp = require("node:child_process") as typeof import("node:child_process");
   const exists = fs.existsSync;
-  fs.existsSync = () => false;
-  return () => { fs.existsSync = exists; };
+  const spawn = cp.spawnSync;
+  fs.existsSync = (candidate) => String(candidate) === binary && exists(candidate);
+  cp.spawnSync = (() => ({status: 1, stdout: "", stderr: ""})) as typeof cp.spawnSync;
+  return () => { fs.existsSync = exists; cp.spawnSync = spawn; };
 }
 
 test("a restart discovers a configured Tinymist binary that appeared after the initial lookup", async () => {
   const root = mkdtempSync(join(tmpdir(), "tinymist-binary-retry-"));
   const binary = join(root, "tinymist");
   const plugin = pluginFor(root, binary);
-  const restorePlatform = useWindowsDiscoveryPaths();
+  const restoreDiscovery = withoutFallback(binary);
+  const restoreSpawn = nodeFixture(binary);
   try {
     // #given
     await plugin.startLsp(false);
@@ -77,7 +76,8 @@ test("a restart discovers a configured Tinymist binary that appeared after the i
     assert.equal(plugin.lsp?.status, "running");
   } finally {
     plugin.lsp?.stop();
-    restorePlatform();
+    await restoreSpawn();
+    restoreDiscovery();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -105,15 +105,19 @@ test("a configured binary takes precedence and remains cached after its first su
 test("PATH discovery finds an executable when direct common-location probes are unavailable", () => {
   const root = mkdtempSync(join(tmpdir(), "tinymist-binary-path-"));
   const bin = join(root, "bin");
-  const binary = join(bin, "tinymist");
+  const binary = join(bin, process.platform === "win32" ? "tinymist.exe" : "tinymist");
   const plugin = pluginFor(root, "");
   const home = process.env.HOME;
+  const oldPath = process.env.PATH;
   mkdirSync(bin);
   writeFileSync(binary, "#!/bin/sh\nexit 0\n");
   chmodSync(binary, 0o755);
   writeFileSync(join(root, ".profile"), `export PATH="${bin}"\n`);
-  const restoreExists = hideDirectBinaryCandidates();
+  const fs = require("node:fs") as typeof import("node:fs");
+  const exists = fs.existsSync;
+  fs.existsSync = () => false;
   process.env.HOME = root;
+  process.env.PATH = bin + (process.platform === "win32" ? ";" + join(process.env.SystemRoot!, "System32") : ":/usr/bin:/bin");
   try {
     // #given
 
@@ -123,16 +127,18 @@ test("PATH discovery finds an executable when direct common-location probes are 
     // #then
     assert.equal(discovered, binary);
   } finally {
-    restoreExists();
-    process.env.HOME = home;
+    fs.existsSync = exists;
+    if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a missing configured binary leaves language-server restart as a handled failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "tinymist-binary-missing-"));
-  const plugin = pluginFor(root, join(root, "tinymist"));
-  const restorePlatform = useWindowsDiscoveryPaths();
+  const binary = join(root, "tinymist");
+  const plugin = pluginFor(root, binary);
+  const restoreDiscovery = withoutFallback(binary);
   Notice.shown = [];
   try {
     // #given
@@ -144,7 +150,7 @@ test("a missing configured binary leaves language-server restart as a handled fa
     // #then
     assert.deepEqual([plugin.lsp, Notice.shown], [null, [message]]);
   } finally {
-    restorePlatform();
+    restoreDiscovery();
     rmSync(root, { recursive: true, force: true });
   }
 });

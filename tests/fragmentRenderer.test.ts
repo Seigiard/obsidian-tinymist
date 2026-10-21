@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateSync } from "node:zlib";
@@ -14,6 +15,7 @@ import { fragmentSource, readSvg, typstMathAt } from "../src/editor/typstFragmen
 import { FragmentResult, TypstRender, typstPaperAt } from "../src/editor/typstRender";
 import { LspClient, LspDiagnostic, pathToUri } from "../src/lsp/client";
 import { FRAGMENT_DOC, FragmentError, TypstFragmentRenderer } from "../src/lsp/fragmentRenderer";
+import { nodeFixture } from "./support/nodeFixture";
 
 const BIN =
   process.env.TINYMIST_BIN ??
@@ -345,7 +347,7 @@ test("the fragment renderer against a real tinymist", { skip: !BIN && "tinymist 
     renderer.dispose();
     await waitFor(() => pids.every((p) => !alive(p)), 3000).catch(() => {});
     console.debug = debug;
-    rmSync(vault, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
   assert.deepEqual(pids.filter(alive), [], "no tinymist left running");
 });
@@ -356,7 +358,8 @@ test("a binary that cannot start fails a render at once; one that hangs, at the 
   const noexec = join(dir, "noexec");
   writeFileSync(noexec, "#!/bin/sh\n", { mode: 0o644 });
   const hung = join(dir, "hung");
-  writeFileSync(hung, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+  writeFileSync(hung, "setInterval(() => {}, 1000);\n");
+  const restoreSpawn = nodeFixture(hung);
   const errors: unknown[][] = [];
   const error = console.error;
   console.error = (...args: unknown[]) => void errors.push(args);
@@ -364,7 +367,9 @@ test("a binary that cannot start fails a render at once; one that hangs, at the 
   const slow = new TypstFragmentRenderer({ bin: () => hung, root: dir, timeoutMs: 300 });
   try {
     let t0 = Date.now();
-    await assert.rejects(broken.render(dir, "$x$"), /^Error: could not start tinymist: spawn .* EACCES$/);
+    await assert.rejects(broken.render(dir, "$x$"), process.platform === "win32"
+      ? /^Error: could not start tinymist: spawn .* (?:ENOENT|EACCES|EFTYPE)$/
+      : /^Error: could not start tinymist: spawn .* EACCES$/);
     assert.ok(Date.now() - t0 < 2000, `failed after ${Date.now() - t0} ms`);
     assert.equal(broken.pid, null);
     assert.match(String(errors[0]?.[0]), /spawn failed/);
@@ -379,7 +384,8 @@ test("a binary that cannot start fails a render at once; one that hangs, at the 
   } finally {
     broken.dispose();
     slow.dispose();
+    await restoreSpawn();
     console.error = error;
-    rmSync(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });

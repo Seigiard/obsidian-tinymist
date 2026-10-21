@@ -4,10 +4,10 @@
 // (tests/support/obsidian.ts). Pass test file names to run a subset.
 import { build } from "esbuild";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 
-const wanted = process.argv.slice(2).map((f) => f.replace(/^tests\//, ""));
+const wanted = process.argv.slice(2).map((f) => f.replace(/^tests[\\/]/, ""));
 const files = readdirSync("tests")
   .filter((f) => f.endsWith(".test.ts"))
   .filter((f) => !wanted.length || wanted.includes(f));
@@ -26,9 +26,15 @@ await build({
   alias: { obsidian: resolve("tests/support/obsidian.ts") },
   logLevel: "warning",
 });
+const detectedBinary = !process.env.TINYMIST_BIN && (process.env.PATH ?? "").split(delimiter)
+  .map((dir) => join(dir, process.platform === "win32" ? "tinymist.exe" : "tinymist"))
+  .find(existsSync);
 const res = spawnSync(
   process.execPath,
-  ["--test", ...files.map((f) => join(outdir, f.replace(/\.ts$/, ".cjs")))],
-  { stdio: "inherit" },
+  ["--test", "--test-concurrency=1", ...files.map((f) => join(outdir, f.replace(/\.ts$/, ".cjs")))],
+  { stdio: "inherit", env: {
+    ...process.env,
+    ...(detectedBinary ? { TINYMIST_BIN: detectedBinary } : {}),
+  } },
 );
 process.exitCode = res.status ?? 1;

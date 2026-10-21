@@ -2,6 +2,7 @@ import "./support/dom";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { LspClient } from "../src/lsp/client";
@@ -50,8 +51,11 @@ async function exportTitle(
 
 async function waitUntil(predicate: () => boolean, timeout = 3000): Promise<boolean> {
   const deadline = Date.now() + timeout;
-  while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-  return predicate();
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function processIsAlive(pid: number): boolean {
@@ -90,7 +94,7 @@ test("native PDF export returns in-memory bytes and creates no sibling file", { 
     );
   } finally {
     lsp.stop();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });
 
@@ -148,7 +152,7 @@ test("default plugin exporter keeps the primary preview input isolated across wr
     exporter?.stop();
     plugin.lsp = null;
     primary.stop();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });
 
@@ -223,7 +227,7 @@ test("default native exporter reads fresh direct, wrapper, and dependency bytes 
     exporter?.stop();
     plugin.lsp = null;
     primary.stop();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });
 
@@ -306,6 +310,6 @@ test("default native exporter recovers after its active process dies", { skip: !
     if (laterExport) await laterExport;
     plugin.lsp = null;
     primary.stop();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });

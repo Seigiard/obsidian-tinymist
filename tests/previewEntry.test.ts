@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { rm } from "node:fs/promises";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,6 +74,6 @@ test("LSP template preview compiles unsaved source and keeps completion", {
     lsp.setPreviewSource();
   } finally {
     lsp.stop();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });

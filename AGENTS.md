@@ -391,6 +391,13 @@
   after disabling the plugin; open the preview) before reporting success.
   After a YOLO update run
   `YOLO_MAIN=<vault>/.obsidian/plugins/yolo/main.js npm run test:yolo`.
+  That check loads the full Completion Only production bundle with a synthetic
+  host and transport, preserving the actual request/controller path. Keep the
+  structural bridge guard; do not add a release-number allowlist or minifier-name
+  extraction. The fake-controller golden key matrix remains in `npm test`.
+  CI runs native Tinymist tests on Windows, macOS and Linux and the production
+  YOLO contract on Windows and Linux. Its native download resolves the latest
+  stable upstream release and checks the supplied digest; POSIX needs no PowerShell.
 - Installed copies drift from the source: `node scripts/check-install.mjs
   <vault>...` compares a vault's plugin files with this checkout (run
   `npm run build` first).

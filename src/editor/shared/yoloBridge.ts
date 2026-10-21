@@ -8,19 +8,17 @@
 //     enable toggle) through an Obsidian-Editor-shaped shim;
 //   - keeps YOLO's controller in step with what is on screen (clears on non-user doc
 //     changes, while the completion popup is visible, during IME composition);
-//   - accepts the raw candidate text itself (YOLO's accept path escapes `<x>` for Markdown);
+//   - accepts raw candidate text (older YOLO accept paths escape `<x>` for Markdown);
 //   - tells the model the file name with its extension (patches YOLO's title dep);
 //   - fails soft: any exception disables the bridge until refresh().
-// Everything here is YOLO 1.6.9.7 internals; see YOLO_VERIFIED_VERSIONS and
-// `npm run test:yolo` (the contract check against an installed YOLO main.js).
+// The controller contract is checked structurally, independently of release numbers.
+// `npm run test:yolo` exercises the installed production bundle against this bridge.
 import { closeCompletion, completionStatus } from "@codemirror/autocomplete";
 import { Compartment, EditorState, Extension, StateField } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate, keymap } from "@codemirror/view";
 import type { App } from "obsidian";
 import { popupVisible } from "./keyArbiter";
 import type { InlineStatus, InlineSuggestions } from "./keyArbiter";
-
-export const YOLO_VERIFIED_VERSIONS = ["1.6.9.7"];
 
 // ---- The slice of YOLO internals this relies on ---------------------------------
 interface YoloCandidate { text: string; status: string }
@@ -293,9 +291,6 @@ export class YoloBridge {
       this.rejected = plugin;
       this.warnOnce(`YOLO bridge off: ${r}`);
       return null;
-    }
-    if (!YOLO_VERIFIED_VERSIONS.includes(r.version)) {
-      this.warnOnce(`YOLO ${r.version} is untested (verified: ${YOLO_VERIFIED_VERSIONS.join(", ")})`);
     }
     const untitle = patchTitle(r.tab, (ed) => (ed && typeof ed === "object" ? this.titles.get(ed)?.() ?? null : null));
     this.bound = { ...r, untitle };

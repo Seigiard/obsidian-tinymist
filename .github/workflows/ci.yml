@@ -10,12 +10,45 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Latest native Tinymist
+        run: node scripts/ci-tinymist.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: npm test
+  yolo-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: qiulinfan/obsidian-yolo-completion-only
+          path: .ci-yolo
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm ci
+        working-directory: .ci-yolo
+      - run: npm run build
+        working-directory: .ci-yolo
+      - run: npm run test:yolo
+        env:
+          YOLO_MAIN: ${{ github.workspace }}/.ci-yolo/main.js

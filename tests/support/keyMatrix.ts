@@ -1,6 +1,5 @@
-// Key-arbitration harness shared by tests/keyArbiter.test.ts (fake YOLO) and
-// tests/yoloContract.ts (real YOLO slices): a view wired like our editors, real DOM key
-// events, and the golden state x key matrix. Import "./dom" before this module.
+// Golden key-arbitration matrix against fake YOLO. The production-bundle contract
+// also uses the keyboard and waiting helpers below. Import "./dom" first.
 import {
   Completion,
   CompletionContext,

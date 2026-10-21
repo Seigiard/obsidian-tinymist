@@ -25,7 +25,7 @@ import { FRAGMENT_DOC, typstExportError } from "../src/lsp/fragmentRenderer";
 const ROOT = resolve("tests/fixtures");
 const BOOK = join(ROOT, "book");
 const file = (rel: string) => join(BOOK, rel);
-const read = (rel: string) => readFileSync(file(rel), "utf8");
+const read = (rel: string) => readFileSync(file(rel), "utf8").replace(/\r\n/g, "\n");
 
 test("topLevelStatements: multi-line statements are one, nested and quoted ones are not top level", () => {
   const tpl = topLevelStatements(read("template.typ"));

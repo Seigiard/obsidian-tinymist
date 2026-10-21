@@ -12,6 +12,7 @@ import { TypstFragmentRenderer } from "../src/lsp/fragmentRenderer";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS, TinymistSettings } from "../src/settings";
 import { testApp } from "./support/obsidian";
+import { nodeFixture } from "./support/nodeFixture";
 
 interface FontPathLspClientConstructor {
   new (
@@ -111,9 +112,11 @@ async function withFakeServer<T>(run: (vault: string, messages: (method: string)
   const before = process.env.FONT_PATH_LSP_LOG;
   chmodSync(LSP_FIXTURE, 0o755);
   process.env.FONT_PATH_LSP_LOG = log;
+  const restoreSpawn = nodeFixture(LSP_FIXTURE);
   try {
     return await run(dir, (method) => received(log, method));
   } finally {
+    await restoreSpawn();
     if (before === undefined) delete process.env.FONT_PATH_LSP_LOG;
     else process.env.FONT_PATH_LSP_LOG = before;
     rmSync(dir, { recursive: true, force: true });
@@ -175,9 +178,11 @@ process.stdin.on("data", (chunk) => {
   chmodSync(bin, 0o755);
   process.env.FONT_PATH_LSP_LOG = log;
   process.env.FONT_PATH_LSP_STARTS = starts;
+  const restoreSpawn = nodeFixture(bin);
   try {
     return await run(dir, bin, (method) => received(log, method));
   } finally {
+    await restoreSpawn();
     if (beforeLog === undefined) delete process.env.FONT_PATH_LSP_LOG;
     else process.env.FONT_PATH_LSP_LOG = beforeLog;
     if (beforeStarts === undefined) delete process.env.FONT_PATH_LSP_STARTS;

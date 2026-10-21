@@ -7,6 +7,11 @@ import { EditorView, activateHover, closeHoverTooltips, getTooltip, hoverTooltip
 import { CursorPreviewConfig, HoverTarget, cursorPreview, hoverError, renderHover } from "../src/editor/shared/renderHover";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function until(check: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!check() && Date.now() < deadline) await sleep(5);
+  assert.ok(check(), message);
+}
 
 interface Span extends HoverTarget {
   src: string;
@@ -199,7 +204,7 @@ test("renderHover: a slow render shows a spinner at spinnerTime, then its result
   activateHover(view, 1, 1); // the pointer has rested 10 ms: the spinner is due 50 ms from now
   await sleep(25);
   assert.deepEqual(sections(view), []);
-  await sleep(60);
+  await until(() => sections(view).join() === "spinner", "pending render shows its spinner");
   assert.deepEqual(sections(view), ["spinner"]);
   const section = view.dom.querySelector(".lsp-render-hover")!;
   assert.equal(section.getAttribute("aria-busy"), "true");
@@ -232,7 +237,7 @@ test("renderHover: a hover restarted while its render is pending waits for that 
   // 10 ms: the render starts. 30 ms: the language section arrives, an update that makes
   // CodeMirror restart the pending render hover (20 ms later), which asks again.
   pointAt(view, 1);
-  await sleep(80);
+  await until(() => targets >= 2, "CodeMirror restarts the hover after the language section arrives");
   assert.equal(targets, 2, "the hover was asked twice");
   assert.equal(pending.length, 1, "one render");
   assert.deepEqual(sections(view), ["lang"]);
@@ -242,7 +247,7 @@ test("renderHover: a hover restarted while its render is pending waits for that 
   // The same formula hovered again renders again (macros or a compile may have changed it).
   view.dispatch({ effects: closeHoverTooltips });
   pointAt(view, 1);
-  await sleep(20);
+  await until(() => pending.length === 2, "a new hover starts a new render");
   assert.equal(pending.length, 2);
   view.destroy();
 });
@@ -268,7 +273,7 @@ test("renderHover: a slow render that resolves to null or fails removes only its
     errors,
   );
   pointAt(view, 1);
-  await sleep(100);
+  await until(() => sections(view).join() === "spinner,lang", "both pending render and language hover appear");
   assert.deepEqual(sections(view), ["spinner", "lang"]);
   pending[0].resolve(null);
   await sleep(5);
@@ -276,7 +281,7 @@ test("renderHover: a slow render that resolves to null or fails removes only its
 
   view.dispatch({ effects: closeHoverTooltips });
   pointAt(view, 1);
-  await sleep(100);
+  await until(() => sections(view).join() === "spinner,lang", "the next hover has a pending render");
   assert.deepEqual(sections(view), ["spinner", "lang"]);
   pending[1].reject(new Error("renderer died"));
   await sleep(5);
@@ -303,7 +308,7 @@ test("renderHover: a render still pending when the pointer leaves the editor sho
   ]);
   const leave = () => view.dom.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
   pointAt(view, 1);
-  await sleep(30);
+  await until(() => pending.length === 1, "the first hover starts rendering");
   leave();
   await sleep(60);
   assert.deepEqual(sections(view), [], "no spinner");
@@ -314,7 +319,7 @@ test("renderHover: a render still pending when the pointer leaves the editor sho
   // Back over the formula it renders again; leaving closes the spinner, and the render
   // arriving afterwards does not reopen it.
   pointAt(view, 1);
-  await sleep(80);
+  await until(() => sections(view).join() === "spinner", "the returning pointer starts another hover");
   assert.deepEqual(sections(view), ["spinner"]);
   leave();
   assert.deepEqual(sections(view), []);

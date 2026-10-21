@@ -1,5 +1,5 @@
 // YOLO contract check: bundles tests/yoloContract.ts and runs it with node:test against
-// the REAL YOLO controllers sliced (read-only) from YOLO_MAIN. Run after every YOLO update:
+// the complete production plugin bundle (read-only) from YOLO_MAIN. Run after every YOLO update:
 //   YOLO_MAIN=<vault>/.obsidian/plugins/yolo/main.js npm run test:yolo
 // Only main.js is read, never YOLO's data.json. Skips when YOLO_MAIN is unset.
 import { build } from "esbuild";

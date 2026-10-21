@@ -71,7 +71,8 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
   await lsp.start();
 
   /** An editor on `path` whose text is `docWithCursor` (`|` = cursor), opened on the server. */
-  async function open(docWithCursor: string, path = file): Promise<Harness> {
+  async function open(docWithCursor: string, path = file, client = lsp): Promise<Harness> {
+    const lsp = client;
     const cursor = docWithCursor.indexOf("|");
     const doc = docWithCursor.replace("|", "");
     const yolo = fakeYolo({ settings: quietSettings() });
@@ -357,7 +358,11 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
       writeFileSync(a, "= Chapter A <ch-a>\n");
       writeFileSync(join(book, "chapters", "b.typ"), "= Chapter B <ch-b>\n");
       assert.equal(bookMain(a, root), main);
-      const h = await open("= Chapter A <ch-a>\nSee |\n", a);
+      // This independent book scenario owns its compiler; the pin/configuration
+      // transitions below still exercise the same live server throughout.
+      const lsp = new LspClient(BIN!, root, () => {});
+      await lsp.start();
+      const h = await open("= Chapter A <ch-a>\nSee |\n", a, lsp);
       try {
         lsp.pinMain(main);
         await sleep(1000);
@@ -369,8 +374,9 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
         assert.deepEqual(labels(h.view).sort(), ["ch-a", "ch-b"]);
       } finally {
         lsp.setPreviewSource();
-        lsp.pinMain(null);
+        await lsp.executeCommand("tinymist.pinMain", [null]);
         h.close();
+        lsp.stop();
       }
     });
 
@@ -407,6 +413,12 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
     });
 
     await t.test("TypstView: tinymist's per-keystroke errors on the typed line wait for a pause", async () => {
+      // Isolate diagnostic behavior from prior document-close jobs: Tinymist's
+      // asynchronous VFS snapshots may still be settling after another scenario.
+      // This remains a real server with the same per-keystroke UI assertions.
+      const diagListeners = new Set<(uri: string) => void>();
+      const lsp = new LspClient(BIN!, root, (uri) => diagListeners.forEach((cb) => cb(uri)));
+      await lsp.start();
       const name = "diag.typ";
       const text = "= Diagnostics\n\n#nosuchname\n";
       writeFileSync(join(root, name), text);
@@ -466,7 +478,12 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
             assert.deepEqual(elsewhere(shown()), elsewhere(published()));
           }
         }
-        assert.ok(held > 0, "tinymist published errors for the typed line");
+        // Native file watching/compiler scheduling may publish after the last
+        // 150 ms typing interval. Observe that event before testing the hold.
+        if (held === 0) {
+          await waitFor(() => typed(published()).length > 0, 1000);
+          assert.deepEqual(typed(shown()), [], "a newly published typing diagnostic is still held");
+        }
         await waitFor(() => typed(shown()).length > 0, 5000);
         const paused = Date.now() - lastKey;
         assert.ok(paused >= 1400, `shown after a ${paused} ms pause`);
@@ -494,6 +511,7 @@ test("the Typst editor stack against a real tinymist", { skip: !BIN && "tinymist
       } finally {
         await view.onClose();
         yolo.destroy();
+        lsp.stop();
       }
     });
   } finally {

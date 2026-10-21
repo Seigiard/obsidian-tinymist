@@ -1,13 +1,13 @@
 # YOLO AI tab-completion bridge
 
-The plugin can show the [YOLO](https://github.com/Lapis0x0) Obsidian plugin's AI
+The plugin can show the [YOLO Completion Only](https://github.com/qiulinfan/obsidian-yolo-completion-only) plugin's AI
 tab completion (ghost text) inside `.typ` editors. YOLO only wires its tab
 completion into Markdown views, so the shared bridge
 (`src/editor/shared/yoloBridge.ts`, byte-identical in obsidian-latex-live)
 mounts YOLO's rendering into our editor **without YOLO's keymap**, feeds user
 edits into YOLO's own trigger path, and accepts suggestions itself. The keys
-belong to `src/editor/shared/keyArbiter.ts`. The bridge relies on YOLO
-1.6.9.7 internals: it checks their shape before binding and disables itself
+belong to `src/editor/shared/keyArbiter.ts`. The bridge checks the controller
+contract before binding, independently of plugin release numbers, and disables itself
 (one console error) if anything throws.
 
 ## Setup on a new machine
@@ -41,12 +41,15 @@ belong to `src/editor/shared/keyArbiter.ts`. The bridge relies on YOLO
 Triggering uses YOLO's own triggers, delays, cooldown and enable toggle. The
 ghost text is dismissed on any change that is not typing (external file
 change, formatting, rename), on cursor moves, on blur, when an IME
-composition starts, and when switching files. Known limits: YOLO strips a
-candidate's leading whitespace, so `x = 1` + ` + 2` inserts `x = 1+ 2`; one
-suggestion is shared across panes.
+composition starts, and when switching files. Completion Only preserves literal
+TeX and leading whitespace. One suggestion is shared across panes.
 
 After updating YOLO, run the contract check against its new `main.js`
-(only main.js is read, never data.json):
+(only main.js is read, never data.json). This loads the complete production
+plugin with synthetic host modules and a streaming transport, then exercises
+requests, ghost rendering, raw acceptance, debounce, popup priority,
+composition and cancellation. It does not extract minified class names or
+replace the production controllers:
 
 ```sh
 YOLO_MAIN=<vault>/.obsidian/plugins/yolo/main.js npm run test:yolo

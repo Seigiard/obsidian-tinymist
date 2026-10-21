@@ -21,7 +21,7 @@ import { FragmentError } from "../src/lsp/fragmentRenderer";
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const ROOT = resolve("tests/fixtures");
 const CH1 = join(ROOT, "book", "chapters", "ch1.typ");
-const CH1_TEXT = readFileSync(CH1, "utf8");
+const CH1_TEXT = readFileSync(CH1, "utf8").replace(/\r\n/g, "\n");
 
 /**
  * A page like tinymist's for `source`: 1pt wide per character of the formula, the

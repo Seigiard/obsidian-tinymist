@@ -4,3 +4,4 @@ main.js
 .DS_Store
 # Per-user plugin settings written through the dev-install symlink
 data.json
+.ci-yolo/
