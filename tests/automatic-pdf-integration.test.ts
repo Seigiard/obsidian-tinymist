@@ -21,9 +21,21 @@ interface ReplaceRequest {
   observedBytes: Uint8Array;
 }
 
+type AutomaticPdfOutcome = "published" | "conflict" | "failed" | "superseded" | "cancelled" | "busy";
+
+interface AutomaticPdfReceipt {
+  outcome: AutomaticPdfOutcome;
+  generation: number;
+  pdfPath: string;
+  status: "building" | "current" | "error" | "conflict" | "stale" | "missing";
+}
+
 interface AutomaticPdfFacade {
   setAutomaticPdf?: (path: string, enabled: boolean) => Promise<void>;
-  rebuildPdf?: (path: string) => Promise<void>;
+  rebuildPdf?: (
+    path: string,
+    options?: { interactive?: boolean },
+  ) => Promise<AutomaticPdfReceipt>;
   automaticPdfEnabled?: (path: string) => boolean;
   automaticPdfStatus?: (path: string) => "building" | "current" | "error" | "conflict" | "stale" | "missing";
 }
@@ -143,6 +155,25 @@ function bytes(app: TestApp, path: string): string | null {
 
 async function setEnabled(h: Harness, path: string, enabled: boolean): Promise<void> {
   await h.feature.setAutomaticPdf?.(path, enabled);
+}
+
+function rebuildPdf(
+  h: Harness,
+  path: string,
+  options?: { interactive?: boolean },
+): Promise<AutomaticPdfReceipt> {
+  if (!h.feature.rebuildPdf) throw new Error("Automatic PDF rebuild is unavailable");
+  return h.feature.rebuildPdf(path, options);
+}
+
+async function receiptWithin(
+  receipt: Promise<AutomaticPdfReceipt>,
+  timeout = 150,
+): Promise<AutomaticPdfReceipt | "timed out"> {
+  return await Promise.race([
+    receipt,
+    new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), timeout)),
+  ]);
 }
 
 test("opt-in builds immediately, coalesces closed-file saves to the latest result, and disable suppresses output", async () => {
@@ -2269,6 +2300,657 @@ test("an unanswered old-path replacement cannot authorize a foreign PDF after a 
     oldPermission.resolve(true);
     read.resolve();
     await Promise.all([renaming, folderMove]);
+    h.close();
+  }
+});
+
+test("an agent rebuild publishes a missing PDF and returns its receipt", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-agent"));
+  try {
+    // #when
+    const receipt = await rebuildPdf(h, "chapter.typ", { interactive: false });
+
+    // #then
+    assert.deepEqual(
+      { receipt, bytes: bytes(h.app, "chapter.pdf") },
+      {
+        receipt: { outcome: "published", generation: 1, pdfPath: "chapter.pdf", status: "current" },
+        bytes: "PDF-agent",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("an agent rebuild rejects a foreign PDF without consuming a replacement decision", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-agent"));
+  await setEnabled(h, source.path, true);
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+  Notice.shown.length = 0;
+  try {
+    // #when
+    const agent = await rebuildPdf(h, source.path, { interactive: false });
+    const afterAgent = {
+      bytes: bytes(h.app, "chapter.pdf"),
+      confirmations: h.plugin.confirmations.length,
+      requests: h.plugin.exporter.requests.length,
+      notices: Notice.shown.length,
+      receipt: agent,
+    };
+    h.plugin.confirmationResults.push(false);
+    await h.app.vault.emit("modify", source);
+    const automatic = await settleUntil(
+      () =>
+        h.plugin.confirmations.length === 1 &&
+        h.feature.automaticPdfStatus?.(source.path) === "conflict",
+    );
+
+    // #then
+    assert.deepEqual(
+      {
+        afterAgent,
+        automatic: {
+          settled: automatic,
+          confirmations: h.plugin.confirmations.length,
+          status: h.feature.automaticPdfStatus?.(source.path),
+        },
+      },
+      {
+        afterAgent: {
+          bytes: "PDF-foreign",
+          confirmations: 0,
+          requests: 1,
+          notices: 0,
+          receipt: { outcome: "conflict", generation: 3, pdfPath: "chapter.pdf", status: "conflict" },
+        },
+        automatic: { settled: true, confirmations: 1, status: "conflict" },
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("an agent rebuild preserves foreign bytes that arrive during export", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const exported = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(exported.promise);
+  try {
+    const rebuilding = rebuildPdf(h, "chapter.typ", { interactive: false });
+    const exportStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+
+    // #when
+    h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+    exported.resolve(encoder.encode("PDF-agent"));
+    const receipt = await rebuilding;
+
+    // #then
+    assert.deepEqual(
+      {
+        exportStarted,
+        receipt,
+        bytes: bytes(h.app, "chapter.pdf"),
+        confirmations: h.plugin.confirmations.length,
+        writes: h.app.vault.binaryWrites.length,
+      },
+      {
+        exportStarted: true,
+        receipt: { outcome: "conflict", generation: 1, pdfPath: "chapter.pdf", status: "conflict" },
+        bytes: "PDF-foreign",
+        confirmations: 0,
+        writes: 0,
+      },
+    );
+  } finally {
+    exported.resolve(encoder.encode("PDF-agent"));
+    h.close();
+  }
+});
+
+test("an agent rebuild returns failed when the exporter throws", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  h.plugin.exporter.responses.push(new Error("agent compile failed"));
+  try {
+    // #when
+    const receipt = await rebuildPdf(h, "chapter.typ", { interactive: false });
+
+    // #then
+    assert.deepEqual(receipt, {
+      outcome: "failed",
+      generation: 1,
+      pdfPath: "chapter.pdf",
+      status: "error",
+    });
+  } finally {
+    h.close();
+  }
+});
+
+test("an agent rebuild settles as cancelled when the plugin unloads during export", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const exported = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(exported.promise);
+  try {
+    const rebuilding = rebuildPdf(h, "chapter.typ", { interactive: false });
+    const exportStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+
+    // #when
+    h.plugin.onunload();
+    const receipt = await receiptWithin(rebuilding);
+
+    // #then
+    assert.deepEqual(
+      { exportStarted, receipt },
+      {
+        exportStarted: true,
+        receipt: { outcome: "cancelled", generation: 1, pdfPath: "chapter.pdf", status: "building" },
+      },
+    );
+  } finally {
+    exported.resolve(encoder.encode("PDF-agent"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while another source is active", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("a.typ");
+  h.addSource("b.typ");
+  const active = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(active.promise);
+  const automatic = setEnabled(h, "a.typ", true);
+  try {
+    const activeStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+
+    // #when
+    const receipt = await receiptWithin(rebuildPdf(h, "b.typ", { interactive: false }));
+    const whileBusy = {
+      receipt,
+      requests: h.plugin.exporter.requests.length,
+      activeStatus: h.feature.automaticPdfStatus?.("a.typ"),
+      untouchedStatus: h.feature.automaticPdfStatus?.("b.typ"),
+    };
+    active.resolve(encoder.encode("PDF-a"));
+    await automatic;
+    const completed = {
+      bytes: bytes(h.app, "a.pdf"),
+      status: h.feature.automaticPdfStatus?.("a.typ"),
+    };
+
+    // #then
+    assert.deepEqual(
+      { activeStarted, whileBusy, completed },
+      {
+        activeStarted: true,
+        whileBusy: {
+          receipt: { outcome: "busy", generation: 0, pdfPath: "b.pdf", status: "missing" },
+          requests: 1,
+          activeStatus: "building",
+          untouchedStatus: "missing",
+        },
+        completed: { bytes: "PDF-a", status: "current" },
+      },
+    );
+  } finally {
+    active.resolve(encoder.encode("PDF-a"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while another source is pending", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("a.typ");
+  h.addSource("b.typ");
+  h.addSource("c.typ");
+  const active = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(active.promise, encoder.encode("PDF-a"), encoder.encode("PDF-b"));
+  const bAutomatic = setEnabled(h, "b.typ", true);
+  try {
+    const activeStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+    const aAutomatic = setEnabled(h, "a.typ", true);
+    const aPending = await settleUntil(() => h.feature.automaticPdfStatus?.("a.typ") === "building");
+
+    // #when
+    const receipt = await receiptWithin(rebuildPdf(h, "c.typ", { interactive: false }));
+    const whileBusy = {
+      receipt,
+      requests: h.plugin.exporter.requests.length,
+      statuses: [h.feature.automaticPdfStatus?.("a.typ"), h.feature.automaticPdfStatus?.("b.typ")],
+      untouchedStatus: h.feature.automaticPdfStatus?.("c.typ"),
+    };
+    active.resolve(encoder.encode("PDF-b"));
+    await Promise.all([aAutomatic, bAutomatic]);
+    const completed = {
+      a: { bytes: bytes(h.app, "a.pdf"), status: h.feature.automaticPdfStatus?.("a.typ") },
+      b: { bytes: bytes(h.app, "b.pdf"), status: h.feature.automaticPdfStatus?.("b.typ") },
+    };
+
+    // #then
+    assert.deepEqual(
+      { activeStarted, aPending, whileBusy, completed },
+      {
+        activeStarted: true,
+        aPending: true,
+        whileBusy: {
+          receipt: { outcome: "busy", generation: 0, pdfPath: "c.pdf", status: "missing" },
+          requests: 1,
+          statuses: ["building", "building"],
+          untouchedStatus: "missing",
+        },
+        completed: {
+          a: { bytes: "PDF-a", status: "current" },
+          b: { bytes: "PDF-b", status: "current" },
+        },
+      },
+    );
+  } finally {
+    active.resolve(encoder.encode("PDF-b"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while its source is active", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  const active = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), active.promise);
+  try {
+    await setEnabled(h, source.path, true);
+    await h.app.vault.emit("modify", source);
+    const activeStarted = await settleUntil(() => h.plugin.exporter.requests.length === 2);
+
+    // #when
+    const receipt = await receiptWithin(rebuildPdf(h, source.path, { interactive: false }));
+    const whileBusy = {
+      receipt,
+      requests: h.plugin.exporter.requests.length,
+      status: h.feature.automaticPdfStatus?.(source.path),
+    };
+    active.resolve(encoder.encode("PDF-current"));
+    await settleUntil(() => h.feature.automaticPdfStatus?.(source.path) === "current");
+    const completed = {
+      bytes: bytes(h.app, "chapter.pdf"),
+      status: h.feature.automaticPdfStatus?.(source.path),
+    };
+
+    // #then
+    assert.deepEqual(
+      { activeStarted, whileBusy, completed },
+      {
+        activeStarted: true,
+        whileBusy: {
+          receipt: { outcome: "busy", generation: 3, pdfPath: "chapter.pdf", status: "building" },
+          requests: 2,
+          status: "building",
+        },
+        completed: { bytes: "PDF-current", status: "current" },
+      },
+    );
+  } finally {
+    active.resolve(encoder.encode("PDF-current"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while its source is pending", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("a.typ");
+  h.addSource("b.typ");
+  const active = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(active.promise, encoder.encode("PDF-a"), encoder.encode("PDF-b"));
+  const bAutomatic = setEnabled(h, "b.typ", true);
+  try {
+    const activeStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+    const aAutomatic = setEnabled(h, "a.typ", true);
+    const aPending = await settleUntil(() => h.feature.automaticPdfStatus?.("a.typ") === "building");
+
+    // #when
+    const receipt = await receiptWithin(rebuildPdf(h, "a.typ", { interactive: false }));
+    const whileBusy = {
+      receipt,
+      requests: h.plugin.exporter.requests.length,
+      status: h.feature.automaticPdfStatus?.("a.typ"),
+    };
+    active.resolve(encoder.encode("PDF-b"));
+    await Promise.all([aAutomatic, bAutomatic]);
+    const completed = {
+      a: { bytes: bytes(h.app, "a.pdf"), status: h.feature.automaticPdfStatus?.("a.typ") },
+      b: { bytes: bytes(h.app, "b.pdf"), status: h.feature.automaticPdfStatus?.("b.typ") },
+    };
+
+    // #then
+    assert.deepEqual(
+      { activeStarted, aPending, whileBusy, completed },
+      {
+        activeStarted: true,
+        aPending: true,
+        whileBusy: {
+          receipt: { outcome: "busy", generation: 2, pdfPath: "a.pdf", status: "building" },
+          requests: 1,
+          status: "building",
+        },
+        completed: {
+          a: { bytes: "PDF-a", status: "current" },
+          b: { bytes: "PDF-b", status: "current" },
+        },
+      },
+    );
+  } finally {
+    active.resolve(encoder.encode("PDF-b"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while a build-path confirmation is open", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("a.typ");
+  h.addSource("b.typ");
+  h.app.vault.binaryFiles.set("a.pdf", encoder.encode("PDF-foreign"));
+  const permission = deferred<boolean>();
+  h.plugin.confirmationResults.push(permission.promise);
+  Notice.shown.length = 0;
+  const human = rebuildPdf(h, "a.typ");
+  try {
+    const prompted = await settleUntil(() => h.plugin.confirmations.length === 1);
+
+    // #when
+    const receipt = await receiptWithin(rebuildPdf(h, "b.typ", { interactive: false }));
+    const whilePrompted = {
+      receipt,
+      confirmations: h.plugin.confirmations.length,
+      requests: h.plugin.exporter.requests.length,
+      notices: Notice.shown.length,
+    };
+    permission.resolve(true);
+    const humanReceipt = await human;
+    const completed = {
+      bytes: bytes(h.app, "a.pdf"),
+      status: h.feature.automaticPdfStatus?.("a.typ"),
+    };
+
+    // #then
+    assert.deepEqual(
+      { prompted, whilePrompted, humanReceipt, completed },
+      {
+        prompted: true,
+        whilePrompted: {
+          receipt: { outcome: "busy", generation: 0, pdfPath: "b.pdf", status: "missing" },
+          confirmations: 1,
+          requests: 0,
+          notices: 0,
+        },
+        humanReceipt: { outcome: "published", generation: 1, pdfPath: "a.pdf", status: "current" },
+        completed: { bytes: "PDF-default", status: "current" },
+      },
+    );
+  } finally {
+    permission.resolve(true);
+    h.close();
+  }
+});
+
+test("a human rebuild supersedes an active agent rebuild and publishes after one replacement decision", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const agentExport = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), agentExport.promise, encoder.encode("PDF-human"));
+  try {
+    await rebuildPdf(h, "chapter.typ");
+    const agent = rebuildPdf(h, "chapter.typ", { interactive: false });
+    const agentStarted = await settleUntil(() => h.plugin.exporter.requests.length === 2);
+    h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+    const human = rebuildPdf(h, "chapter.typ");
+
+    // #when
+    agentExport.resolve(encoder.encode("PDF-agent"));
+    const agentReceipt = await agent;
+    const prompted = await settleUntil(() => h.plugin.confirmations.length === 1);
+    const humanReceipt = await human;
+
+    // #then
+    assert.deepEqual(
+      {
+        agentStarted,
+        prompted,
+        agentReceipt,
+        humanReceipt,
+        confirmations: h.plugin.confirmations.length,
+        bytes: bytes(h.app, "chapter.pdf"),
+      },
+      {
+        agentStarted: true,
+        prompted: true,
+        agentReceipt: { outcome: "superseded", generation: 2, pdfPath: "chapter.pdf", status: "building" },
+        humanReceipt: { outcome: "published", generation: 3, pdfPath: "chapter.pdf", status: "current" },
+        confirmations: 1,
+        bytes: "PDF-human",
+      },
+    );
+  } finally {
+    agentExport.resolve(encoder.encode("PDF-agent"));
+    h.close();
+  }
+});
+
+test("an automatic rebuild supersedes an active agent rebuild without repeating a remembered decline", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("chapter.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"));
+  try {
+    await setEnabled(h, source.path, true);
+    h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+    h.plugin.confirmationResults.push(false);
+    await h.app.vault.emit("modify", source);
+    const firstDeclined = await settleUntil(
+      () =>
+        h.plugin.confirmations.length === 1 &&
+        h.feature.automaticPdfStatus?.(source.path) === "conflict",
+    );
+    h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-owned"));
+    const agentExport = deferred<Uint8Array>();
+    h.plugin.exporter.responses.push(agentExport.promise);
+    const agent = rebuildPdf(h, source.path, { interactive: false });
+    const agentStarted = await settleUntil(() => h.plugin.exporter.requests.length === 2);
+
+    // #when
+    h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+    await h.app.vault.emit("modify", source);
+    agentExport.resolve(encoder.encode("PDF-agent"));
+    const agentReceipt = await agent;
+    const automaticSettled = await settleUntil(() => h.feature.automaticPdfStatus?.(source.path) === "conflict");
+
+    // #then
+    assert.deepEqual(
+      {
+        agentStarted,
+        firstDeclined,
+        automaticSettled,
+        agentReceipt,
+        confirmations: h.plugin.confirmations.length,
+        bytes: bytes(h.app, "chapter.pdf"),
+      },
+      {
+        agentStarted: true,
+        firstDeclined: true,
+        automaticSettled: true,
+        agentReceipt: { outcome: "superseded", generation: 4, pdfPath: "chapter.pdf", status: "building" },
+        confirmations: 1,
+        bytes: "PDF-foreign",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a default rebuild still asks once before replacing a foreign PDF", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  h.app.vault.binaryFiles.set("chapter.pdf", encoder.encode("PDF-foreign"));
+  h.plugin.exporter.responses.push(encoder.encode("PDF-human"));
+  h.plugin.confirmationResults.push(true);
+  try {
+    // #when
+    const receipt = await rebuildPdf(h, "chapter.typ");
+
+    // #then
+    assert.deepEqual(
+      { receipt, confirmations: h.plugin.confirmations.length, bytes: bytes(h.app, "chapter.pdf") },
+      {
+        receipt: { outcome: "published", generation: 1, pdfPath: "chapter.pdf", status: "current" },
+        confirmations: 1,
+        bytes: "PDF-human",
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("an agent rebuild is busy while a rename-collision confirmation remains open", async () => {
+  // #given
+  const h = await harness();
+  const source = h.addSource("old.typ");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-owned"), encoder.encode("PDF-renamed"));
+  const permission = deferred<boolean>();
+  try {
+    await setEnabled(h, source.path, true);
+    h.app.vault.binaryFiles.set("taken.pdf", encoder.encode("PDF-foreign"));
+    h.plugin.confirmationResults.push(permission.promise);
+    h.app.vault.files.delete("old.typ");
+    h.app.vault.files.set("taken.typ", "= Renamed\n");
+    source.path = "taken.typ";
+    const renaming = h.app.vault.emit("rename", source, "old.typ");
+    const prompted = await settleUntil(() => h.plugin.confirmations.length === 1);
+
+    // #when
+    const agentReceipt = await receiptWithin(rebuildPdf(h, source.path, { interactive: false }));
+    const whilePrompted = {
+      agentReceipt,
+      confirmations: h.plugin.confirmations.length,
+      bytes: bytes(h.app, "taken.pdf"),
+      requests: h.plugin.exporter.requests.length,
+      status: h.feature.automaticPdfStatus?.(source.path),
+    };
+    permission.resolve(true);
+    await renaming;
+    const published = await settleUntil(() => bytes(h.app, "taken.pdf") === "PDF-renamed");
+    const completed = {
+      bytes: bytes(h.app, "taken.pdf"),
+      status: h.feature.automaticPdfStatus?.(source.path),
+    };
+
+    // #then
+    assert.deepEqual(
+      { prompted, whilePrompted, published, completed },
+      {
+        prompted: true,
+        whilePrompted: {
+          agentReceipt: { outcome: "busy", generation: 3, pdfPath: "taken.pdf", status: "current" },
+          confirmations: 1,
+          bytes: "PDF-foreign",
+          requests: 1,
+          status: "current",
+        },
+        published: true,
+        completed: { bytes: "PDF-renamed", status: "current" },
+      },
+    );
+  } finally {
+    permission.resolve(true);
+    h.close();
+  }
+});
+
+test("an agent rebuild is cancelled when settings save advances its manual-only generation", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const exported = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(exported.promise);
+  try {
+    const rebuilding = rebuildPdf(h, "chapter.typ", { interactive: false });
+    const exportStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+
+    // #when
+    await h.plugin.saveSettings();
+    exported.resolve(encoder.encode("PDF-agent"));
+    const receipt = await rebuilding;
+
+    // #then
+    assert.deepEqual(
+      {
+        exportStarted,
+        receipt,
+        bytes: bytes(h.app, "chapter.pdf"),
+        status: h.feature.automaticPdfStatus?.("chapter.typ"),
+      },
+      {
+        exportStarted: true,
+        receipt: { outcome: "cancelled", generation: 1, pdfPath: "chapter.pdf", status: "building" },
+        bytes: null,
+        status: "building",
+      },
+    );
+  } finally {
+    exported.resolve(encoder.encode("PDF-agent"));
+    h.close();
+  }
+});
+
+test("an agent rebuild is cancelled when its source is disabled during export", async () => {
+  // #given
+  const h = await harness();
+  h.addSource("chapter.typ");
+  const exported = deferred<Uint8Array>();
+  h.plugin.exporter.responses.push(exported.promise);
+  try {
+    const rebuilding = rebuildPdf(h, "chapter.typ", { interactive: false });
+    const exportStarted = await settleUntil(() => h.plugin.exporter.requests.length === 1);
+
+    // #when
+    await setEnabled(h, "chapter.typ", false);
+    exported.resolve(encoder.encode("PDF-agent"));
+    const receipt = await rebuilding;
+
+    // #then
+    assert.deepEqual(
+      {
+        exportStarted,
+        receipt,
+        bytes: bytes(h.app, "chapter.pdf"),
+        status: h.feature.automaticPdfStatus?.("chapter.typ"),
+      },
+      {
+        exportStarted: true,
+        receipt: { outcome: "cancelled", generation: 1, pdfPath: "chapter.pdf", status: "missing" },
+        bytes: null,
+        status: "missing",
+      },
+    );
+  } finally {
+    exported.resolve(encoder.encode("PDF-agent"));
     h.close();
   }
 });
