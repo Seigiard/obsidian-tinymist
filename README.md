@@ -169,6 +169,11 @@ dependencies. Builds are serialized and use an isolated Tinymist export process
 so each build reads current saved source and dependency bytes. Use **Rebuild PDF**
 after dependency-only changes. AI completion is optional and depends on the
 installed YOLO version and your model service.
+Agents can call `rebuildPdf(path, { interactive: false })` to request a bounded
+non-interactive rebuild. The returned receipt reports whether the PDF was
+published, conflicted, failed, superseded, cancelled, or was busy and should be
+retried later. `superseded` means a newer request for the same source replaced
+the agent job.
 See [the roadmap](docs/roadmap.md) for work in progress.
 
 ## Feedback and contributions

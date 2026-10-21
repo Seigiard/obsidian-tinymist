@@ -15,6 +15,7 @@ import {
 } from "obsidian";
 import {
   AutomaticPdfController,
+  AutomaticPdfReceipt,
   AutomaticPdfReplaceRequest,
   AutomaticPdfStatus,
   AutomaticPdfStoredState,
@@ -297,8 +298,26 @@ export default class TinymistPlugin extends Plugin {
     return () => this.automaticPdfListeners.delete(listener);
   }
 
-  async rebuildPdf(path: string): Promise<void> {
-    await this.automaticPdfController?.rebuildPdf(path);
+  /**
+   * Rebuild a source PDF and return the result for this request. Pass
+   * `{ interactive: false }` for agent calls; `busy` means retry later, and
+   * `superseded` means a newer request for the same source replaced the agent job.
+   * Other outcomes are `published`, `conflict`, `failed`, and `cancelled`.
+   */
+  async rebuildPdf(
+    path: string,
+    options: { interactive?: boolean } = {},
+  ): Promise<AutomaticPdfReceipt> {
+    const controller = this.automaticPdfController;
+    if (!controller) {
+      return {
+        outcome: "cancelled",
+        generation: 0,
+        pdfPath: path.replace(/\.typ$/i, ".pdf"),
+        status: "missing",
+      };
+    }
+    return await controller.rebuildPdf(path, options);
   }
 
   automaticPdfStatus(path: string): AutomaticPdfStatus {

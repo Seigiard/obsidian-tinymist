@@ -19,6 +19,21 @@ export type AutomaticPdfStatus =
   | "stale"
   | "missing";
 
+export type AutomaticPdfOutcome =
+  | "published"
+  | "conflict"
+  | "failed"
+  | "superseded"
+  | "cancelled"
+  | "busy";
+
+export interface AutomaticPdfReceipt {
+  outcome: AutomaticPdfOutcome;
+  generation: number;
+  pdfPath: string;
+  status: AutomaticPdfStatus;
+}
+
 export interface AutomaticPdfExportRequest {
   entryPath: string;
   root: string;
@@ -79,7 +94,9 @@ interface PendingJob {
   sourcePath: string;
   generation: number;
   manual: boolean;
-  waiters: Array<() => void>;
+  interactive: boolean;
+  outcome?: AutomaticPdfOutcome;
+  waiters: Array<(receipt: AutomaticPdfReceipt) => void>;
 }
 
 interface DestinationSnapshot {
@@ -146,6 +163,7 @@ function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
 export class AutomaticPdfController {
   private readonly entries = new Map<string, Entry>();
   private readonly pending = new Map<string, PendingJob>();
+  private sourceRenameReconciliations = 0;
   private exporter: AutomaticPdfExporter | null = null;
   private activeJob: PendingJob | null = null;
   private pumping = false;
@@ -190,6 +208,11 @@ export class AutomaticPdfController {
       this.revokeAuthorization(entry);
     }
     this.resolvePending();
+    if (this.activeJob) {
+      this.activeJob.outcome = "cancelled";
+      const receipt = this.receipt(this.activeJob);
+      for (const waiter of this.activeJob.waiters) waiter(receipt);
+    }
     this.exporter?.stop();
     this.exporter = null;
   }
@@ -238,10 +261,23 @@ export class AutomaticPdfController {
     await this.enqueue(sourcePath, false);
   }
 
-  async rebuildPdf(sourcePath: string): Promise<void> {
-    if (this.disposed || !sourcePath.endsWith(".typ")) return;
+  async rebuildPdf(
+    sourcePath: string,
+    options: { interactive?: boolean } = {},
+  ): Promise<AutomaticPdfReceipt> {
+    const interactive = options.interactive !== false;
+    if (this.disposed || !sourcePath.endsWith(".typ")) {
+      return this.receiptWithoutJob(sourcePath, "cancelled");
+    }
+    if (
+      !interactive &&
+      (this.activeJob !== null || this.pending.size > 0 || this.sourceRenameReconciliations > 0)
+    ) {
+      return this.receiptWithoutJob(sourcePath, "busy");
+    }
     this.entry(sourcePath);
-    await this.enqueue(sourcePath, true);
+    // A non-interactive job is never pending: the gate above and pump start it in the same tick.
+    return await this.enqueue(sourcePath, true, interactive);
   }
 
   private entry(sourcePath: string): Entry {
@@ -343,47 +379,57 @@ export class AutomaticPdfController {
     }
     if (!operations.length) return;
 
-    const results = await Promise.all(
-      operations.map((operation) =>
-        this.reconcileMovedPdf(
-          operation.entry,
-          operation.oldSourcePath,
-          operation.newSourcePath,
-          false,
-          operation.generation,
+    this.sourceRenameReconciliations++;
+    try {
+      const results = await Promise.all(
+        operations.map((operation) =>
+          this.reconcileMovedPdf(
+            operation.entry,
+            operation.oldSourcePath,
+            operation.newSourcePath,
+            false,
+            operation.generation,
+          ),
         ),
-      ),
-    );
-    if (this.disposed) return;
-    await this.persist();
-    for (let i = 0; i < operations.length; i++) {
-      const operation = operations[i];
-      if (
-        results[i] &&
-        this.isLineageCurrent(operation.entry, operation.newSourcePath, operation.generation) &&
-        operation.entry.enabled &&
-        this.sourceExists(operation.newSourcePath)
-      ) {
-        void this.enqueue(operation.newSourcePath, false);
+      );
+      if (this.disposed) return;
+      await this.persist();
+      for (let i = 0; i < operations.length; i++) {
+        const operation = operations[i];
+        if (
+          results[i] &&
+          this.isLineageCurrent(operation.entry, operation.newSourcePath, operation.generation) &&
+          operation.entry.enabled &&
+          this.sourceExists(operation.newSourcePath)
+        ) {
+          void this.enqueue(operation.newSourcePath, false);
+        }
       }
+    } finally {
+      this.sourceRenameReconciliations--;
     }
   }
 
   private async renameSource(oldPath: string, newPath: string): Promise<void> {
     const entry = this.entries.get(oldPath);
     if (!entry) return;
-    this.entries.delete(oldPath);
-    this.dropPending(oldPath);
-    entry.generation++;
-    this.revokeAuthorization(entry);
-    entry.pendingMove = undefined;
-    entry.destinationPath = pdfPath(newPath);
-    this.entries.set(newPath, entry);
-    const generation = entry.generation;
-    const shouldBuild = await this.reconcileMovedPdf(entry, oldPath, newPath, true, generation);
-    if (!this.isLineageCurrent(entry, newPath, generation)) return;
-    await this.persist();
-    if (shouldBuild && entry.enabled && this.sourceExists(newPath)) void this.enqueue(newPath, false);
+    this.sourceRenameReconciliations++;
+    try {
+      this.entries.delete(oldPath);
+      this.dropPending(oldPath);
+      entry.generation++;
+      this.revokeAuthorization(entry);
+      entry.pendingMove = undefined;
+      entry.destinationPath = pdfPath(newPath);
+      this.entries.set(newPath, entry);
+      const generation = entry.generation;
+      const shouldBuild = await this.reconcileMovedPdf(entry, oldPath, newPath, true, generation);
+      if (!this.isLineageCurrent(entry, newPath, generation)) return;
+      await this.persist();
+      if (shouldBuild && entry.enabled && this.sourceExists(newPath)) void this.enqueue(newPath, false);
+    } finally {
+      this.sourceRenameReconciliations--;
+    }
   }
 
   private async reconcileMovedPdf(
@@ -487,31 +533,41 @@ export class AutomaticPdfController {
     return true;
   }
 
-  private async enqueue(sourcePath: string, manual: boolean): Promise<void> {
-    if (this.disposed) return;
+  private async enqueue(
+    sourcePath: string,
+    manual: boolean,
+    interactive = true,
+  ): Promise<AutomaticPdfReceipt> {
+    if (this.disposed) {
+      return this.receiptWithoutJob(sourcePath, "cancelled");
+    }
     const entry = this.entries.get(sourcePath);
-    if (!entry || (!entry.enabled && !manual)) return;
+    if (!entry || (!entry.enabled && !manual)) {
+      return this.receiptWithoutJob(sourcePath, "cancelled");
+    }
     const generation = ++entry.generation;
     entry.status = "building";
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => {
+    let resolve!: (receipt: AutomaticPdfReceipt) => void;
+    const promise = new Promise<AutomaticPdfReceipt>((done) => {
       resolve = done;
     });
     const existing = this.pending.get(sourcePath);
     if (existing) {
       existing.generation = generation;
       existing.manual ||= manual;
+      existing.interactive ||= interactive;
       existing.waiters.push(resolve);
     } else {
       this.pending.set(sourcePath, {
         sourcePath,
         generation,
         manual,
+        interactive,
         waiters: [resolve],
       });
     }
     void this.pump().catch((error: unknown) => this.reportUnexpected(error));
-    await promise;
+    return await promise;
   }
 
   private async pump(): Promise<void> {
@@ -527,10 +583,12 @@ export class AutomaticPdfController {
         try {
           await this.build(job);
         } catch (error) {
+          job.outcome = "failed";
           this.reportUnexpected(error);
         } finally {
           if (this.activeJob === job) this.activeJob = null;
-          for (const waiter of job.waiters) waiter();
+          const receipt = this.receipt(job);
+          for (const waiter of job.waiters) waiter(receipt);
         }
       }
     } finally {
@@ -540,10 +598,18 @@ export class AutomaticPdfController {
 
   private async build(job: PendingJob): Promise<void> {
     const entry = this.entries.get(job.sourcePath);
-    if (!entry || !this.isCurrent(job, entry)) return;
+    if (!entry) {
+      job.outcome = "cancelled";
+      return;
+    }
+    if (!this.isCurrent(job, entry)) {
+      this.markNotCurrent(job, entry);
+      return;
+    }
     const root = this.host.root();
     if (!root || !this.sourceExists(job.sourcePath)) {
       this.markFailure(entry, "The source file is not available.");
+      job.outcome = "failed";
       return;
     }
 
@@ -552,10 +618,19 @@ export class AutomaticPdfController {
     const initial = await this.readDestination(destinationPath);
     if (initial.error) {
       this.markFailure(entry, `Could not read ${destinationPath}: ${String(initial.error)}`);
+      job.outcome = "failed";
       return;
     }
     const authorized = await this.authorizeInitial(job, entry, initial);
-    if (!authorized || !this.isCurrent(job, entry)) return;
+    if (!authorized) {
+      if (!this.isCurrent(job, entry)) this.markNotCurrent(job, entry);
+      else job.outcome = "conflict";
+      return;
+    }
+    if (!this.isCurrent(job, entry)) {
+      this.markNotCurrent(job, entry);
+      return;
+    }
 
     let bytes: Uint8Array;
     try {
@@ -566,28 +641,48 @@ export class AutomaticPdfController {
         sourceInput: selected.sourceInput,
       });
     } catch (error) {
-      if (this.disposed || !this.isCurrent(job, entry)) return;
+      if (!this.isCurrent(job, entry)) {
+        this.markNotCurrent(job, entry);
+        return;
+      }
       this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${String(error)}`);
+      job.outcome = "failed";
       return;
     }
-    if (!this.isCurrent(job, entry)) return;
+    if (!this.isCurrent(job, entry)) {
+      this.markNotCurrent(job, entry);
+      return;
+    }
 
     const current = await this.readDestination(destinationPath);
     if (current.error) {
       this.markFailure(entry, `Could not reread ${destinationPath}: ${String(current.error)}`);
+      job.outcome = "failed";
       return;
     }
     const finalAuthorization = await this.authorizeFinal(job, entry, authorized, current);
-    if (!finalAuthorization || !this.isCurrent(job, entry)) return;
+    if (!finalAuthorization) {
+      if (!this.isCurrent(job, entry)) this.markNotCurrent(job, entry);
+      else job.outcome = "conflict";
+      return;
+    }
+    if (!this.isCurrent(job, entry)) {
+      this.markNotCurrent(job, entry);
+      return;
+    }
 
     try {
       const file = this.host.vault.getAbstractFileByPath(destinationPath);
       if (file instanceof TFile) await this.host.vault.modifyBinary(file, arrayBuffer(bytes));
       else await this.host.vault.createBinary(destinationPath, arrayBuffer(bytes));
     } catch (error) {
-      if (this.disposed || !this.isCurrent(job, entry)) return;
+      if (!this.isCurrent(job, entry)) {
+        this.markNotCurrent(job, entry);
+        return;
+      }
       entry.status = "stale";
       this.notifyError(entry, `Automatic PDF write failed for ${job.sourcePath}: ${String(error)}`);
+      job.outcome = "failed";
       return;
     }
 
@@ -607,6 +702,9 @@ export class AutomaticPdfController {
     if (this.isCurrent(job, entry)) {
       entry.status = "current";
       entry.errorNotified = false;
+      job.outcome = "published";
+    } else {
+      this.markNotCurrent(job, entry);
     }
     await this.persist();
   }
@@ -637,6 +735,10 @@ export class AutomaticPdfController {
       entry.authorizedHash === observed.hash
     ) {
       return observed;
+    }
+    if (!job.interactive) {
+      entry.status = "conflict";
+      return null;
     }
     const accepted = await this.confirmReplace({
       sourcePath: job.sourcePath,
@@ -672,10 +774,18 @@ export class AutomaticPdfController {
     if (sameSnapshot(authorized, current)) return current;
     if (current.error) return null;
     if (!current.exists) {
+      if (!job.interactive) {
+        entry.status = "conflict";
+        return null;
+      }
       this.notifyConflict(entry, current.path);
       return null;
     }
     const authorizationEpoch = entry.authorizationEpoch;
+    if (!job.interactive) {
+      entry.status = "conflict";
+      return null;
+    }
     const accepted = await this.confirmReplace({
       sourcePath: job.sourcePath,
       destinationPath: current.path,
@@ -803,7 +913,43 @@ export class AutomaticPdfController {
     const job = this.pending.get(sourcePath);
     if (!job) return;
     this.pending.delete(sourcePath);
-    for (const waiter of job.waiters) waiter();
+    job.outcome = "cancelled";
+    const receipt = this.receipt(job);
+    for (const waiter of job.waiters) waiter(receipt);
+  }
+
+  private receipt(job: PendingJob): AutomaticPdfReceipt {
+    const entry = this.entries.get(job.sourcePath);
+    return {
+      outcome: job.outcome ?? "cancelled",
+      generation: job.generation,
+      pdfPath: entry?.destinationPath ?? pdfPath(job.sourcePath),
+      status: entry?.status ?? "missing",
+    };
+  }
+
+  private receiptWithoutJob(
+    sourcePath: string,
+    outcome: AutomaticPdfOutcome,
+  ): AutomaticPdfReceipt {
+    const entry = this.entries.get(sourcePath);
+    return {
+      outcome,
+      generation: entry?.generation ?? 0,
+      pdfPath: entry?.destinationPath ?? pdfPath(sourcePath),
+      status: entry?.status ?? "missing",
+    };
+  }
+
+  private markNotCurrent(job: PendingJob, entry: Entry): void {
+    const newerJob = this.pending.get(job.sourcePath);
+    job.outcome =
+      !this.disposed &&
+      this.entries.get(job.sourcePath) === entry &&
+      newerJob !== undefined &&
+      newerJob.generation > job.generation
+        ? "superseded"
+        : "cancelled";
   }
 
   private requeueAfterConfiguration(paths: Set<string>): void {
