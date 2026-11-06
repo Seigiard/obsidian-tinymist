@@ -659,3 +659,24 @@ test("C34: Devanagari combining marks follow Typst's intraword emphasis rule", (
   // #then
   assert.deepEqual(outputLines(conversion.typ).slice(3), ["हि\\*\\*ब\\*\\*", "\\*\\*ब\\*\\*ी"]);
 });
+
+test("C37: malformed bracketed flow arrays leave their properties empty and report non-fatal problems", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-a: [x,,y]", "typst-b: [a, [b]", "typst-c: [ok, 1]"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    {
+      lines: outputLines(conversion.typ),
+      problems: conversion.problems.map(({ line, fatal }) => ({ line, fatal })),
+    },
+    {
+      lines: [`${BUILT_INS}#show: template.with(`, "", "", "", 'c: ("ok", 1,),', ")"],
+      problems: [
+        { line: 2, fatal: false },
+        { line: 3, fatal: false },
+      ],
+    },
+  );
+});
