@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { convert } from "../src/markdown/convert";
 import { sourceNote } from "./fixtures/markdown/notes";
@@ -565,26 +569,23 @@ test("C29: a prose backslash maps its escaped character column", () => {
 
 function performanceResult(body: string): { error: string | undefined; status: number | null; withinLimit: boolean } {
   const source = `---\ntypst: true\n---\n${body}`;
-  const runner = `
-    const { buildSync } = require("esbuild");
-    const { mkdtempSync, rmSync } = require("node:fs");
-    const { tmpdir } = require("node:os");
-    const { join } = require("node:path");
-    const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-performance-"));
-    try {
-      const output = join(directory, "convert.cjs");
-      buildSync({ entryPoints: ["src/markdown/convert.ts"], bundle: true, format: "cjs", platform: "node", outfile: output });
-      const { convert } = require(output);
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-performance-"));
+  try {
+    const { buildSync } = createRequire(__filename)("esbuild") as typeof import("esbuild");
+    const output = join(directory, "convert.cjs");
+    buildSync({ entryPoints: ["src/markdown/convert.ts"], bundle: true, format: "cjs", platform: "node", outfile: output });
+    const runner = `
+      const { convert } = require(process.env.output);
       const started = performance.now();
       convert(${JSON.stringify(source)}, null);
       process.stdout.write(JSON.stringify({ elapsed: performance.now() - started }));
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  `;
-  const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", timeout: 5_500 });
-  const elapsed = result.stdout === "" ? Number.POSITIVE_INFINITY : JSON.parse(result.stdout).elapsed as number;
-  return { error: result.error?.code, status: result.status, withinLimit: elapsed < 5_000 };
+    `;
+    const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", timeout: 5_500, env: { ...process.env, output } });
+    const elapsed = result.stdout === "" ? Number.POSITIVE_INFINITY : JSON.parse(result.stdout).elapsed as number;
+    return { error: result.error?.code, status: result.status, withinLimit: elapsed < 5_000 };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 test("C30: one-backtick spans on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
