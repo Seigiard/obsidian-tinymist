@@ -1,0 +1,19 @@
+/** Builds a note whose frontmatter occupies the first and last lines. */
+export function sourceNote(frontmatter: readonly string[], body: readonly string[] = []): string {
+  return ["---", ...frontmatter, "---", ...body].join("\n");
+}
+
+export const compileSample = sourceNote(
+  ["typst: true"],
+  [
+    "# Release notes",
+    "- **safe** _conversion_",
+    "Prose escapes # $ @ < ~ [ ] and // comments.",
+    "/typst#block[",
+    "/typstThis is deliberate Typst.",
+    "/typst]",
+    "```typ",
+    "#let version = 1",
+    "```",
+  ],
+);
