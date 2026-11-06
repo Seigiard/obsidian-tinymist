@@ -114,7 +114,8 @@ export class SourceRegistry {
   }
 
   private release(vaultPath: string): void {
-    const held = this.held.get(vaultPath)!;
+    const held = this.held.get(vaultPath);
+    if (!held) return;
     held.holders--;
     if (held.holders === 0) this.held.delete(vaultPath);
   }

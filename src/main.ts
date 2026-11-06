@@ -660,7 +660,7 @@ export default class TinymistPlugin extends Plugin {
   async openPreview(view: TypstView): Promise<void> {
     const path = view.absolutePath();
     if (!path) return;
-    let url: string;
+    let url: string | null;
     try {
       url = await this.preview.start(path);
     } catch (err) {
@@ -668,6 +668,7 @@ export default class TinymistPlugin extends Plugin {
       new Notice(`Tinymist preview failed: ${String(err)}`, 8000);
       return;
     }
+    if (!url) return;
     let leaf: WorkspaceLeaf | null =
       this.app.workspace.getLeavesOfType(VIEW_TYPE_TYPST_PREVIEW)[0] ?? null;
     if (!leaf) {
