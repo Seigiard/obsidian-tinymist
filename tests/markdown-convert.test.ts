@@ -237,7 +237,15 @@ test("C10–C11: native Markdown structure remains markup and prose syntax is es
 
 test("C12: forbidden Typst line breaks become spaces and flag verbatim code", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["prose\u000btext", "/typst#box[raw\ftext]", "```typ", "#let x = a\u2028b", "```"]);
+  const text = sourceNote([
+    "typst: true",
+  ], [
+    "prose\u000btext",
+    "/typst#box[a\u000b\f\u0085\u2028\u2029\rb]",
+    "```typ",
+    "#let x = a\u000b\f\u0085\u2028\u2029\rb",
+    "```",
+  ]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
@@ -249,9 +257,9 @@ test("C12: forbidden Typst line breaks become spaces and flag verbatim code", ()
         "",
         ")",
         "prose text",
-        "#box[raw text]",
+        "#box[a      b]",
         "",
-        "#let x = a b",
+        "#let x = a      b",
         "",
       ],
       problems: [
