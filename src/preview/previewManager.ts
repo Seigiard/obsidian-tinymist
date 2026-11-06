@@ -1,6 +1,6 @@
 import type TinymistPlugin from "../main";
 import { basename, isAbsolute, join, relative, sep } from "path";
-import { previewEntry } from "./previewEntry";
+import type { TypstSource } from "../sources";
 
 interface PreviewResult {
   dataPlanePort?: string | number;
@@ -25,6 +25,7 @@ export class PreviewManager {
   filePath: string | null = null;
   private taskId: string | null = null;
   private taskFilePath: string | null = null;
+  private source: TypstSource | null = null;
   private handlersRegistered = false;
   private disposed = false;
   private readonly changeListeners = new Set<() => void>();
@@ -39,12 +40,7 @@ export class PreviewManager {
 
   /** The selected preview source as an Obsidian vault-relative path. */
   sourcePath(): string | null {
-    const root = this.plugin.vaultBasePath();
-    if (!root || !this.filePath) return null;
-    const path = relative(root, this.filePath);
-    if (!path || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) return null;
-    const normalized = path.split(sep).join("/");
-    return normalized.endsWith(".typ") ? normalized : null;
+    return this.source?.file ?? null;
   }
 
   private notifyChange(): void {
@@ -57,6 +53,8 @@ export class PreviewManager {
     lsp.onNotification("tinymist/preview/dispose", (params) => {
       const { taskId } = (params as { taskId?: string }) ?? {};
       if (taskId && taskId === this.taskId) {
+        this.source?.release();
+        this.source = null;
         this.taskId = null;
         this.taskFilePath = null;
         this.url = null;
@@ -72,6 +70,8 @@ export class PreviewManager {
 
   /** Called by the plugin after a language-server (re)start. */
   onLspRestart(): void {
+    this.source?.release();
+    this.source = null;
     this.handlersRegistered = false;
     this.taskId = null;
     this.taskFilePath = null;
@@ -110,6 +110,8 @@ export class PreviewManager {
 
   dispose(): void {
     this.disposed = true;
+    this.source?.release();
+    this.source = null;
     this.taskId = null;
     this.taskFilePath = null;
     this.url = null;
@@ -129,6 +131,15 @@ export class PreviewManager {
     await this.stop();
     if (!this.handlersRegistered) this.registerHandlers();
 
+    const root = this.plugin.vaultBasePath();
+    if (!root) throw new Error("preview requires a local vault");
+    const vaultPath = relative(root, filePath);
+    if (!vaultPath || vaultPath === ".." || vaultPath.startsWith(`..${sep}`) || isAbsolute(vaultPath)) {
+      throw new Error("preview source must be inside the vault");
+    }
+    const source = await this.plugin.sources.hold(vaultPath.split(sep).join("/"));
+    if (!source) throw new Error("preview source is unavailable");
+
     const taskId = Math.random().toString(36).slice(2, 9);
     const args = [
       "--task-id",
@@ -142,11 +153,8 @@ export class PreviewManager {
     if (this.plugin.settings.invertPreviewColors !== "never") {
       args.push(`--invert-colors=${this.plugin.settings.invertPreviewColors}`);
     }
-    const root = this.plugin.vaultBasePath();
-    if (!root) throw new Error("preview requires a local vault");
-    const entry = previewEntry(filePath, root);
-    lsp.setPreviewSource(entry.sourceInput);
-    args.push("--page-title", basename(filePath), entry.filePath);
+    lsp.setPreviewSource(source.inputs);
+    args.push("--page-title", basename(filePath), source.entry);
 
     let result: PreviewResult;
     try {
@@ -156,18 +164,21 @@ export class PreviewManager {
         20000,
       );
     } catch (error) {
+      source.release();
       lsp.setPreviewSource();
       throw error;
     }
     const port = result?.staticServerPort;
     if (!port) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
+      source.release();
       lsp.setPreviewSource();
       throw new Error("preview did not report a server port");
     }
 
     this.taskId = taskId;
     this.taskFilePath = filePath;
+    this.source = source;
     this.filePath = filePath;
     this.url = `http://127.0.0.1:${port}`;
     this.notifyChange();
@@ -175,21 +186,30 @@ export class PreviewManager {
   }
 
   /** Editor cursor moved: scroll the preview to the source position. */
-  cursorMoved(filepath: string, line: number, character: number): void {
+  cursorMoved(_filepath: string, line: number, character: number): void {
     const lsp = this.plugin.lsp;
-    if (!lsp || lsp.status !== "running" || !this.taskId) return;
+    const source = this.source;
+    if (!lsp || lsp.status !== "running" || !this.taskId || !source) return;
+    const position = source.toEntry({ line, character });
     void lsp
       .executeCommand("tinymist.scrollPreview", [
         this.taskId,
-        { event: "panelScrollTo", filepath, line, character },
+        {
+          event: "panelScrollTo",
+          filepath: source.document,
+          line: position.line,
+          character: position.character,
+        },
       ])
       .catch(() => {});
   }
 
   async stop(): Promise<void> {
     const taskId = this.taskId;
+    const source = this.source;
     this.taskId = null;
     this.taskFilePath = null;
+    this.source = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
@@ -203,5 +223,6 @@ export class PreviewManager {
       // The preview took over tinymist's main; hand it back to the editor.
       lsp.pinMain(lsp.mainFile);
     }
+    source?.release();
   }
 }

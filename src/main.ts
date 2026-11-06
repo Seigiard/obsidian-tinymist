@@ -28,9 +28,9 @@ import { FileEvent, TypstRender } from "./editor/typstRender";
 import { LspTextEdit, TypstView, VIEW_TYPE_TYPST } from "./editor/typstView";
 import { LspClient, LspStatus, uriToPath } from "./lsp/client";
 import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
-import { bookMain } from "./preview/previewEntry";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
+import { pdfDestination, SourceRegistry, typAdapter, typBookMain } from "./sources";
 import {
   DEFAULT_SETTINGS,
   parseFontPaths,
@@ -42,6 +42,13 @@ export default class TinymistPlugin extends Plugin {
   settings: TinymistSettings = DEFAULT_SETTINGS;
   lsp: LspClient | null = null;
   preview: PreviewManager = new PreviewManager(this);
+  sources: SourceRegistry = new SourceRegistry([
+    typAdapter({
+      root: () => this.vaultBasePath(),
+      reveal: (document, position) =>
+        this.openAndPlaceCursor(document, position.line, position.character),
+    }),
+  ]);
   /** Undo history of recently closed .typ files, restored on reopen. */
   history = new HistoryCache();
   /** YOLO AI completion in our editors; one per plugin, shared by every view. */
@@ -76,6 +83,7 @@ export default class TinymistPlugin extends Plugin {
     this.automaticPdfController = new AutomaticPdfController({
       vault: this.app.vault,
       fileManager: this.app.fileManager,
+      sources: this.sources,
       root: () => this.vaultBasePath(),
       onLayoutReady: (callback) => this.app.workspace.onLayoutReady(callback),
       registerEvent: (event) => this.registerEvent(event),
@@ -285,7 +293,9 @@ export default class TinymistPlugin extends Plugin {
 
   async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
     const write = this.automaticPdfController?.setAutomaticPdf(path, enabled);
-    for (const listener of this.automaticPdfListeners) listener();
+    queueMicrotask(() => {
+      for (const listener of this.automaticPdfListeners) listener();
+    });
     try {
       await write;
     } finally {
@@ -313,7 +323,7 @@ export default class TinymistPlugin extends Plugin {
       return {
         outcome: "cancelled",
         generation: 0,
-        pdfPath: path.replace(/\.typ$/i, ".pdf"),
+        pdfPath: pdfDestination(path),
         status: "missing",
       };
     }
@@ -478,7 +488,7 @@ export default class TinymistPlugin extends Plugin {
     const path = this.app.workspace.getActiveViewOfType(TypstView)?.absolutePath();
     const root = this.vaultBasePath();
     if (!lsp || lsp.status !== "running" || !path || !root) return;
-    const main = this.settings.pinBookMain ? bookMain(path, root) : null;
+    const main = this.settings.pinBookMain ? typBookMain(path, root) : null;
     if (main === lsp.mainFile) return;
     if (this.preview.url) lsp.mainFile = main;
     else lsp.pinMain(main);
@@ -487,7 +497,30 @@ export default class TinymistPlugin extends Plugin {
   /** Handle a preview-click jump pushed by the language server. */
   jumpToSource(jump: SourceJump): void {
     if (!jump?.filepath || !jump.start) return;
-    void this.openAndPlaceCursor(jump.filepath, jump.start[0], jump.start[1]);
+    void this.revealSource(jump.filepath, {
+      line: jump.start[0],
+      character: jump.start[1],
+    });
+  }
+
+  private async revealSource(
+    document: string,
+    position: { line: number; character: number },
+  ): Promise<void> {
+    const held = this.sources.byDocument(document);
+    if (held) {
+      await held.reveal(held.toSource(position));
+      return;
+    }
+    const file = this.vaultRelativePath(document);
+    if (!file) return;
+    const source = await this.sources.hold(file);
+    if (!source) return;
+    try {
+      await source.reveal(source.toSource(position));
+    } finally {
+      source.release();
+    }
   }
 
   /** Open an absolute vault file path and place the cursor. */

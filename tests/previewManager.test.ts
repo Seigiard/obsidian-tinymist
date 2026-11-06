@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
+import { SourceRegistry, typAdapter } from "../src/sources";
 
 test("starting a renamed preview launches the requested path instead of reusing the old task", async () => {
   // #given
@@ -35,6 +36,9 @@ test("starting a renamed preview launches the requested path instead of reusing 
     lsp,
     settings: { invertPreviewColors: "never" },
     vaultBasePath: () => root,
+    sources: new SourceRegistry([
+      typAdapter({ root: () => root, reveal: async () => {} }),
+    ]),
     jumpToSource: () => {},
   } as unknown as TinymistPlugin;
   const manager = new PreviewManager(plugin);

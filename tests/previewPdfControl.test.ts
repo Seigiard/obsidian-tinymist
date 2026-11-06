@@ -59,7 +59,8 @@ interface Harness {
   app: TestApp;
   plugin: PreviewControlPlugin;
   addSource(path: string): TFile;
-  preview(path: string): PreviewView;
+  preview(path: string): Promise<PreviewView>;
+  restartPreview(path: string): Promise<void>;
   close(): void;
 }
 
@@ -68,6 +69,17 @@ async function harness(): Promise<Harness> {
   const app = testApp(root);
   const plugin = new PreviewControlPlugin(app as never, {} as never);
   await plugin.onload();
+  const lsp = {
+    status: "stopped",
+    mainFile: null,
+    onNotification: () => {},
+    setPreviewSource: () => {},
+    pinMain: () => {},
+    stop: () => {},
+    executeCommand: async (command: string) =>
+      command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {},
+  };
+  plugin.lsp = lsp as never;
   return {
     root,
     app,
@@ -78,11 +90,16 @@ async function harness(): Promise<Harness> {
       app.vault.files.set(path, "= Test\n");
       return new TFile(path);
     },
-    preview(path: string): PreviewView {
-      plugin.preview.filePath = join(root, path);
+    async preview(path: string): Promise<PreviewView> {
+      await this.restartPreview(path);
       const view = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
       view.setUrl(PREVIEW_URL);
       return view;
+    },
+    async restartPreview(path: string): Promise<void> {
+      lsp.status = "running";
+      await plugin.preview.start(join(root, path));
+      lsp.status = "stopped";
     },
     close(): void {
       plugin.onunload();
@@ -195,7 +212,7 @@ test("preview header exposes one labeled keyboard checkbox for the selected sour
   // #given
   const h = await harness();
   h.addSource("chapters/a.typ");
-  const view = h.preview("chapters/a.typ");
+  const view = await h.preview("chapters/a.typ");
 
   // #when
   const before = controlState(view);
@@ -227,7 +244,7 @@ test("preview header places automatic PDF export before native More options", as
   // #given
   const h = await harness();
   h.addSource("chapter.typ");
-  const view = h.preview("chapter.typ");
+  const view = await h.preview("chapter.typ");
 
   // #when
   const input = checkbox(view);
@@ -254,7 +271,7 @@ test("preview selection, not the active editor or wrapper, determines the checke
   await h.plugin.setAutomaticPdf(active.path, true);
   const editor = new TypstView(new WorkspaceLeaf(h.app) as never, h.plugin);
   await editor.setState({ file: active.path }, { history: false });
-  const view = h.preview("book/a.typ");
+  const view = await h.preview("book/a.typ");
 
   // #when
   const selectedA = controlState(view).checked;
@@ -292,7 +309,7 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   const source = h.addSource("old/chapter.typ");
   const editor = new TypstView(new WorkspaceLeaf(h.app) as never, h.plugin);
   await editor.setState({ file: source.path }, { history: false });
-  const view = h.preview(source.path);
+  const view = await h.preview(source.path);
 
   // #when
   checkbox(view).click();
@@ -308,6 +325,7 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   h.app.vault.files.set("new/chapter.typ", "= Test\n");
   source.path = "new/chapter.typ";
   await h.app.vault.emit("rename", new TFolder("new"), "old");
+  await h.restartPreview("new/chapter.typ");
   checkbox(view).click();
   await settle();
   const renameCall = h.plugin.setCalls.at(-1);
@@ -316,7 +334,7 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   await view.onClose();
   view.unload();
 
-  const reopened = h.preview("new/chapter.typ");
+  const reopened = await h.preview("new/chapter.typ");
   const reopenedCount = controlState(reopened).count;
   const callsBeforeReopenClick = h.plugin.setCalls.length;
   checkbox(reopened).click();
@@ -363,7 +381,7 @@ test("source menu enable updates the preview checkbox before export completes", 
   const source = h.addSource("chapter.typ");
   const editor = new TypstView(new WorkspaceLeaf(h.app) as never, h.plugin);
   await editor.setState({ file: source.path }, { history: false });
-  const view = h.preview(source.path);
+  const view = await h.preview(source.path);
   const menu = new Menu();
   editor.onPaneMenu(menu as never, "more-options");
   const menuToggle = menu.items.find((item) => item.title === "Automatic PDF export");
@@ -415,7 +433,7 @@ test("a stopped preview and a preview without a source expose no actionable cont
   const noSource = controlState(withoutSource);
   await withoutSource.onClose();
   withoutSource.unload();
-  const active = h.preview("chapter.typ");
+  const active = await h.preview("chapter.typ");
   const activeBeforeStop = controlState(active);
   await h.plugin.preview.stop();
   active.setUrl(PREVIEW_URL);
@@ -442,7 +460,7 @@ test("a rejected preview write restores the persisted state and handles the reje
   // #given
   const h = await harness();
   h.addSource("chapter.typ");
-  const view = h.preview("chapter.typ");
+  const view = await h.preview("chapter.typ");
   h.plugin.rejectNextSet = new Error("settings unavailable");
   const unhandled: unknown[] = [];
   const onUnhandled = (error: unknown) => unhandled.push(error);
