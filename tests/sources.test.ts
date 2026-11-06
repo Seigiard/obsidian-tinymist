@@ -267,6 +267,7 @@ test("the typ adapter follows a wrapper created after the source is held", async
     "notes/chapter.typ",
     () => {},
   );
+  const wrongExtension = await adapter.create("notes/chapter.md", () => {});
 
   // #then
   try {
@@ -286,6 +287,7 @@ test("the typ adapter follows a wrapper created after the source is held", async
         listenerCalls,
         releases,
         unavailable,
+        wrongExtension,
       },
       {
         mayBe: [true, false],
@@ -305,6 +307,7 @@ test("the typ adapter follows a wrapper created after the source is held", async
         listenerCalls: 0,
         releases: 1,
         unavailable: null,
+        wrongExtension: null,
       },
     );
   } finally {

@@ -68,3 +68,18 @@ test("preview jumps use held and transient sources, then fall back to opening th
     },
   );
 });
+
+test("preview clicks on a typ file reveal through the real source registry", async () => {
+  // #given
+  const app = testApp("/vault");
+  const plugin = new JumpPlugin(app as never, {});
+
+  // #when
+  plugin.jumpToSource({ filepath: "/vault/notes/a.typ", start: [7, 8], end: null });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  // #then
+  assert.deepEqual(plugin.opened, [
+    { document: "/vault/notes/a.typ", line: 7, character: 8 },
+  ]);
+});
