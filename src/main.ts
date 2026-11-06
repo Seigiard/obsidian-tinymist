@@ -30,7 +30,7 @@ import { LspClient, LspStatus, uriToPath } from "./lsp/client";
 import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
-import { pdfDestination, SourceRegistry, typAdapter, typBookMain } from "./sources";
+import { pdfDestination, SourceRegistry, typAdapter, typBookMain, type Position } from "./sources";
 import {
   DEFAULT_SETTINGS,
   parseFontPaths,
@@ -503,7 +503,7 @@ export default class TinymistPlugin extends Plugin {
 
   private async revealSource(
     document: string,
-    position: { line: number; character: number },
+    position: Position,
   ): Promise<void> {
     const held = this.sources.byDocument(document);
     if (held) {
@@ -511,11 +511,7 @@ export default class TinymistPlugin extends Plugin {
       return;
     }
     const file = this.vaultRelativePath(document);
-    if (!file) {
-      await this.openAndPlaceCursor(document, position.line, position.character);
-      return;
-    }
-    const source = await this.sources.hold(file);
+    const source = file ? await this.sources.hold(file) : null;
     if (!source) {
       await this.openAndPlaceCursor(document, position.line, position.character);
       return;

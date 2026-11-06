@@ -13,8 +13,11 @@ export interface Position {
  */
 export interface TypstSource {
   readonly file: string;
+  /** Address passed to preview and PDF jobs; may be a generated wrapper and read live. */
   readonly entry: string;
+  /** Address of the source file's text, used for cursor sync and source jumps. */
   readonly document: string;
+  /** Preview-source input for an entry wrapper; like entry, adapters read it live. */
   readonly inputs: string | undefined;
   readonly pinnable: boolean;
   readonly pdf: string;
@@ -130,7 +133,7 @@ export function pdfDestination(vaultPath: string): string {
   return `${prefix}${dot > 0 ? name.slice(0, dot) : name}.pdf`;
 }
 
-export interface TypAdapterOptions {
+interface TypAdapterOptions {
   root(): string | null;
   reveal(document: string, position: Position): Promise<void>;
 }
