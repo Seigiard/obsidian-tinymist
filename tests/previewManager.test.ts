@@ -103,6 +103,7 @@ test("renaming a running preview sends no language-client call", async () => {
   // #given
   const calls: string[] = [];
   const holds: TypstSource[] = [];
+  const releases = new Map<string, number>();
   const plugin = {
     lsp: {
       status: "running",
@@ -119,11 +120,14 @@ test("renaming a running preview sends no language-client call", async () => {
     vaultBasePath: () => "/vault",
     sources: {
       hold: async (path: string) => {
-        const held = source(path, () => {});
+        const held = source(path, () => {
+          releases.set(path, (releases.get(path) ?? 0) + 1);
+        });
         holds.push(held);
         return held;
       },
       byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
     },
     jumpToSource: () => {},
   } as unknown as TinymistPlugin;
@@ -134,16 +138,31 @@ test("renaming a running preview sends no language-client call", async () => {
   // #when
   manager.onVaultRename("new", "old");
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const afterRename = {
+    old: releases.get("old/chapter.typ") ?? 0,
+    next: releases.get("new/chapter.typ") ?? 0,
+  };
+  const renameCalls = [...calls];
+  const sourcePath = manager.sourcePath();
+  await manager.stop();
+  const afterStop = {
+    old: releases.get("old/chapter.typ") ?? 0,
+    next: releases.get("new/chapter.typ") ?? 0,
+  };
 
   // #then
   try {
-    assert.deepEqual({ calls, sourcePath: manager.sourcePath(), holds: holds.length }, {
-      calls: [],
-      sourcePath: "new/chapter.typ",
-      holds: 2,
-    });
+    assert.deepEqual(
+      { calls: renameCalls, sourcePath, holds: holds.length, afterRename, afterStop },
+      {
+        calls: [],
+        sourcePath: "new/chapter.typ",
+        holds: 2,
+        afterRename: { old: 1, next: 0 },
+        afterStop: { old: 1, next: 1 },
+      },
+    );
   } finally {
-    await manager.stop();
     manager.dispose();
   }
 });
@@ -177,6 +196,7 @@ test("overlapping preview starts release every held source after stop", async ()
         });
       },
       byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
     },
     jumpToSource: () => {},
   } as unknown as TinymistPlugin;
@@ -197,6 +217,81 @@ test("overlapping preview starts release every held source after stop", async ()
   } finally {
     manager.dispose();
   }
+});
+
+test("preview lifecycle releases its held source on every terminal path", async () => {
+  // #given
+  const rows = [
+    "stop",
+    "dispose",
+    "restart",
+    "server-dispose",
+    "start-rejects",
+    "start-has-no-port",
+  ] as const;
+  const observed: Array<{ row: string; result: string; holds: number; releases: number }> = [];
+
+  // #when
+  for (const row of rows) {
+    let holds = 0;
+    let releases = 0;
+    let taskId: string | null = null;
+    const notifications = new Map<string, (params: unknown) => void>();
+    const plugin = {
+      lsp: {
+        status: "running",
+        mainFile: null,
+        onNotification: (method: string, listener: (params: unknown) => void) => {
+          notifications.set(method, listener);
+        },
+        setPreviewSource: () => {},
+        pinMain: () => {},
+        executeCommand: async (command: string, args: unknown[]) => {
+          if (command !== "tinymist.doStartPreview") return {};
+          taskId = (args[0] as string[])[1] ?? null;
+          if (row === "start-rejects") throw new Error("preview start failed");
+          return row === "start-has-no-port" ? {} : { staticServerPort: 4321 };
+        },
+      },
+      settings: { invertPreviewColors: "never" },
+      vaultBasePath: () => "/vault",
+      sources: {
+        hold: async (path: string) => {
+          holds++;
+          return source(path, () => {
+            releases++;
+          });
+        },
+        byDocument: () => null,
+        mayBeSource: (path: string) => path.endsWith(".typ"),
+      },
+      jumpToSource: () => {},
+    } as unknown as TinymistPlugin;
+    const manager = new PreviewManager(plugin);
+    let result = "resolved";
+    try {
+      await manager.start("/vault/notes/chapter.typ");
+    } catch {
+      result = "rejected";
+    }
+    if (row === "stop") await manager.stop();
+    if (row === "dispose") manager.dispose();
+    if (row === "restart") manager.onLspRestart();
+    if (row === "server-dispose") notifications.get("tinymist/preview/dispose")?.({ taskId });
+    await Promise.resolve();
+    observed.push({ row, result, holds, releases });
+    manager.dispose();
+  }
+
+  // #then
+  assert.deepEqual(observed, [
+    { row: "stop", result: "resolved", holds: 1, releases: 1 },
+    { row: "dispose", result: "resolved", holds: 1, releases: 1 },
+    { row: "restart", result: "resolved", holds: 1, releases: 1 },
+    { row: "server-dispose", result: "resolved", holds: 1, releases: 1 },
+    { row: "start-rejects", result: "rejected", holds: 1, releases: 1 },
+    { row: "start-has-no-port", result: "rejected", holds: 1, releases: 1 },
+  ]);
 });
 
 test("cursor sync uses the caller source mapping and falls back to caller coordinates", async () => {
@@ -220,6 +315,7 @@ test("cursor sync uses the caller source mapping and falls back to caller coordi
     sources: {
       hold: async () => held,
       byDocument: (document: string) => (document === held.document ? held : null),
+      mayBeSource: (path: string) => path.endsWith(".typ"),
     },
     jumpToSource: () => {},
   } as unknown as TinymistPlugin;
