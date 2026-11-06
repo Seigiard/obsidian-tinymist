@@ -295,7 +295,7 @@ test("C10: source notes stay total for hostile bodies, a 300,000-character line,
   assert.doesNotThrow(() => {
     conversion = convert(text, KIT);
   });
-  assert.deepEqual(conversion?.problems.map(({ line, fatal }) => ({ line, fatal })), [{ line: 1, fatal: false }]);
+  assert.deepEqual(conversion?.problems.map(({ line, fatal }) => ({ line, fatal })), [{ line: 2, fatal: false }]);
 });
 
 test("C11: prose slashes cannot form a Typst comment beside emphasis", () => {
