@@ -25,7 +25,6 @@ export class PreviewManager {
   filePath: string | null = null;
   private taskId: string | null = null;
   private taskFilePath: string | null = null;
-  private taskSourcePath: string | null = null;
   private source: TypstSource | null = null;
   private sourceBinding = 0;
   private handlersRegistered = false;
@@ -42,7 +41,12 @@ export class PreviewManager {
 
   /** The selected preview source as an Obsidian vault-relative path. */
   sourcePath(): string | null {
-    return this.taskSourcePath;
+    const root = this.plugin.vaultBasePath();
+    if (!root || !this.filePath) return null;
+    const path = relative(root, this.filePath);
+    if (!path || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) return null;
+    const normalized = path.split(sep).join("/");
+    return this.plugin.sources.mayBeSource(normalized) ? normalized : null;
   }
 
   private notifyChange(): void {
@@ -60,7 +64,6 @@ export class PreviewManager {
         this.source = null;
         this.taskId = null;
         this.taskFilePath = null;
-        this.taskSourcePath = null;
         this.url = null;
         this.filePath = null;
         this.notifyChange();
@@ -80,7 +83,6 @@ export class PreviewManager {
     this.handlersRegistered = false;
     this.taskId = null;
     this.taskFilePath = null;
-    this.taskSourcePath = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
@@ -104,7 +106,6 @@ export class PreviewManager {
     }
     const previous = this.source;
     this.filePath = join(root, movedPath);
-    this.taskSourcePath = movedPath;
     this.notifyChange();
     const binding = ++this.sourceBinding;
     void this.rebindSource(movedPath, previous, binding);
@@ -125,7 +126,6 @@ export class PreviewManager {
     this.source = null;
     this.taskId = null;
     this.taskFilePath = null;
-    this.taskSourcePath = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
@@ -149,6 +149,7 @@ export class PreviewManager {
     if (!vaultPath || vaultPath === ".." || vaultPath.startsWith(`..${sep}`) || isAbsolute(vaultPath)) {
       throw new Error("preview source must be inside the vault");
     }
+    const binding = this.sourceBinding;
     const source = await this.plugin.sources.hold(vaultPath.split(sep).join("/"));
     if (!source) throw new Error("preview source is unavailable");
 
@@ -177,23 +178,29 @@ export class PreviewManager {
       );
     } catch (error) {
       source.release();
-      lsp.setPreviewSource();
+      if (binding === this.sourceBinding && !this.disposed) lsp.setPreviewSource();
       throw error;
     }
     const port = result?.staticServerPort;
     if (!port) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
       source.release();
-      lsp.setPreviewSource();
+      if (binding === this.sourceBinding && !this.disposed) lsp.setPreviewSource();
       throw new Error("preview did not report a server port");
+    }
+
+    const url = `http://127.0.0.1:${port}`;
+    if (binding !== this.sourceBinding || this.disposed) {
+      await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
+      source.release();
+      return url;
     }
 
     this.taskId = taskId;
     this.taskFilePath = filePath;
-    this.taskSourcePath = vaultPath.split(sep).join("/");
     this.source = source;
     this.filePath = filePath;
-    this.url = `http://127.0.0.1:${port}`;
+    this.url = url;
     this.notifyChange();
     return this.url;
   }
@@ -223,14 +230,12 @@ export class PreviewManager {
     this.sourceBinding++;
     this.taskId = null;
     this.taskFilePath = null;
-    this.taskSourcePath = null;
     this.source = null;
     this.url = null;
     this.filePath = null;
     this.notifyChange();
-    if (!taskId) return;
     const lsp = this.plugin.lsp;
-    if (lsp && lsp.status === "running") {
+    if (taskId && lsp && lsp.status === "running") {
       await lsp
         .executeCommand("tinymist.doKillPreview", [taskId], 5000)
         .catch(() => {});
@@ -246,37 +251,21 @@ export class PreviewManager {
     previous: TypstSource | null,
     binding: number,
   ): Promise<void> {
-    let next: TypstSource | null;
+    let next: TypstSource | null = null;
     try {
       next = await this.plugin.sources.hold(vaultPath);
-    } catch {
-      if (binding === this.sourceBinding && this.source === previous) {
-        this.source = null;
-        this.taskSourcePath = null;
-        previous?.release();
-        this.notifyChange();
-      }
+    } catch {}
+    if (binding !== this.sourceBinding || this.source !== previous || this.disposed) {
+      next?.release();
       return;
     }
     if (!next) {
-      if (binding === this.sourceBinding && this.source === previous) {
-        this.source = null;
-        this.taskSourcePath = null;
-        previous?.release();
-        this.notifyChange();
-      }
-      return;
-    }
-    if (
-      binding !== this.sourceBinding ||
-      this.taskId === null ||
-      this.taskSourcePath !== vaultPath
-    ) {
-      next.release();
+      this.source = null;
+      previous?.release();
+      this.notifyChange();
       return;
     }
     this.source = next;
-    if (previous && previous !== next) previous.release();
-    this.plugin.lsp?.setPreviewSource(next.inputs);
+    previous?.release();
   }
 }

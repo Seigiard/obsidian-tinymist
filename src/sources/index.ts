@@ -7,6 +7,5 @@ export {
 export type {
   Position,
   SourceAdapter,
-  SourceRegistryOptions,
   TypstSource,
 } from "./typst";

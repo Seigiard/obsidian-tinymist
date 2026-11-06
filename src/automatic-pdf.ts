@@ -599,9 +599,20 @@ export class AutomaticPdfController {
       this.markNotCurrent(job, entry);
       return;
     }
-    const source = await this.host.sources.hold(job.sourcePath);
+    let source: TypstSource | null = null;
+    try {
+      source = await this.host.sources.hold(job.sourcePath);
+    } catch {
+      source = null;
+    }
+    if (!this.isCurrent(job, entry)) {
+      source?.release();
+      this.markNotCurrent(job, entry);
+      return;
+    }
     if (!source) {
-      job.outcome = "cancelled";
+      this.markFailure(entry, "The source file is not available.");
+      job.outcome = "failed";
       return;
     }
     try {
@@ -662,7 +673,7 @@ export class AutomaticPdfController {
         this.markNotCurrent(job, entry);
         return;
       }
-      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${String(error)}`);
+      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${source.describe(error)}`);
       job.outcome = "failed";
       return;
     }

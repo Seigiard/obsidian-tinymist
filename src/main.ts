@@ -511,9 +511,15 @@ export default class TinymistPlugin extends Plugin {
       return;
     }
     const file = this.vaultRelativePath(document);
-    if (!file) return;
+    if (!file) {
+      await this.openAndPlaceCursor(document, position.line, position.character);
+      return;
+    }
     const source = await this.sources.hold(file);
-    if (!source) return;
+    if (!source) {
+      await this.openAndPlaceCursor(document, position.line, position.character);
+      return;
+    }
     try {
       await source.reveal(source.toSource(position));
     } finally {

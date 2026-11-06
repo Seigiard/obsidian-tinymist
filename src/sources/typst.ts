@@ -7,6 +7,10 @@ export interface Position {
   character: number;
 }
 
+/**
+ * A shared source object for one held file. Each successful hold owns one
+ * release call, even when several holders receive this same object.
+ */
 export interface TypstSource {
   readonly file: string;
   readonly entry: string;
@@ -26,13 +30,13 @@ export interface TypstSource {
   release(): void;
 }
 
+/**
+ * Decides whether it can create the shared source for a path. `mayBe` is a
+ * cheap affordance; `create` is the verdict and receives the hold's release.
+ */
 export interface SourceAdapter {
   mayBe(vaultPath: string): boolean;
   create(vaultPath: string, release: () => void): Promise<TypstSource | null>;
-}
-
-export interface SourceRegistryOptions {
-  adapters: SourceAdapter[];
 }
 
 interface HeldSource {
@@ -52,6 +56,10 @@ export class SourceRegistry {
 
   constructor(private readonly adapters: SourceAdapter[]) {}
 
+  /**
+   * Holds one shared source object. Every non-null result needs its own
+   * release call; pending holders also share the eventual created object.
+   */
   async hold(vaultPath: string): Promise<TypstSource | null> {
     const held = this.held.get(vaultPath);
     if (held) {
@@ -69,7 +77,7 @@ export class SourceRegistry {
       holders: 1,
       promise: Promise.resolve(null),
     };
-    const release = (): void => this.release(vaultPath, state);
+    const release = (): void => this.release(vaultPath);
     state.promise = this.create(vaultPath, release).then((source) => {
       this.pending.delete(vaultPath);
       if (!source) return null;
@@ -105,13 +113,9 @@ export class SourceRegistry {
     return null;
   }
 
-  private release(vaultPath: string, state: PendingSource): void {
-    const held = this.held.get(vaultPath);
-    if (!held) {
-      if (this.pending.get(vaultPath) === state) state.holders--;
-      return;
-    }
-    if (held.holders > 0) held.holders--;
+  private release(vaultPath: string): void {
+    const held = this.held.get(vaultPath)!;
+    held.holders--;
     if (held.holders === 0) this.held.delete(vaultPath);
   }
 }
@@ -165,7 +169,7 @@ export function typAdapter(options: TypAdapterOptions): SourceAdapter {
   };
 }
 
-/** Reads book-main metadata for the `.typ` adapter's existing editor path. */
+/** Returns the nearest `main.typ` that includes the given file. */
 export function typBookMain(filePath: string, root: string): string | null {
   return bookMain(filePath, root);
 }
