@@ -229,7 +229,6 @@ test("a rebind that becomes stale releases its deferred source", async () => {
   // #given
   const rebindHold = deferred<TypstSource>();
   const rebindReached = deferred<void>();
-  const rebindReleased = deferred<void>();
   const calls: Array<Record<string, string | undefined>> = [];
   let holds = 0;
   let releases = 0;
@@ -279,10 +278,9 @@ test("a rebind that becomes stale releases its deferred source", async () => {
     rebindHold.resolve(
       source("b.typ", () => {
         releases++;
-        rebindReleased.resolve();
       }),
     );
-    await rebindReleased.promise;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // #then
     assert.deepEqual(
