@@ -204,16 +204,86 @@ test("overlapping preview starts release every held source after stop", async ()
   const first = manager.start("/vault/first.typ");
   await Promise.resolve();
   const second = manager.start("/vault/second.typ");
-  await second;
+  const secondResult = await second;
   firstStart.resolve({ staticServerPort: 4321 });
-  await first;
+  const firstResult = await first;
 
   // #when
   await manager.stop();
 
   // #then
   try {
-    assert.deepEqual({ holds, releases, balance: holds - releases }, { holds: 2, releases: 2, balance: 0 });
+    assert.deepEqual(
+      { firstResult, secondResult, holds, releases, balance: holds - releases },
+      {
+        firstResult: null,
+        secondResult: "http://127.0.0.1:4322",
+        holds: 2,
+        releases: 2,
+        balance: 0,
+      },
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test("stopping while a preview source is held prevents the preview from starting", async () => {
+  // #given
+  const sourceHeld = deferred<TypstSource>();
+  const holdReached = deferred<void>();
+  let holds = 0;
+  let releases = 0;
+  const commands: string[] = [];
+  const previewSources: Array<string | undefined> = [];
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => previewSources.push(input),
+      pinMain: () => {},
+      executeCommand: async (command: string) => {
+        commands.push(command);
+        return { staticServerPort: 4321 };
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => {
+        holds++;
+        holdReached.resolve();
+        return await sourceHeld.promise;
+      },
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const start = manager.start("/vault/chapter.typ");
+  await holdReached.promise;
+
+  // #when
+  await manager.stop();
+  sourceHeld.resolve(source("chapter.typ", () => {
+    releases++;
+  }));
+  const result = await start;
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        result,
+        starts: commands.filter((command) => command === "tinymist.doStartPreview").length,
+        previewSources: previewSources.length,
+        holds,
+        releases,
+      },
+      { result: null, starts: 0, previewSources: 0, holds: 1, releases: 1 },
+    );
   } finally {
     manager.dispose();
   }

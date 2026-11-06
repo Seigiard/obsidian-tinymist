@@ -203,6 +203,35 @@ test("SourceRegistry asks a false-mayBe adapter and shares its held source", asy
   assert.deepEqual({ sameObject: first === second, creates }, { sameObject: true, creates: 1 });
 });
 
+test("SourceRegistry ignores a release after the held source is evicted", async () => {
+  // #given
+  const { SourceRegistry } = sources();
+  let creates = 0;
+  const adapter: SourceAdapter = {
+    mayBe: () => true,
+    create: async (path, release) => {
+      creates++;
+      return source(path, release);
+    },
+  };
+  const registry = new SourceRegistry([adapter]);
+  const first = await registry.hold("notes/chapter.typ");
+  if (!first) throw new Error("expected the adapter to create a source");
+  first.release();
+
+  // #when
+  assert.doesNotThrow(() => first.release());
+  const second = await registry.hold("notes/chapter.typ");
+  if (!second) throw new Error("expected the adapter to recreate a source");
+
+  // #then
+  try {
+    assert.equal(creates, 2);
+  } finally {
+    second.release();
+  }
+});
+
 test("the typ adapter follows a wrapper created after the source is held", async () => {
   // #given
   const { typAdapter } = sources();
