@@ -43,7 +43,7 @@ SOFTWARE.
   border-right: 1px solid var(--background-modifier-border);
 }
 .tym-editor-content .cm-editor .cm-activeLine {
-  background: var(--background-primary-alt);
+  background: color-mix(in oklch, var(--mono-100) 6.7%, transparent);
 }
 .tym-editor-content .cm-editor .cm-selectionBackground,
 .tym-editor-content .cm-editor.cm-focused .cm-selectionBackground {
