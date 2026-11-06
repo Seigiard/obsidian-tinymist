@@ -19,9 +19,8 @@ interface GuardHarness {
   vault: TestVault;
 }
 
-function guardHarness(pdf: string): GuardHarness {
+function guardHarness(pdf: string, sourcePath = "notes/chapter.md"): GuardHarness {
   const vault = new TestVault("/vault");
-  const sourcePath = "notes/chapter.md";
   vault.files.set(sourcePath, "source bytes must remain unchanged");
   const exporterRequests: AutomaticPdfExportRequest[] = [];
   let holds = 0;
@@ -72,18 +71,18 @@ function guardHarness(pdf: string): GuardHarness {
 
 test("AutomaticPdfController refuses a destination that is the source file", async () => {
   // #given
-  const h = guardHarness("notes/chapter.md");
+  const h = guardHarness("notes/chapter.pdf", "notes/chapter.pdf");
   try {
     // #when
-    const receipt = await h.controller.rebuildPdf("notes/chapter.md");
+    const receipt = await h.controller.rebuildPdf("notes/chapter.pdf");
 
     // #then
     assert.deepEqual(
       {
         outcome: receipt.outcome,
         pdfPath: receipt.pdfPath,
-        sourceBytes: h.vault.files.get("notes/chapter.md"),
-        destinationBytes: h.vault.binaryFiles.get("notes/chapter.md") ?? null,
+        sourceBytes: h.vault.files.get("notes/chapter.pdf"),
+        destinationBytes: h.vault.binaryFiles.get("notes/chapter.pdf") ?? null,
         destinationReads: h.vault.binaryReadStarted,
         exporterRequests: h.exporterRequests,
         heldAtLeastOnce: h.holds() > 0,
@@ -91,7 +90,7 @@ test("AutomaticPdfController refuses a destination that is the source file", asy
       },
       {
         outcome: "failed",
-        pdfPath: "notes/chapter.md",
+        pdfPath: "notes/chapter.pdf",
         sourceBytes: "source bytes must remain unchanged",
         destinationBytes: null,
         destinationReads: [],
