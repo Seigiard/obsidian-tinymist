@@ -1,14 +1,17 @@
+/** The kit templates available to the markdown converter. */
 export interface KitView {
   templates: Record<string, string>;
   defaultTemplate: string;
 }
 
+/** A conversion diagnostic; fatal problems make the generated Typst unsafe to compile. */
 export interface Problem {
   line: number;
   message: string;
   fatal: boolean;
 }
 
+/** The converted note and zero-based UTF-16 line/column maps for source notes. */
 export interface Conversion {
   source: boolean;
   typ: string;
@@ -27,6 +30,7 @@ interface Piece {
   sourceStart: number;
   sourceLength: number;
   identity: boolean;
+  mapToStart: boolean;
 }
 
 interface EmphasisRange {
@@ -36,11 +40,40 @@ interface EmphasisRange {
   strong: boolean;
 }
 
+interface FenceOpening {
+  indentation: string;
+  ticks: number;
+  kind: "typ" | "other";
+  word: string;
+}
+
+interface FenceState {
+  closeLine: number;
+  indentation: string;
+  outputTicks: number;
+  kind: "typ" | "other";
+}
+
+interface CodeRange {
+  start: number;
+  end: number;
+  width: number;
+}
+
+interface UrlRange {
+  start: number;
+  end: number;
+}
+
+interface InlineOptions {
+  lineStart?: boolean;
+}
+
 const BUILT_INS =
   "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 const FORBIDDEN_LINE_BREAKS = new Set(["\r", "\u000b", "\f", "\u0085", "\u2028", "\u2029"]);
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
-const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
+const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 const INVALID_PROPERTY_NAMES = new Set([
   "none",
   "auto",
@@ -73,12 +106,12 @@ class MappedLineBuilder {
 
   appendSource(text: string, sourceStart: number): void {
     if (text.length === 0) return;
-    this.pieces.push({ text, sourceStart, sourceLength: text.length, identity: true });
+    this.pieces.push({ text, sourceStart, sourceLength: text.length, identity: true, mapToStart: false });
   }
 
   appendMapped(text: string, sourceStart: number, sourceLength: number): void {
     if (text.length === 0) return;
-    this.pieces.push({ text, sourceStart, sourceLength, identity: false });
+    this.pieces.push({ text, sourceStart, sourceLength, identity: false, mapToStart: false });
   }
 
   appendEscaped(character: string, sourceStart: number): void {
@@ -88,7 +121,12 @@ class MappedLineBuilder {
 
   appendInserted(text: string, anchor = 0): void {
     if (text.length === 0) return;
-    this.pieces.push({ text, sourceStart: anchor, sourceLength: 0, identity: false });
+    this.pieces.push({ text, sourceStart: anchor, sourceLength: 0, identity: false, mapToStart: false });
+  }
+
+  appendMappedToStart(text: string, sourceStart: number, sourceLength: number): void {
+    if (text.length === 0) return;
+    this.pieces.push({ text, sourceStart, sourceLength, identity: false, mapToStart: true });
   }
 
   appendBuilder(builder: MappedLineBuilder): void {
@@ -107,12 +145,18 @@ class MappedLineBuilder {
         for (let column = 0; column <= outputLength; column += 1) {
           toMd[outputOffset + column] = piece.sourceStart;
         }
+      } else if (piece.mapToStart) {
+        for (let column = 0; column <= outputLength; column += 1) {
+          toMd[outputOffset + column] = piece.sourceStart;
+        }
+        for (let column = 0; column < piece.sourceLength; column += 1) {
+          toTyp[piece.sourceStart + column] = outputOffset;
+        }
+        toTyp[piece.sourceStart + piece.sourceLength] = outputOffset + outputLength;
       } else if (piece.identity && outputLength === piece.sourceLength) {
         for (let column = 0; column <= outputLength; column += 1) {
           toMd[outputOffset + column] = piece.sourceStart + column;
-          if (piece.sourceStart + column <= sourceLength) {
-            toTyp[piece.sourceStart + column] = outputOffset + column;
-          }
+          toTyp[piece.sourceStart + column] = outputOffset + column;
         }
       } else {
         for (let column = 0; column < outputLength; column += 1) {
@@ -120,13 +164,9 @@ class MappedLineBuilder {
         }
         toMd[outputOffset + outputLength] = piece.sourceStart + piece.sourceLength;
         for (let column = 0; column < piece.sourceLength; column += 1) {
-          if (piece.sourceStart + column <= sourceLength) {
-            toTyp[piece.sourceStart + column] = outputOffset;
-          }
+          toTyp[piece.sourceStart + column] = outputOffset;
         }
-        if (piece.sourceStart + piece.sourceLength <= sourceLength) {
-          toTyp[piece.sourceStart + piece.sourceLength] = outputOffset + outputLength;
-        }
+        toTyp[piece.sourceStart + piece.sourceLength] = outputOffset + outputLength;
       }
       outputOffset += outputLength;
     }
@@ -161,9 +201,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
   for (let line = 1; line < frontmatterEnd; line += 1) {
     const sourceLine = lines[line];
     let output = "";
-    if (continuation && isIndentedNonBlank(sourceLine)) {
-      continuation = true;
-    } else {
+    if (!continuation || !isIndentedNonBlank(sourceLine)) {
       continuation = false;
       const property = parseProperty(sourceLine);
       if (property) {
@@ -172,7 +210,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
         continuation = hasContinuation;
         if (!PROPERTY_NAME.test(property.name) || INVALID_PROPERTY_NAMES.has(property.name)) {
           addProblem(problems, line, `Property name ${property.name || "<empty>"} is not a Typst identifier`, false);
-        } else if (property.name !== "template" && property.name !== "") {
+        } else if (property.name !== "template") {
           const literal = parseValue(property.value);
           if (literal === undefined || multiline) {
             addProblem(problems, line, `Property ${property.name} has no scalar value`, false);
@@ -182,7 +220,6 @@ export function convert(text: string, kit: KitView | null): Conversion {
         } else if (multiline) {
           addProblem(problems, line, `Property ${property.name} has no scalar value`, false);
         }
-        if (multiline) output = "";
       }
     }
     addGeneratedLine(outputLines, maps, sanitizeLine(output), sourceLine.length);
@@ -207,7 +244,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
           addProblem(problems, line, "Typst code contains a line-break character", true);
         }
         if (fence.kind === "other" && fence.closeLine < 0 && line === lines.length - 1) {
-          builder.appendInserted(`${line === fence.openingLine ? " " : ""}${"`".repeat(fence.outputTicks)}`);
+          builder.appendInserted(`${sourceLine.endsWith("`") ? " " : ""}${"`".repeat(fence.outputTicks)}`);
         }
       }
     } else {
@@ -252,21 +289,6 @@ export function convert(text: string, kit: KitView | null): Conversion {
     },
     problems,
   };
-}
-
-interface FenceOpening {
-  indentation: string;
-  ticks: number;
-  kind: "typ" | "other";
-  word: string;
-}
-
-interface FenceState {
-  openingLine: number;
-  closeLine: number;
-  indentation: string;
-  outputTicks: number;
-  kind: "typ" | "other";
 }
 
 function parseFenceOpening(line: string): FenceOpening | undefined {
@@ -325,7 +347,6 @@ function analyzeFence(lines: readonly string[], openingLine: number, opening: Fe
     longest = Math.max(longest, longestBacktickRun(lines[line]));
   }
   return {
-    openingLine,
     closeLine,
     indentation: opening.indentation,
     outputTicks: Math.max(3, longest + 1),
@@ -376,7 +397,8 @@ function selectTemplate(
   let explicit: { line: number; id: string } | undefined;
   for (let line = 1; line < end; line += 1) {
     const property = parseProperty(lines[line]);
-    if (property?.name === "template" && !explicit) {
+    const multiline = property !== undefined && (isBlockValue(property.value) || isIndentedNonBlank(lines[line + 1] ?? ""));
+    if (property?.name === "template" && !multiline && !explicit) {
       explicit = { line, id: unquoteTemplateId(property.value.trim()) };
     }
   }
@@ -426,9 +448,7 @@ function parseValue(value: string, depth = 0): string | undefined {
   if (trimmed === "" || isBlockValue(trimmed)) return undefined;
   if (trimmed === "true" || trimmed === "false" || NUMBER.test(trimmed)) return trimmed;
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    if (flowArrayDepth(trimmed) > MAX_ARRAY_DEPTH) return undefined;
-    const array = parseArray(trimmed, depth);
-    if (array !== undefined) return array;
+    return parseArray(trimmed, depth);
   }
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
     return quoteString(trimmed.slice(1, -1));
@@ -455,38 +475,13 @@ function parseArray(value: string, depth: number): string | undefined {
   return `(${literals.join(", ")},)`;
 }
 
-function flowArrayDepth(value: string): number {
-  let depth = 0;
-  let longest = 0;
-  let quote: string | undefined;
-  let escaped = false;
-  for (const character of value) {
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = undefined;
-      }
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === "[") {
-      depth += 1;
-      longest = Math.max(longest, depth);
-    } else if (character === "]") {
-      depth -= 1;
-    }
-  }
-  return longest;
-}
-
 function splitArrayItems(value: string): string[] | undefined {
   const items: string[] = [];
   let start = 0;
   let depth = 0;
   let quote: string | undefined;
   let escaped = false;
+  let quoteAllowed = true;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
     if (quote) {
@@ -497,18 +492,24 @@ function splitArrayItems(value: string): string[] | undefined {
       } else if (character === quote) {
         quote = undefined;
       }
-    } else if (character === '"' || character === "'") {
-      quote = character;
     } else if (character === "[") {
       depth += 1;
+      quoteAllowed = true;
     } else if (character === "]") {
       depth -= 1;
       if (depth < 0) return undefined;
+      quoteAllowed = false;
     } else if (character === "," && depth === 0) {
       const item = value.slice(start, index).trim();
       if (item === "") return undefined;
       items.push(item);
       start = index + 1;
+      quoteAllowed = true;
+    } else if ((character === '"' || character === "'") && quoteAllowed) {
+      quote = character;
+      quoteAllowed = false;
+    } else if (!/\s/u.test(character)) {
+      quoteAllowed = false;
     }
   }
   if (quote || depth !== 0) return undefined;
@@ -562,7 +563,9 @@ function convertProseLine(line: string): MappedLineBuilder {
   if (heading) {
     builder.appendMapped("=".repeat(heading[1].length), 0, heading[1].length);
     builder.appendSource(heading[2], heading[1].length);
-    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, true));
+    builder.appendBuilder(
+      convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }),
+    );
     return builder;
   }
 
@@ -572,7 +575,9 @@ function convertProseLine(line: string): MappedLineBuilder {
     builder.appendSource(unordered[1], 0);
     builder.appendMapped("-", markerStart, 1);
     builder.appendSource(unordered[3], markerStart + 1);
-    builder.appendBuilder(convertInline(line.slice(markerStart + 1 + unordered[3].length), markerStart + 1 + unordered[3].length, true));
+    builder.appendBuilder(
+      convertInline(line.slice(markerStart + 1 + unordered[3].length), markerStart + 1 + unordered[3].length, { lineStart: true }),
+    );
     return builder;
   }
 
@@ -582,77 +587,73 @@ function convertProseLine(line: string): MappedLineBuilder {
     builder.appendSource(ordered[1], 0);
     builder.appendSource(ordered[2], ordered[1].length);
     builder.appendSource(ordered[3], ordered[1].length + ordered[2].length);
-    builder.appendBuilder(convertInline(line.slice(contentStart), contentStart, true));
+    builder.appendBuilder(convertInline(line.slice(contentStart), contentStart, { lineStart: true }));
     return builder;
   }
 
-  const indentation = /^[ \t]*/u.exec(line)?.[0] ?? "";
-  builder.appendSource(indentation, 0);
-  builder.appendBuilder(convertInline(line.slice(indentation.length), indentation.length, true));
+  const indentationLength = leadingIndentLength(line);
+  appendNormalized(builder, line.slice(0, indentationLength), 0);
+  builder.appendBuilder(convertInline(line.slice(indentationLength), indentationLength, { lineStart: true }));
   return builder;
-}
-
-interface CodeRange {
-  start: number;
-  end: number;
-  width: number;
-}
-
-interface UrlRange {
-  start: number;
-  end: number;
 }
 
 function convertInline(
   text: string,
   sourceOffset: number,
-  lineStart = false,
-  adjacentToOpeningMarker = false,
-  adjacentToClosingMarker = false,
+  options: InlineOptions = {},
 ): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
   const urls = findUrls(text, codeRanges);
-  const emphasis = findEmphasisRanges(text, codeRanges);
+  const emphasis = findEmphasisRanges(text, codeRanges, urls);
+  const codeByStart = new Map(codeRanges.map((range) => [range.start, range]));
+  const urlByStart = new Map(urls.map((range) => [range.start, range]));
+  const emphasisByStart = new Map(emphasis.map((range) => [range.start, range]));
+  const lineStartIndex = options.lineStart ? leadingIndentLength(text) : -1;
   let index = 0;
 
   while (index < text.length) {
-    const code = codeRanges.find((range) => range.start === index);
+    const code = codeByStart.get(index);
     if (code) {
       let content = text.slice(code.start + code.width, code.end - code.width);
       if (code.width === 1 && !content.includes("`")) {
         appendNormalized(builder, text.slice(code.start, code.end), sourceOffset + code.start);
       } else {
+        const rawContentStart = code.start + code.width;
+        const rawContentEnd = code.end - code.width;
+        let contentStart = rawContentStart;
+        let contentEnd = rawContentEnd;
         if (content.length >= 2 && content.startsWith(" ") && content.endsWith(" ") && /[^ ]/u.test(content)) {
           content = content.slice(1, -1);
+          contentStart += 1;
+          contentEnd -= 1;
         }
-        content = sanitizeLine(content);
-        builder.appendMapped(`#std.raw(${quoteString(content)});`, sourceOffset + code.start, code.end - code.start);
+        appendGeneratedLiteral(
+          builder,
+          "#std.raw(\"",
+          content,
+          "\");",
+          sourceOffset + code.start,
+          sourceOffset + contentStart,
+          sourceOffset + code.end,
+        );
       }
       index = code.end;
       continue;
     }
 
-    const url = urls.find((range) => range.start === index);
+    const url = urlByStart.get(index);
     if (url) {
-      builder.appendMapped(`#std.link(${quoteString(text.slice(url.start, url.end))});`, sourceOffset + url.start, url.end - url.start);
+      appendGeneratedLiteral(builder, "#std.link(\"", text.slice(url.start, url.end), "\");", sourceOffset + url.start, sourceOffset + url.start, sourceOffset + url.end);
       index = url.end;
       continue;
     }
 
-    const mark = emphasis.find((range) => range.start === index);
+    const mark = emphasisByStart.get(index);
     if (mark) {
       const marker = mark.strong ? "*" : "_";
       builder.appendMapped(marker, sourceOffset + mark.start, mark.width);
-      builder.appendBuilder(
-        convertInline(
-          text.slice(mark.start + mark.width, mark.end - mark.width),
-          sourceOffset + mark.start + mark.width,
-          false,
-          true,
-          true,
-        ),
-      );
+      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width));
       builder.appendMapped(marker, sourceOffset + mark.end - mark.width, mark.width);
       index = mark.end;
       continue;
@@ -666,21 +667,13 @@ function convertInline(
         builder.appendSource(text.slice(index, index + 2), sourceOffset + index);
         index += 2;
       } else {
-        builder.appendMapped("\\\\", sourceOffset + index, 1);
+        builder.appendEscaped("\\", sourceOffset + index);
         index += 1;
       }
       continue;
     }
 
-    if (
-      character === "/" &&
-      (text[index + 1] === "/" ||
-        text[index + 1] === "*" ||
-        isEmphasisMarkerAt(emphasis, index - 1) ||
-        isEmphasisMarkerAt(emphasis, index + 1) ||
-        (index === 0 && adjacentToOpeningMarker) ||
-        (index + width === text.length && adjacentToClosingMarker))
-    ) {
+    if (character === "/") {
       builder.appendEscaped(character, sourceOffset + index);
       index += 1;
       continue;
@@ -698,7 +691,17 @@ function convertInline(
       continue;
     }
 
-    if (lineStart && index === 0 && (character === "=" || (character === "/" && text[index + 1] === " "))) {
+    if (character === "-" && text[index + width] === "?") {
+      builder.appendEscaped(character, sourceOffset + index);
+      index += width;
+      continue;
+    }
+
+    if (
+      options.lineStart &&
+      index === lineStartIndex &&
+      (character === "=" || (character === "+" && (!text[index + width] || /\s/u.test(text[index + width]))))
+    ) {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
       continue;
@@ -711,12 +714,36 @@ function convertInline(
   return builder;
 }
 
-function isEmphasisMarkerAt(ranges: EmphasisRange[], index: number): boolean {
-  return ranges.some(
-    (range) =>
-      (index >= range.start && index < range.start + range.width) ||
-      (index >= range.end - range.width && index < range.end),
-  );
+function appendGeneratedLiteral(
+  builder: MappedLineBuilder,
+  prefix: string,
+  content: string,
+  suffix: string,
+  sourceStart: number,
+  contentStart: number,
+  sourceEnd: number,
+): void {
+  builder.appendMappedToStart(prefix, sourceStart, contentStart - sourceStart);
+  let offset = 0;
+  while (offset < content.length) {
+    const width = codePointWidth(content, offset);
+    const character = content.slice(offset, offset + width);
+    if (character === "\\" || character === '"') {
+      builder.appendEscaped(character, contentStart + offset);
+    } else if (isForbiddenLineBreak(character)) {
+      builder.appendMapped(" ", contentStart + offset, width);
+    } else {
+      builder.appendSource(character, contentStart + offset);
+    }
+    offset += width;
+  }
+  builder.appendMappedToStart(suffix, contentStart + content.length, sourceEnd - (contentStart + content.length));
+}
+
+function leadingIndentLength(text: string): number {
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t" || isForbiddenLineBreak(text[index]))) index += 1;
+  return index;
 }
 
 function findCodeRanges(text: string): CodeRange[] {
@@ -757,10 +784,12 @@ function findCodeRanges(text: string): CodeRange[] {
 function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
   const ranges: UrlRange[] = [];
   let index = 0;
+  let codeIndex = 0;
   while (index < text.length) {
-    if (codeRanges.some((range) => index >= range.start && index < range.end)) {
-      const code = codeRanges.find((range) => index >= range.start && index < range.end);
-      index = code?.end ?? index + 1;
+    while (codeIndex < codeRanges.length && codeRanges[codeIndex].end <= index) codeIndex += 1;
+    const code = codeRanges[codeIndex];
+    if (code && index >= code.start && index < code.end) {
+      index = code.end;
       continue;
     }
     const scheme = text.startsWith("https://", index) ? "https://" : text.startsWith("http://", index) ? "http://" : "";
@@ -769,9 +798,14 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
       continue;
     }
     let end = index + scheme.length;
-    while (end < text.length && !/[\s<]/u.test(text[end])) end += 1;
+    let hasOpeningParenthesis = false;
+    while (end < text.length && !/[\s<]/u.test(text[end])) {
+      if (text[end] === "(") hasOpeningParenthesis = true;
+      if (code && end >= code.start) break;
+      end += 1;
+    }
     while (end > index + scheme.length && ".,:;!?'\"*_~)".includes(text[end - 1])) {
-      if (text[end - 1] === ")" && text.slice(index, end).includes("(")) break;
+      if (text[end - 1] === ")" && hasOpeningParenthesis) break;
       end -= 1;
     }
     if (end > index + scheme.length) {
@@ -784,13 +818,23 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
   return ranges;
 }
 
-function findEmphasisRanges(text: string, codeRanges: Array<{ start: number; end: number }>): EmphasisRange[] {
+function findEmphasisRanges(text: string, codeRanges: CodeRange[], urls: UrlRange[]): EmphasisRange[] {
   const ranges: EmphasisRange[] = [];
+  const closing = findClosingDelimiters(text, codeRanges, urls);
   let index = 0;
+  let codeIndex = 0;
+  let urlIndex = 0;
   while (index < text.length) {
-    const code = codeRanges.find((range) => index >= range.start && index < range.end);
-    if (code) {
+    while (codeIndex < codeRanges.length && codeRanges[codeIndex].end <= index) codeIndex += 1;
+    while (urlIndex < urls.length && urls[urlIndex].end <= index) urlIndex += 1;
+    const code = codeRanges[codeIndex];
+    const url = urls[urlIndex];
+    if (code && index >= code.start && index < code.end) {
       index = code.end;
+      continue;
+    }
+    if (url && index >= url.start && index < url.end) {
+      index = url.end;
       continue;
     }
     if ((text[index] !== "*" && text[index] !== "_") || isEscaped(text, index)) {
@@ -805,7 +849,7 @@ function findEmphasisRanges(text: string, codeRanges: Array<{ start: number; end
       index += width;
       continue;
     }
-    const close = findClosingDelimiter(text, index + width, marker, width, codeRanges);
+    const close = findClosing(closing, index + width, marker, width);
     if (close < 0) {
       index += width;
       continue;
@@ -816,23 +860,52 @@ function findEmphasisRanges(text: string, codeRanges: Array<{ start: number; end
   return ranges;
 }
 
-function findClosingDelimiter(
-  text: string,
-  start: number,
-  marker: string,
-  width: number,
-  codeRanges: Array<{ start: number; end: number }>,
-): number {
-  for (let index = start; index <= text.length - width; index += 1) {
-    const code = codeRanges.find((range) => index >= range.start && index < range.end);
-    if (code) {
-      index = code.end - 1;
+function findClosingDelimiters(text: string, codeRanges: CodeRange[], urls: UrlRange[]): Map<string, number[]> {
+  const result = new Map<string, number[]>();
+  let index = 0;
+  let codeIndex = 0;
+  let urlIndex = 0;
+  while (index < text.length) {
+    while (codeIndex < codeRanges.length && codeRanges[codeIndex].end <= index) codeIndex += 1;
+    while (urlIndex < urls.length && urls[urlIndex].end <= index) urlIndex += 1;
+    const code = codeRanges[codeIndex];
+    const url = urls[urlIndex];
+    if (code && index >= code.start && index < code.end) {
+      index = code.end;
       continue;
     }
-    if (text[index] !== marker || !text.startsWith(marker.repeat(width), index) || isEscaped(text, index)) continue;
-    if (canClose(text, index, width)) return index;
+    if (url && index >= url.start && index < url.end) {
+      index = url.end;
+      continue;
+    }
+    if ((text[index] !== "*" && text[index] !== "_") || isEscaped(text, index)) {
+      index += codePointWidth(text, index);
+      continue;
+    }
+    const marker = text[index];
+    const strong = text[index + 1] === marker;
+    const width = strong ? 2 : 1;
+    if (canClose(text, index, width)) {
+      const key = `${marker}${width}`;
+      const positions = result.get(key);
+      if (positions) positions.push(index);
+      else result.set(key, [index]);
+    }
+    index += width;
   }
-  return -1;
+  return result;
+}
+
+function findClosing(delimiters: Map<string, number[]>, start: number, marker: string, width: number): number {
+  const positions = delimiters.get(`${marker}${width}`) ?? [];
+  let low = 0;
+  let high = positions.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (positions[middle] < start) low = middle + 1;
+    else high = middle;
+  }
+  return positions[low] ?? -1;
 }
 
 function canOpen(text: string, index: number, width: number): boolean {
@@ -865,7 +938,7 @@ function codePointWidth(text: string, index: number): number {
 }
 
 function isWord(character: string): boolean {
-  return character !== "" && /[\p{L}\p{N}]/u.test(character) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
+  return character !== "" && /[\p{Alphabetic}\p{N}]/u.test(character) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
 }
 
 function isEscaped(text: string, index: number): boolean {
