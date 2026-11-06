@@ -9,7 +9,6 @@ export interface Problem {
   fatal: boolean;
 }
 
-/** The caller strips BOM and CRLF before this call; lines are zero-based and columns are UTF-16 code units. */
 export interface Conversion {
   source: boolean;
   typ: string;
@@ -136,6 +135,7 @@ class MappedLineBuilder {
   }
 }
 
+/** The caller strips BOM and CRLF before this call; lines are zero-based and columns are UTF-16 code units. */
 export function convert(text: string, kit: KitView | null): Conversion {
   const input = typeof text === "string" ? text : String(text ?? "");
   const lines = input.split("\n");
@@ -603,7 +603,13 @@ interface UrlRange {
   end: number;
 }
 
-function convertInline(text: string, sourceOffset: number, lineStart = false): MappedLineBuilder {
+function convertInline(
+  text: string,
+  sourceOffset: number,
+  lineStart = false,
+  adjacentToOpeningMarker = false,
+  adjacentToClosingMarker = false,
+): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
   const urls = findUrls(text, codeRanges);
@@ -613,10 +619,10 @@ function convertInline(text: string, sourceOffset: number, lineStart = false): M
   while (index < text.length) {
     const code = codeRanges.find((range) => range.start === index);
     if (code) {
-      if (code.width === 1) {
+      let content = text.slice(code.start + code.width, code.end - code.width);
+      if (code.width === 1 && !content.includes("`")) {
         appendNormalized(builder, text.slice(code.start, code.end), sourceOffset + code.start);
       } else {
-        let content = text.slice(code.start + code.width, code.end - code.width);
         if (content.length >= 2 && content.startsWith(" ") && content.endsWith(" ") && /[^ ]/u.test(content)) {
           content = content.slice(1, -1);
         }
@@ -638,7 +644,15 @@ function convertInline(text: string, sourceOffset: number, lineStart = false): M
     if (mark) {
       const marker = mark.strong ? "*" : "_";
       builder.appendMapped(marker, sourceOffset + mark.start, mark.width);
-      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width));
+      builder.appendBuilder(
+        convertInline(
+          text.slice(mark.start + mark.width, mark.end - mark.width),
+          sourceOffset + mark.start + mark.width,
+          false,
+          true,
+          true,
+        ),
+      );
       builder.appendMapped(marker, sourceOffset + mark.end - mark.width, mark.width);
       index = mark.end;
       continue;
@@ -658,7 +672,15 @@ function convertInline(text: string, sourceOffset: number, lineStart = false): M
       continue;
     }
 
-    if (character === "/" && (text[index + 1] === "/" || text[index + 1] === "*" || isEmphasisMarkerAt(emphasis, index - 1) || isEmphasisMarkerAt(emphasis, index + 1))) {
+    if (
+      character === "/" &&
+      (text[index + 1] === "/" ||
+        text[index + 1] === "*" ||
+        isEmphasisMarkerAt(emphasis, index - 1) ||
+        isEmphasisMarkerAt(emphasis, index + 1) ||
+        (index === 0 && adjacentToOpeningMarker) ||
+        (index + width === text.length && adjacentToClosingMarker))
+    ) {
       builder.appendEscaped(character, sourceOffset + index);
       index += 1;
       continue;
