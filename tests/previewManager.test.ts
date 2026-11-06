@@ -5,7 +5,36 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
-import { SourceRegistry, typAdapter } from "../src/sources";
+import { SourceRegistry, typAdapter, type TypstSource } from "../src/sources";
+
+function source(path: string, release: () => void, entryOffset = 0): TypstSource {
+  return {
+    file: path,
+    entry: `/vault/${path}`,
+    document: `/vault/${path}`,
+    inputs: `/input/${path}`,
+    pinnable: true,
+    pdf: `${path}.pdf`,
+    open: () => ({ close: () => {} }),
+    toSource: (position) => position,
+    toEntry: (position) => ({
+      line: position.line + entryOffset,
+      character: position.character + entryOffset,
+    }),
+    reveal: async () => {},
+    describe: String,
+    on: () => () => {},
+    release,
+  };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 test("starting a renamed preview launches the requested path instead of reusing the old task", async () => {
   // #given
@@ -67,5 +96,149 @@ test("starting a renamed preview launches the requested path instead of reusing 
     await manager.stop();
     manager.dispose();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("renaming a running preview sends no language-client call", async () => {
+  // #given
+  const calls: string[] = [];
+  const holds: TypstSource[] = [];
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push(`setPreviewSource:${input ?? ""}`),
+      pinMain: () => calls.push("pinMain"),
+      executeCommand: async (command: string) => {
+        calls.push(command);
+        return command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => {
+        const held = source(path, () => {});
+        holds.push(held);
+        return held;
+      },
+      byDocument: () => null,
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  await manager.start("/vault/old/chapter.typ");
+  calls.length = 0;
+
+  // #when
+  manager.onVaultRename("new", "old");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  // #then
+  try {
+    assert.deepEqual({ calls, sourcePath: manager.sourcePath(), holds: holds.length }, {
+      calls: [],
+      sourcePath: "new/chapter.typ",
+      holds: 2,
+    });
+  } finally {
+    await manager.stop();
+    manager.dispose();
+  }
+});
+
+test("overlapping preview starts release every held source after stop", async () => {
+  // #given
+  const firstStart = deferred<{ staticServerPort: number }>();
+  let startCalls = 0;
+  let holds = 0;
+  let releases = 0;
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async (command: string) => {
+        if (command !== "tinymist.doStartPreview") return {};
+        startCalls++;
+        return startCalls === 1 ? await firstStart.promise : { staticServerPort: 4322 };
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => {
+        holds++;
+        return source(path, () => {
+          releases++;
+        });
+      },
+      byDocument: () => null,
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const first = manager.start("/vault/first.typ");
+  await Promise.resolve();
+  const second = manager.start("/vault/second.typ");
+  await second;
+  firstStart.resolve({ staticServerPort: 4321 });
+  await first;
+
+  // #when
+  await manager.stop();
+
+  // #then
+  try {
+    assert.deepEqual({ holds, releases, balance: holds - releases }, { holds: 2, releases: 2, balance: 0 });
+  } finally {
+    manager.dispose();
+  }
+});
+
+test("cursor sync uses the caller source mapping and falls back to caller coordinates", async () => {
+  // #given
+  const scrolls: unknown[] = [];
+  const held = source("notes/chapter.typ", () => {}, 10);
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async (command: string, args: unknown[]) => {
+        if (command === "tinymist.scrollPreview") scrolls.push(args[1]);
+        return command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => held,
+      byDocument: (document: string) => (document === held.document ? held : null),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  await manager.start("/vault/notes/chapter.typ");
+
+  // #when
+  manager.cursorMoved("/vault/notes/chapter.typ", 1, 2);
+  manager.cursorMoved("/vault/notes/other.typ", 3, 4);
+  await Promise.resolve();
+
+  // #then
+  try {
+    assert.deepEqual(scrolls, [
+      { event: "panelScrollTo", filepath: "/vault/notes/chapter.typ", line: 11, character: 12 },
+      { event: "panelScrollTo", filepath: "/vault/notes/other.typ", line: 3, character: 4 },
+    ]);
+  } finally {
+    await manager.stop();
+    manager.dispose();
   }
 });

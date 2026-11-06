@@ -179,6 +179,30 @@ test("SourceRegistry queries adapters in order and mayBeSource does not create a
   );
 });
 
+test("SourceRegistry asks a false-mayBe adapter and shares its held source", async () => {
+  // #given
+  const { SourceRegistry } = sources();
+  let creates = 0;
+  const adapter: SourceAdapter = {
+    mayBe: () => false,
+    create: async (path, release) => {
+      creates++;
+      return source(path, release);
+    },
+  };
+  const registry = new SourceRegistry([adapter]);
+
+  // #when
+  const first = await registry.hold("notes/chapter.md");
+  const second = await registry.hold("notes/chapter.md");
+  if (!first || !second) throw new Error("expected a source from the adapter verdict");
+  first.release();
+  second.release();
+
+  // #then
+  assert.deepEqual({ sameObject: first === second, creates }, { sameObject: true, creates: 1 });
+});
+
 test("the typ adapter follows a wrapper created after the source is held", async () => {
   // #given
   const { typAdapter } = sources();
