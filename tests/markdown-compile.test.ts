@@ -96,3 +96,19 @@ test("C27: an unclosed non-typ fence with a trailing backtick compiles", { skip:
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("C39: raw blocks with non-Identifier fence words compile without tag text", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-invalid-fence-word-"));
+  const output = join(directory, "sample.typ");
+  const source = "---\ntypst: true\n---\n```c++\nint x;\n```\n```c#\nint x;\n```\n```.net\nint x;\n```\n```1c\nint x;\n```";
+  writeFileSync(output, convert(source, { templates: {}, defaultTemplate: "" }).typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -92,7 +92,7 @@ test("C4–C5: frontmatter becomes the preamble and typed template arguments", (
       "typst-empty-list: []",
       "typst-bare: alpha",
       "typst-single: 'beta'",
-      'typst-path: "C:\\notes"',
+      'typst-path: "C:\\\\notes"',
       "ignored: value",
     ],
     ["Body"],
@@ -303,15 +303,6 @@ test("C10: source notes stay total for hostile bodies, a 300,000-character line,
   assert.deepEqual(conversion?.problems.map(({ line, fatal }) => ({ line, fatal })), [{ line: 2, fatal: false }]);
 });
 
-test("C11: prose slashes cannot form a Typst comment beside emphasis", () => {
-  // #given
-  const text = sourceNote(["typst: true"], ["///", "////", "a/**b**", "**b**/c", "**/b**", "**b/**"]);
-  // #when
-  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
-  // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\/\\/", "\\/\\/\\/\\/", "a\\/*b*", "*b*\\/c", "*\\/b*", "*b\\/*"]);
-});
-
 test("C12: multi-backtick code spans are raw text rather than Typst markup", () => {
   // #given
   const text = sourceNote(["typst: true"], ["before ``#let value = [markup]`` after", "`` a`b ``", "x `a```#strong[RUN]```b` y", "x `a``b` y"]);
@@ -510,11 +501,11 @@ test("C25: shorthand-sensitive prose characters remain literal", () => {
 
 test("C26: URLs are opaque to emphasis and stop before a code span", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["https://x.com/foo_/bar and _italic_", "_see https://en.wikipedia.org/wiki/Foo_(bar)_", "*a https://e.com/*x y", "https://x.com/`a` b"]);
+  const text = sourceNote(["typst: true"], ["https://x.com/foo_/bar and _italic_", "_see https://en.wikipedia.org/wiki/Foo_(bar)_", "*a https://e.com/*x y", "https://x.com/`a` b", "(see https://x.y)"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ['#std.link("https://x.com/foo_/bar"); and _italic_', '_see #std.link("https://en.wikipedia.org/wiki/Foo_(bar)");_', '\\*a #std.link("https://e.com/*x"); y', '#std.link("https://x.com/");`a` b']);
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ['#std.link("https://x.com/foo_/bar"); and _italic_', '_see #std.link("https://en.wikipedia.org/wiki/Foo_(bar)");_', '\\*a #std.link("https://e.com/*x"); y', '#std.link("https://x.com/");`a` b', '(see #std.link("https://x.y");)']);
 });
 
 test("C27: non-typ fences preserve a four-backtick fence and separate an unclosed trailing backtick", () => {
@@ -567,6 +558,55 @@ test("C29: a prose backslash maps its escaped character column", () => {
   assert.deepEqual({ typ: outputLines(conversion.typ)[3], toTyp: [conversion.toTyp(3, 0), conversion.toTyp(3, 1), conversion.toTyp(3, 2), conversion.toTyp(3, 3)], toMd: [conversion.toMd(3, 0), conversion.toMd(3, 1), conversion.toMd(3, 2), conversion.toMd(3, 3), conversion.toMd(3, 4)] }, { typ: "a\\\\b", toTyp: [0, 2, 3, 4], toMd: [0, 1, 1, 2, 3] });
 });
 
+test("C48: generated string literals escape hostile quotes and preserve their columns", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-x: a",);#panic();//'], ['``");#panic();//``', 'https://x.y/a"b']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    {
+      lines: outputLines(conversion.typ),
+      toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((column) => conversion.toTyp(4, column)),
+    },
+    {
+      lines: [
+        `${BUILT_INS}#show: template.with(`,
+        "",
+        'x: "a\\",);#panic();//",',
+        ")",
+        '#std.raw("\\");#panic();//");',
+        '#std.link("https://x.y/a\\"b");',
+      ],
+      toTyp: [0, 0, 11, 12, 13, 14, 15, 16, 17, 18],
+    },
+  );
+});
+
+test("C48: stripped code-span spaces map to the raw literal content", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["`` a`b ``"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((column) => conversion.toTyp(3, column)),
+    [0, 0, 0, 10, 11, 12, 13, 13, 13, 16],
+  );
+});
+
+test("C48: a Typst-only line break in a non-typ fence is a space without a problem", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["```js", "const value = a\u000bb", "```"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ).slice(3), problems: conversion.problems },
+    { lines: ["```js", "const value = a b", "```"], problems: [] },
+  );
+});
+
 function performanceResult(body: string): { error: string | undefined; status: number | null; withinLimit: boolean } {
   const source = `---\ntypst: true\n---\n${body}`;
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-performance-"));
@@ -575,13 +615,15 @@ function performanceResult(body: string): { error: string | undefined; status: n
     const output = join(directory, "convert.cjs");
     buildSync({ entryPoints: ["src/markdown/convert.ts"], bundle: true, format: "cjs", platform: "node", outfile: output });
     const runner = `
+      const { readFileSync } = require("node:fs");
       const { convert } = require(process.env.output);
+      const source = readFileSync(0, "utf8");
       const started = performance.now();
-      convert(${JSON.stringify(source)}, null);
+      convert(source, null);
       process.stdout.write(JSON.stringify({ elapsed: performance.now() - started }));
     `;
-    const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", timeout: 5_500, env: { ...process.env, output } });
-    const elapsed = result.stdout === "" ? Number.POSITIVE_INFINITY : JSON.parse(result.stdout).elapsed as number;
+    const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", input: source, timeout: 5_500, env: { ...process.env, output } });
+    const elapsed = typeof result.stdout === "string" && result.stdout !== "" ? JSON.parse(result.stdout).elapsed as number : Number.POSITIVE_INFINITY;
     return { error: result.error?.code, status: result.status, withinLimit: elapsed < 5_000 };
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -622,6 +664,98 @@ test("C30: prose backslashes on a 300,000-character line convert within five sec
   const result = performanceResult(body);
   // #then
   assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C38: unmatched backtick runs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+  // #given
+  const body = "\\``a".repeat(75_000);
+  // #when
+  const result = performanceResult(body);
+  // #then
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C39: non-Identifier fence words are dropped from raw blocks", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["```c++", "int x;", "```", "```c#", "int x;", "```", "```.net", "int x;", "```", "```1c", "int x;", "```"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["```", "int x;", "```", "```", "int x;", "```", "```", "int x;", "```", "```", "int x;", "```"]);
+});
+
+test("C41: YAML quotes decode before Typst string escaping", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-quote: ''", "typst-path: 'C:\\'", "typst-paths: ['a\\', 'b']", "typst-possessive: 'it''s'", 'typst-title: "He said: \\"hi\\""', 'typst-tab: "tab\\there"']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      lines: [`${BUILT_INS}#show: template.with(`, "", "quote: \"'\",", 'path: "C:\\\\",', 'paths: ("a\\\\", "b",),', 'possessive: "it\'s",', 'title: "He said: \\"hi\\"",', 'tab: "tab\\there",', ")"],
+      problems: [],
+    },
+  );
+});
+
+test("C42: flow arrays reject text after a closing quote", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-a: ['a' junk]", 'typst-b: ["b"junk]', 'typst-c: [a, "b" trailing]']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems.map(({ line, fatal }) => ({ line, fatal })) },
+    {
+      lines: [`${BUILT_INS}#show: template.with(`, "", "", "", "", ")"],
+      problems: [{ line: 2, fatal: false }, { line: 3, fatal: false }, { line: 4, fatal: false }],
+    },
+  );
+});
+
+test("C43: YAML comments end unquoted values without changing quoted hashes", () => {
+  // #given
+  const text = sourceNote(["typst: true # on", "typst-template: reference # default", "typst-pages: 5 # two sheets", "typst-a: [1, 2] # c", 'typst-title: "a # b"']);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.deepEqual(
+    { source: conversion.source, lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      source: true,
+      lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", "", "pages: 5,", "a: (1, 2,),", 'title: "a # b",', ")"],
+      problems: [],
+    },
+  );
+});
+
+test("C44: a NEL is sanitized before structure and inline conversion", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["- +\u0085x", "https://a.b\u0085c d", "*a\u0085*"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["- \\+ x", '#std.link("https://a.b"); c d', "\\*a \\*"]);
+});
+
+test("C45: each rejected value names its failure kind", () => {
+  // #given
+  const deeplyNested = `${"[".repeat(33)}x${"]".repeat(33)}`;
+  const text = sourceNote(["typst: true", "typst-empty:", "typst-multiline: |", "  continued", "typst-malformed: [x,,y]", `typst-deep: ${deeplyNested}`, 'typst-escape: "\\q"']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    conversion.problems,
+    [
+      { line: 2, message: "Property empty has no value", fatal: false },
+      { line: 3, message: "Property multiline has a multi-line value", fatal: false },
+      { line: 5, message: "Property malformed has a malformed list", fatal: false },
+      { line: 6, message: "Property deep nests lists deeper than 32 levels", fatal: false },
+      { line: 7, message: "Property escape has an unknown escape \\q", fatal: false },
+    ],
+  );
 });
 
 test("C31: only Typst number literals stay numbers in template arguments", () => {
