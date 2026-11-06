@@ -300,22 +300,24 @@ test("C10: source notes stay total for hostile bodies, a 300,000-character line,
 
 test("C11: prose slashes cannot form a Typst comment beside emphasis", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["///", "////", "a/**b**", "**b**/c"]);
+  const text = sourceNote(["typst: true"], ["///", "////", "a/**b**", "**b**/c", "**/b**", "**b/**"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\//", "\\/\\/\\//", "a\\/*b*", "*b*\\/c"]);
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\//", "\\/\\/\\//", "a\\/*b*", "*b*\\/c", "*\\/b*", "*b\\/*"]);
 });
 
 test("C12: multi-backtick code spans are raw text rather than Typst markup", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["before ``#let value = [markup]`` after", "`` a`b ``"]);
+  const text = sourceNote(["typst: true"], ["before ``#let value = [markup]`` after", "`` a`b ``", "x `a```#strong[RUN]```b` y", "x `a``b` y"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(outputLines(conversion.typ).slice(3), [
     'before #std.raw("#let value = [markup]"); after',
     '#std.raw("a`b");',
+    'x #std.raw("a```#strong[RUN]```b"); y',
+    'x #std.raw("a``b"); y',
   ]);
 });
 
