@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { convert } from "./fixtures/markdown/convert";
+import { convert } from "../src/markdown/convert";
 import { sourceNote } from "./fixtures/markdown/notes";
 
 const KIT = {
@@ -228,7 +229,7 @@ test("C10–C11: native Markdown structure remains markup and prose syntax is es
     "- three",
     "4. four",
     "*bold* *strong* _italic_ _emphasis_ `#code`",
-    "a \\# \\$ \\@ \\< \\~ \\[ \\] \\\\ \\` \\* \\_ snake\\_case \\// \\/\\* #std.link(\"https://example.com/x\");",
+    "a \\# \\$ \\@ \\< \\~ \\[ \\] \\\\ \\` \\* \\_ snake\\_case \\/\\/ \\/\\* #std.link(\"https://example.com/x\");",
     "\\= starts with equals",
     "\\/ starts a prose line",
     "\\* markdown escape",
@@ -304,7 +305,7 @@ test("C11: prose slashes cannot form a Typst comment beside emphasis", () => {
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\//", "\\/\\/\\//", "a\\/*b*", "*b*\\/c", "*\\/b*", "*b\\/*"]);
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\/\\/", "\\/\\/\\/\\/", "a\\/*b*", "*b*\\/c", "*\\/b*", "*b\\/*"]);
 });
 
 test("C12: multi-backtick code spans are raw text rather than Typst markup", () => {
@@ -483,4 +484,177 @@ test("C22: each forbidden line-break character is fatal alone in each verbatim c
       { lines: ["", "#let x = a b", ""], problems: [{ line: 4, fatal: true }] },
     ]),
   );
+});
+
+test("C24: every prose slash is escaped outside opaque and verbatim ranges", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["///", "////", "a/b", "a/**b**", "**b**/c", "**/b**", "**b/**", "/* x */", "/", "  /", "- /", "/\tx", "  / prose", "# / heading"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\/\\/\\/", "\\/\\/\\/\\/", "a\\/b", "a\\/*b*", "*b*\\/c", "*\\/b*", "*b\\/*", "\\/\\* x \\*\\/", "\\/", "  \\/", "- \\/", "\\/\tx", "  \\/ prose", "= \\/ heading"]);
+});
+
+test("C25: shorthand-sensitive prose characters remain literal", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["really-? a -? b", "+", "- + x", "+ item"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["really\\-? a \\-? b", "\\+", "- \\+ x", "- item"]);
+});
+
+test("C26: URLs are opaque to emphasis and stop before a code span", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["https://x.com/foo_/bar and _italic_", "_see https://en.wikipedia.org/wiki/Foo_(bar)_", "*a https://e.com/*x y", "https://x.com/`a` b"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ['#std.link("https://x.com/foo_/bar"); and _italic_', '_see #std.link("https://en.wikipedia.org/wiki/Foo_(bar)");_', '\\*a #std.link("https://e.com/*x"); y', '#std.link("https://x.com/");`a` b']);
+});
+
+test("C27: non-typ fences preserve a four-backtick fence and separate an unclosed trailing backtick", () => {
+  // #given
+  const tail = sourceNote(["typst: true"], ["```js", "const a = `x`"]);
+  const fourTicks = sourceNote(["typst: true"], ["````md", "```", "x", "```", "````"]);
+  // #when
+  const converted = [convert(tail, { templates: {}, defaultTemplate: "" }), convert(fourTicks, { templates: {}, defaultTemplate: "" })];
+  // #then
+  assert.deepEqual(converted.map((conversion) => outputLines(conversion.typ).slice(3)), [["```js", "const a = `x` ```"], ["````md", "```", "x", "```", "````"]]);
+});
+
+test("C28: multiline typst-template falls back to the default template once", () => {
+  // #given
+  const kit = { templates: { reference: "/reference.typ", default: "/default.typ" }, defaultTemplate: "default" };
+  const notes = [sourceNote(["typst: true", "typst-template: reference", "  more"]), sourceNote(["typst: true", "typst-template: |", "  reference"])];
+  // #when
+  const conversions = notes.map((text) => convert(text, kit));
+  // #then
+  assert.deepEqual(conversions.map((conversion) => ({ firstLine: outputLines(conversion.typ)[0], problems: conversion.problems.map(({ line, fatal }) => ({ line, fatal })) })), [
+    { firstLine: `${BUILT_INS}#import "/default.typ": *; #show: template.with(`, problems: [{ line: 2, fatal: false }] },
+    { firstLine: `${BUILT_INS}#import "/default.typ": *; #show: template.with(`, problems: [{ line: 2, fatal: false }] },
+  ]);
+});
+
+test("C29: columns inside a converted multi-backtick code span map to their matching characters", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["x ``abc`` y"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual({ typ: outputLines(conversion.typ)[3], toTyp: [conversion.toTyp(3, 0), conversion.toTyp(3, 1), conversion.toTyp(3, 2), conversion.toTyp(3, 3), conversion.toTyp(3, 4), conversion.toTyp(3, 5), conversion.toTyp(3, 6), conversion.toTyp(3, 7), conversion.toTyp(3, 8), conversion.toTyp(3, 9), conversion.toTyp(3, 10)], toMd: [conversion.toMd(3, 0), conversion.toMd(3, 1), conversion.toMd(3, 2), conversion.toMd(3, 3), conversion.toMd(3, 4), conversion.toMd(3, 5), conversion.toMd(3, 6), conversion.toMd(3, 7), conversion.toMd(3, 8), conversion.toMd(3, 9), conversion.toMd(3, 10), conversion.toMd(3, 11), conversion.toMd(3, 12), conversion.toMd(3, 13), conversion.toMd(3, 14), conversion.toMd(3, 15), conversion.toMd(3, 16), conversion.toMd(3, 17), conversion.toMd(3, 18), conversion.toMd(3, 19)] }, { typ: 'x #std.raw("abc"); y', toTyp: [0, 1, 2, 2, 12, 13, 14, 15, 15, 18, 19], toMd: [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 5, 6, 7, 7, 7, 9, 10] });
+});
+
+test("C29: columns inside a bare URL map to their matching characters", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["x https://a.b y"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual({ typ: outputLines(conversion.typ)[3], toTyp: [conversion.toTyp(3, 0), conversion.toTyp(3, 1), conversion.toTyp(3, 2), conversion.toTyp(3, 3), conversion.toTyp(3, 4), conversion.toTyp(3, 5), conversion.toTyp(3, 6), conversion.toTyp(3, 7), conversion.toTyp(3, 8), conversion.toTyp(3, 9), conversion.toTyp(3, 10), conversion.toTyp(3, 11), conversion.toTyp(3, 12), conversion.toTyp(3, 13), conversion.toTyp(3, 14), conversion.toTyp(3, 15)], toMd: [conversion.toMd(3, 0), conversion.toMd(3, 1), conversion.toMd(3, 2), conversion.toMd(3, 3), conversion.toMd(3, 4), conversion.toMd(3, 5), conversion.toMd(3, 6), conversion.toMd(3, 7), conversion.toMd(3, 8), conversion.toMd(3, 9), conversion.toMd(3, 10), conversion.toMd(3, 11), conversion.toMd(3, 12), conversion.toMd(3, 13), conversion.toMd(3, 14), conversion.toMd(3, 15), conversion.toMd(3, 16), conversion.toMd(3, 17), conversion.toMd(3, 18), conversion.toMd(3, 19), conversion.toMd(3, 20), conversion.toMd(3, 21), conversion.toMd(3, 22), conversion.toMd(3, 23), conversion.toMd(3, 24), conversion.toMd(3, 25), conversion.toMd(3, 26), conversion.toMd(3, 27), conversion.toMd(3, 28), conversion.toMd(3, 29)] }, { typ: 'x #std.link("https://a.b"); y', toTyp: [0, 1, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 27, 28, 29], toMd: [0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 13, 13, 13, 14, 15] });
+});
+
+test("C29: a prose backslash maps its escaped character column", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["a\\b"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual({ typ: outputLines(conversion.typ)[3], toTyp: [conversion.toTyp(3, 0), conversion.toTyp(3, 1), conversion.toTyp(3, 2), conversion.toTyp(3, 3)], toMd: [conversion.toMd(3, 0), conversion.toMd(3, 1), conversion.toMd(3, 2), conversion.toMd(3, 3), conversion.toMd(3, 4)] }, { typ: "a\\\\b", toTyp: [0, 2, 3, 4], toMd: [0, 1, 1, 2, 3] });
+});
+
+function performanceResult(body: string): { error: string | undefined; status: number | null; withinLimit: boolean } {
+  const source = `---\ntypst: true\n---\n${body}`;
+  const runner = `
+    const { buildSync } = require("esbuild");
+    const { mkdtempSync, rmSync } = require("node:fs");
+    const { tmpdir } = require("node:os");
+    const { join } = require("node:path");
+    const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-performance-"));
+    try {
+      const output = join(directory, "convert.cjs");
+      buildSync({ entryPoints: ["src/markdown/convert.ts"], bundle: true, format: "cjs", platform: "node", outfile: output });
+      const { convert } = require(output);
+      const started = performance.now();
+      convert(${JSON.stringify(source)}, null);
+      process.stdout.write(JSON.stringify({ elapsed: performance.now() - started }));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  `;
+  const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", timeout: 5_500 });
+  const elapsed = result.stdout === "" ? Number.POSITIVE_INFINITY : JSON.parse(result.stdout).elapsed as number;
+  return { error: result.error?.code, status: result.status, withinLimit: elapsed < 5_000 };
+}
+
+test("C30: one-backtick spans on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+  // #given
+  const body = "`a` ".repeat(75_000);
+  // #when
+  const result = performanceResult(body);
+  // #then
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C30: emphasis markers on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+  // #given
+  const body = "*x ".repeat(100_000);
+  // #when
+  const result = performanceResult(body);
+  // #then
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C30: URLs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+  // #given
+  const body = "https://a.b ".repeat(25_000);
+  // #when
+  const result = performanceResult(body);
+  // #then
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C30: prose backslashes on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+  // #given
+  const body = "\\ ".repeat(150_000);
+  // #when
+  const result = performanceResult(body);
+  // #then
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+});
+
+test("C31: only Typst number literals stay numbers in template arguments", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-x: 1.e5", "typst-y: 1.", "typst-z: [1.e5, 2]", "typst-valid: .5"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ), [`${BUILT_INS}#show: template.with(`, "", 'x: "1.e5",', 'y: "1.",', 'z: ("1.e5", 2,),', "valid: .5,", ")"]);
+});
+
+test("C32: apostrophes inside bare flow-array items stay ordinary characters", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-a: [O'Brien, Smith]", "typst-b: [O'Brien, D'Arcy]", "typst-c: ['a, b', c]"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ), [`${BUILT_INS}#show: template.with(`, "", 'a: ("O\'Brien", "Smith",),', 'b: ("O\'Brien", "D\'Arcy",),', 'c: ("a, b", "c",),', ")"]);
+});
+
+test("C33: Typst-only line breaks count as indentation before line-start markers", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["\u000b= x", "\u2028+"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), [" \\= x", " \\+"]);
+});
+
+test("C34: Devanagari combining marks follow Typst's intraword emphasis rule", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["हि**ब**", "**ब**ी"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["हि\\*\\*ब\\*\\*", "\\*\\*ब\\*\\*ी"]);
 });

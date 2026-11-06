@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { convert } from "./fixtures/markdown/convert";
+import { convert } from "../src/markdown/convert";
 import { compileSample } from "./fixtures/markdown/notes";
 
 const BIN =
@@ -62,6 +62,36 @@ test("C22: a real template receives converted named arguments", { skip: !BIN && 
     const compile = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
     // #then
     assert.equal(compile.status, 0, compile.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("C24: a converted note with a lone prose slash compiles", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-slash-"));
+  const output = join(directory, "sample.typ");
+  writeFileSync(output, convert("---\ntypst: true\n---\n/", { templates: {}, defaultTemplate: "" }).typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("C27: an unclosed non-typ fence with a trailing backtick compiles", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-fence-tail-"));
+  const output = join(directory, "sample.typ");
+  writeFileSync(output, convert("---\ntypst: true\n---\n```js\nconst a = `x`", { templates: {}, defaultTemplate: "" }).typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
