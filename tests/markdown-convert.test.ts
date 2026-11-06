@@ -693,7 +693,7 @@ test("C41: YAML quotes decode before Typst string escaping", () => {
   assert.deepEqual(
     { lines: outputLines(conversion.typ), problems: conversion.problems },
     {
-      lines: [`${BUILT_INS}#show: template.with(`, "", "quote: \"'\",", 'path: "C:\\\\",', 'paths: ("a\\\\", "b",),', 'possessive: "it\'s",', 'title: "He said: \\"hi\\"",', 'tab: "tab\\there",', ")"],
+      lines: [`${BUILT_INS}#show: template.with(`, "", 'quote: "",', 'path: "C:\\\\",', 'paths: ("a\\\\", "b",),', 'possessive: "it\'s",', 'title: "He said: \\"hi\\"",', 'tab: "tab\\there",', ")"],
       problems: [],
     },
   );
