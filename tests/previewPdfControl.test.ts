@@ -325,7 +325,6 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   h.app.vault.files.set("new/chapter.typ", "= Test\n");
   source.path = "new/chapter.typ";
   await h.app.vault.emit("rename", new TFolder("new"), "old");
-  await h.restartPreview("new/chapter.typ");
   checkbox(view).click();
   await settle();
   const renameCall = h.plugin.setCalls.at(-1);

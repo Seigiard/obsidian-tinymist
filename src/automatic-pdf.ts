@@ -231,10 +231,7 @@ export class AutomaticPdfController {
   }
 
   async setAutomaticPdf(sourcePath: string, enabled: boolean): Promise<void> {
-    if (this.disposed) return;
-    const source = await this.host.sources.hold(sourcePath);
-    if (!source) return;
-    source.release();
+    if (this.disposed || !this.host.sources.mayBeSource(sourcePath)) return;
     const entry = this.entry(sourcePath);
     this.revokeAuthorization(entry);
     entry.enabled = enabled;
@@ -262,10 +259,9 @@ export class AutomaticPdfController {
     options: { interactive?: boolean } = {},
   ): Promise<AutomaticPdfReceipt> {
     const interactive = options.interactive !== false;
-    if (this.disposed) return this.receiptWithoutJob(sourcePath, "cancelled");
-    const source = await this.host.sources.hold(sourcePath);
-    if (!source) return this.receiptWithoutJob(sourcePath, "cancelled");
-    source.release();
+    if (this.disposed || !this.host.sources.mayBeSource(sourcePath)) {
+      return this.receiptWithoutJob(sourcePath, "cancelled");
+    }
     if (
       !interactive &&
       (this.activeJob !== null || this.pending.size > 0 || this.sourceRenameReconciliations > 0)
@@ -282,7 +278,7 @@ export class AutomaticPdfController {
     if (!entry) {
       entry = {
         enabled: false,
-      destinationPath: pdfDestination(sourcePath),
+        destinationPath: pdfDestination(sourcePath),
         status: "missing",
         generation: 0,
         errorNotified: false,

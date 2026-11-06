@@ -99,7 +99,6 @@ export class SourceRegistry {
     release: () => void,
   ): Promise<TypstSource | null> {
     for (const adapter of this.adapters) {
-      if (!adapter.mayBe(vaultPath)) continue;
       const source = await adapter.create(vaultPath, release);
       if (source) return source;
     }

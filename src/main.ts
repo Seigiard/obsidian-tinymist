@@ -293,9 +293,7 @@ export default class TinymistPlugin extends Plugin {
 
   async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
     const write = this.automaticPdfController?.setAutomaticPdf(path, enabled);
-    queueMicrotask(() => {
-      for (const listener of this.automaticPdfListeners) listener();
-    });
+    for (const listener of this.automaticPdfListeners) listener();
     try {
       await write;
     } finally {
