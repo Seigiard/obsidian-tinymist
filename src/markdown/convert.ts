@@ -11,7 +11,7 @@ export interface Problem {
   fatal: boolean;
 }
 
-/** The converted note and zero-based UTF-16 line/column maps for source notes. */
+/** The converted note and zero-based UTF-16 line/column maps; a false source is not a print source, has empty typ, and both maps return their input column. */
 export interface Conversion {
   source: boolean;
   typ: string;
@@ -67,6 +67,13 @@ interface UrlRange {
 
 interface InlineOptions {
   lineStart?: boolean;
+}
+
+interface FrontmatterEntry {
+  line: number;
+  name?: string;
+  value?: string;
+  multiline: boolean;
 }
 
 const BUILT_INS =
@@ -153,7 +160,7 @@ class MappedLineBuilder {
           toTyp[piece.sourceStart + column] = outputOffset;
         }
         toTyp[piece.sourceStart + piece.sourceLength] = outputOffset + outputLength;
-      } else if (piece.identity && outputLength === piece.sourceLength) {
+      } else if (piece.identity) {
         for (let column = 0; column <= outputLength; column += 1) {
           toMd[outputOffset + column] = piece.sourceStart + column;
           toTyp[piece.sourceStart + column] = outputOffset + column;
@@ -188,7 +195,8 @@ export function convert(text: string, kit: KitView | null): Conversion {
   const problems: Problem[] = [];
   const outputLines: string[] = [];
   const maps: LineMap[] = [];
-  const template = selectTemplate(lines, frontmatterEnd, kit, problems);
+  const frontmatter = readFrontmatter(lines, frontmatterEnd);
+  const template = selectTemplate(frontmatter, kit, problems);
 
   addGeneratedLine(
     outputLines,
@@ -197,29 +205,21 @@ export function convert(text: string, kit: KitView | null): Conversion {
     lines[0].length,
   );
 
-  let continuation = false;
-  for (let line = 1; line < frontmatterEnd; line += 1) {
-    const sourceLine = lines[line];
+  for (const entry of frontmatter) {
+    const sourceLine = lines[entry.line];
     let output = "";
-    if (!continuation || !isIndentedNonBlank(sourceLine)) {
-      continuation = false;
-      const property = parseProperty(sourceLine);
-      if (property) {
-        const hasContinuation = isIndentedNonBlank(lines[line + 1] ?? "");
-        const multiline = isBlockValue(property.value) || hasContinuation;
-        continuation = hasContinuation;
-        if (!PROPERTY_NAME.test(property.name) || INVALID_PROPERTY_NAMES.has(property.name)) {
-          addProblem(problems, line, `Property name ${property.name || "<empty>"} is not a Typst identifier`, false);
-        } else if (property.name !== "template") {
-          const literal = parseValue(property.value);
-          if (literal === undefined || multiline) {
-            addProblem(problems, line, `Property ${property.name} has no scalar value`, false);
-          } else {
-            output = `${property.name}: ${literal},`;
-          }
-        } else if (multiline) {
-          addProblem(problems, line, `Property ${property.name} has no scalar value`, false);
+    if (entry.name !== undefined) {
+      if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
+        addProblem(problems, entry.line, `Property name ${entry.name || "<empty>"} is not a Typst identifier`, false);
+      } else if (entry.name !== "template") {
+        const literal = parseValue(entry.value ?? "");
+        if (literal === undefined || entry.multiline) {
+          addProblem(problems, entry.line, `Property ${entry.name} has no scalar value`, false);
+        } else {
+          output = `${entry.name}: ${literal},`;
         }
+      } else if (entry.multiline) {
+        addProblem(problems, entry.line, `Property ${entry.name} has no scalar value`, false);
       }
     }
     addGeneratedLine(outputLines, maps, sanitizeLine(output), sourceLine.length);
@@ -388,18 +388,33 @@ function addProblem(problems: Problem[], line: number, message: string, fatal: b
   problems.push({ line, message, fatal });
 }
 
+function readFrontmatter(lines: readonly string[], end: number): FrontmatterEntry[] {
+  const entries: FrontmatterEntry[] = [];
+  for (let line = 1; line < end; line += 1) {
+    const property = parseProperty(lines[line]);
+    entries.push(
+      property
+        ? {
+            line,
+            name: property.name,
+            value: property.value,
+            multiline: isBlockValue(property.value) || isIndentedNonBlank(lines[line + 1] ?? ""),
+          }
+        : { line, multiline: false },
+    );
+  }
+  return entries;
+}
+
 function selectTemplate(
-  lines: readonly string[],
-  end: number,
+  entries: readonly FrontmatterEntry[],
   kit: KitView | null,
   problems: Problem[],
 ): { path: string | undefined } {
   let explicit: { line: number; id: string } | undefined;
-  for (let line = 1; line < end; line += 1) {
-    const property = parseProperty(lines[line]);
-    const multiline = property !== undefined && (isBlockValue(property.value) || isIndentedNonBlank(lines[line + 1] ?? ""));
-    if (property?.name === "template" && !multiline && !explicit) {
-      explicit = { line, id: unquoteTemplateId(property.value.trim()) };
+  for (const entry of entries) {
+    if (entry.name === "template" && !entry.multiline && !explicit) {
+      explicit = { line: entry.line, id: unquoteTemplateId((entry.value ?? "").trim()) };
     }
   }
 
