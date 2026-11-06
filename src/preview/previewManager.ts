@@ -26,8 +26,7 @@ export class PreviewManager {
   private taskId: string | null = null;
   private taskFilePath: string | null = null;
   private source: TypstSource | null = null;
-  private sourceBinding = 0;
-  private startGeneration = 0;
+  private generation = 0;
   private handlersRegistered = false;
   private disposed = false;
   private readonly changeListeners = new Set<() => void>();
@@ -60,8 +59,7 @@ export class PreviewManager {
     lsp.onNotification("tinymist/preview/dispose", (params) => {
       const { taskId } = (params as { taskId?: string }) ?? {};
       if (taskId && taskId === this.taskId) {
-        this.startGeneration++;
-        this.sourceBinding++;
+        this.generation++;
         this.source?.release();
         this.source = null;
         this.taskId = null;
@@ -79,8 +77,7 @@ export class PreviewManager {
 
   /** Called by the plugin after a language-server (re)start. */
   onLspRestart(): void {
-    this.startGeneration++;
-    this.sourceBinding++;
+    this.generation++;
     this.source?.release();
     this.source = null;
     this.handlersRegistered = false;
@@ -108,11 +105,10 @@ export class PreviewManager {
       return;
     }
     const previous = this.source;
-    this.startGeneration++;
+    const generation = ++this.generation;
     this.filePath = join(root, movedPath);
     this.notifyChange();
-    const binding = ++this.sourceBinding;
-    void this.rebindSource(movedPath, previous, binding);
+    void this.rebindSource(movedPath, previous, generation);
   }
 
   onVaultDelete(deletedPath: string): void {
@@ -125,8 +121,7 @@ export class PreviewManager {
 
   dispose(): void {
     this.disposed = true;
-    this.startGeneration++;
-    this.sourceBinding++;
+    this.generation++;
     this.source?.release();
     this.source = null;
     this.taskId = null;
@@ -145,10 +140,10 @@ export class PreviewManager {
     if (this.taskId && this.taskFilePath === filePath && this.url) {
       return this.url;
     }
-    const cancellation = this.startGeneration;
-    await this.stopCurrent();
-    if (cancellation !== this.startGeneration || this.disposed) return null;
-    const generation = ++this.startGeneration;
+    const generation = ++this.generation;
+    const stopping = this.stopCurrent();
+    if (stopping) await stopping;
+    if (generation !== this.generation || this.disposed) return null;
     if (!this.handlersRegistered) this.registerHandlers();
 
     const root = this.plugin.vaultBasePath();
@@ -157,15 +152,14 @@ export class PreviewManager {
     if (!vaultPath || vaultPath === ".." || vaultPath.startsWith(`..${sep}`) || isAbsolute(vaultPath)) {
       throw new Error("preview source must be inside the vault");
     }
-    const binding = this.sourceBinding;
     let source: TypstSource | null;
     try {
       source = await this.plugin.sources.hold(vaultPath.split(sep).join("/"));
     } catch (error) {
-      if (generation !== this.startGeneration || this.disposed) return null;
+      if (generation !== this.generation || this.disposed) return null;
       throw error;
     }
-    if (generation !== this.startGeneration || this.disposed) {
+    if (generation !== this.generation || this.disposed) {
       source?.release();
       return null;
     }
@@ -196,13 +190,13 @@ export class PreviewManager {
       );
     } catch (error) {
       source.release();
-      if (generation !== this.startGeneration || binding !== this.sourceBinding || this.disposed) {
+      if (generation !== this.generation || this.disposed) {
         return null;
       }
       lsp.setPreviewSource();
       throw error;
     }
-    if (generation !== this.startGeneration || this.disposed) {
+    if (generation !== this.generation || this.disposed) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
       source.release();
       return null;
@@ -211,7 +205,7 @@ export class PreviewManager {
     if (!port) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
       source.release();
-      if (generation !== this.startGeneration || this.disposed) return null;
+      if (generation !== this.generation || this.disposed) return null;
       lsp.setPreviewSource();
       throw new Error("preview did not report a server port");
     }
@@ -246,14 +240,14 @@ export class PreviewManager {
   }
 
   async stop(): Promise<void> {
-    this.startGeneration++;
-    await this.stopCurrent();
+    this.generation++;
+    const stopping = this.stopCurrent();
+    if (stopping) await stopping;
   }
 
-  private async stopCurrent(): Promise<void> {
+  private stopCurrent(): Promise<void> | null {
     const taskId = this.taskId;
     const source = this.source;
-    this.sourceBinding++;
     this.taskId = null;
     this.taskFilePath = null;
     this.source = null;
@@ -262,26 +256,30 @@ export class PreviewManager {
     this.notifyChange();
     const lsp = this.plugin.lsp;
     if (taskId && lsp && lsp.status === "running") {
-      await lsp
+      return lsp
         .executeCommand("tinymist.doKillPreview", [taskId], 5000)
-        .catch(() => {});
-      lsp.setPreviewSource();
-      // The preview took over tinymist's main; hand it back to the editor.
-      lsp.pinMain(lsp.mainFile);
+        .catch(() => {})
+        .then(() => {
+          lsp.setPreviewSource();
+          // The preview took over tinymist's main; hand it back to the editor.
+          lsp.pinMain(lsp.mainFile);
+          source?.release();
+        });
     }
     source?.release();
+    return null;
   }
 
   private async rebindSource(
     vaultPath: string,
     previous: TypstSource | null,
-    binding: number,
+    generation: number,
   ): Promise<void> {
     let next: TypstSource | null = null;
     try {
       next = await this.plugin.sources.hold(vaultPath);
     } catch {}
-    if (binding !== this.sourceBinding || this.source !== previous || this.disposed) {
+    if (generation !== this.generation || this.source !== previous || this.disposed) {
       next?.release();
       return;
     }
