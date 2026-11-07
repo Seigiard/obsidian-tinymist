@@ -8,6 +8,7 @@ export const VIEW_TYPE_TYPST_PREVIEW = "tinymist-preview";
 
 export class PreviewView extends ItemView {
   private iframe: HTMLIFrameElement | null = null;
+  private shownUrl: string | null = null;
   private pdfControl: HTMLInputElement | null = null;
   private pdfControlLabel: HTMLLabelElement | null = null;
   private removePreviewListener: (() => void) | null = null;
@@ -28,7 +29,7 @@ export class PreviewView extends ItemView {
     this.mountPdfControl();
     this.removePreviewListener = this.plugin.preview.onChange(() => {
       const url = this.plugin.preview.url;
-      if (url && this.iframe?.src !== url) this.setUrl(url);
+      if (url && url !== this.shownUrl) this.setUrl(url);
       this.pdfRequest++;
       this.syncPdfControl();
       this.syncProblems();
@@ -64,7 +65,10 @@ export class PreviewView extends ItemView {
         cls: "tym-preview-frame",
       });
     }
-    if (this.iframe.src !== url) this.iframe.src = url;
+    if (this.shownUrl !== url) {
+      this.iframe.src = url;
+      this.shownUrl = url;
+    }
     this.syncPdfControl();
     this.syncProblems();
   }
