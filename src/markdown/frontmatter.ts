@@ -5,6 +5,7 @@ interface FrontmatterPropertyEntry {
   name: string;
   value: string;
   multiline: boolean;
+  empty: boolean;
 }
 
 interface FrontmatterLineEntry {
@@ -15,6 +16,7 @@ type FrontmatterFlagEntry = {
   line: number;
   value: string;
   multiline: boolean;
+  empty: boolean;
   flag: true;
 };
 
@@ -89,9 +91,9 @@ export function readFrontmatter(lines: readonly string[], end: number): Frontmat
   for (let line = 1; line < end; line += 1) {
     const property = parseProperty(lines[line]);
     if (property) {
-      const multiline = isBlockValue(property.value) || hasIndentedContinuation(lines, line, end, property.value);
-      if (property.kind === "flag") entries.push({ line, value: property.value, multiline, flag: true });
-      else entries.push({ line, name: property.name, value: property.value, multiline });
+      const multiline = isBlockValue(property.value) || hasContinuation(lines, line, end, property.value);
+      if (property.kind === "flag") entries.push({ line, value: property.value, multiline, empty: property.empty, flag: true });
+      else entries.push({ line, name: property.name, value: property.value, multiline, empty: property.empty });
     } else {
       entries.push({ line });
     }
@@ -168,13 +170,13 @@ export function quoteString(value: string): string {
   return `${result}"`;
 }
 
-export function convertProperty(entry: FrontmatterPropertyEntry, sourceLine = ""): PropertyConversion {
+export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConversion {
   if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
     return { kind: "problem", message: `Property name ${entry.name || "<empty>"} is not a Typst identifier` };
   }
   if (entry.name === "template") {
     if (entry.multiline) return { kind: "problem", message: "Property template has a multi-line value" };
-    if (entry.value.trim() === "" && /^typst-template:[ \t]*$/u.test(sourceLine)) {
+    if (entry.empty) {
       return { kind: "problem", message: "Property template has no value" };
     }
     return { kind: "skip" };
@@ -191,16 +193,24 @@ function lookupTemplate(kit: KitView | null, id: string): string | undefined {
   return typeof path === "string" ? path : undefined;
 }
 
-function parseProperty(line: string): { kind: "flag"; value: string } | { kind: "property"; name: string; value: string } | undefined {
+function parseProperty(line: string):
+  | { kind: "flag"; value: string; empty: boolean }
+  | { kind: "property"; name: string; value: string; empty: boolean }
+  | undefined {
   if (line.startsWith("typst:")) {
-    const value = line.slice("typst:".length);
-    if (value === "" || /^[ \t]/u.test(value)) return { kind: "flag", value: stripYamlComment(value) };
+    const rawValue = line.slice("typst:".length);
+    if (rawValue === "" || /^[ \t]/u.test(rawValue)) {
+      return { kind: "flag", value: stripYamlComment(rawValue), empty: rawValue.trim() === "" };
+    }
   }
   const match = /^typst-([^:]*):[ \t]*(.*)$/u.exec(line);
-  return match === null ? undefined : { kind: "property", name: match[1], value: stripYamlComment(match[2]) };
+  return match === null
+    ? undefined
+    : { kind: "property", name: match[1], value: stripYamlComment(match[2]), empty: match[2].trim() === "" };
 }
 
-function hasIndentedContinuation(lines: readonly string[], line: number, end: number, value: string): boolean {
+/** A continuation is an indented line, blank lines before one, or a column-0 `- ` sequence. */
+function hasContinuation(lines: readonly string[], line: number, end: number, value: string): boolean {
   for (let next = line + 1; next < end; next += 1) {
     const trimmed = lines[next].trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;

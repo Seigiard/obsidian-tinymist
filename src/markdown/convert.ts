@@ -64,7 +64,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
         problems.push({ line: entry.line, message: `Property ${entry.name} is repeated`, fatal: false });
       } else {
         seenProperties.add(entry.name);
-        const result = convertProperty(entry, sourceLine);
+        const result = convertProperty(entry);
         if (result.kind === "problem") problems.push({ line: entry.line, message: result.message, fatal: false });
         else if (result.kind === "value") output = `${entry.name}: ${result.literal},`;
       }
@@ -124,11 +124,11 @@ export function convert(text: string, kit: KitView | null): Conversion {
     source: true,
     typ: outputLines.join("\n"),
     toMd(line, column) {
-      if (line < 0 || line >= maps.length || column < 0 || column >= maps[line].toMd.length) return column;
+      if (!Number.isInteger(line) || !Number.isInteger(column) || line < 0 || line >= maps.length || column < 0 || column >= maps[line].toMd.length) return column;
       return maps[line].toMd[column];
     },
     toTyp(line, column) {
-      if (line < 0 || line >= maps.length || column < 0 || column >= maps[line].toTyp.length) return column;
+      if (!Number.isInteger(line) || !Number.isInteger(column) || line < 0 || line >= maps.length || column < 0 || column >= maps[line].toTyp.length) return column;
       return maps[line].toTyp[column];
     },
     problems,

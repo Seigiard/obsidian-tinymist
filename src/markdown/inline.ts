@@ -97,7 +97,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
       continue;
     }
 
-    if (character === "#" || character === "$" || character === "@" || character === "<" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_" || character === "/") {
+    if (character === "#" || character === "$" || character === "@" || character === "<" || character === ">" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_" || character === "/") {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
       continue;
@@ -295,12 +295,14 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
     let end = index + scheme.length;
     let openingParentheses = 0;
     let closingParentheses = 0;
-    while (end < text.length && !/[\s<]/u.test(text[end])) {
+    while (end < text.length && isUrlCharacter(text, end)) {
       if (code && end >= code.start) break;
-      if (text[end] === "(") openingParentheses += 1;
-      if (text[end] === ")") closingParentheses += 1;
-      end += 1;
+      const character = characterAt(text, end);
+      if (character === "(") openingParentheses += 1;
+      if (character === ")") closingParentheses += 1;
+      end += codePointWidth(text, end);
     }
+    const candidateEnd = end;
     while (end > index + scheme.length && ".,:;!?\'\"*_~)".includes(text[end - 1])) {
       if (text[end - 1] === ")") {
         if (closingParentheses <= openingParentheses) break;
@@ -308,15 +310,35 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
       }
       end -= 1;
     }
-    if (end > index + scheme.length) {
+    if (end > index + scheme.length && utf8ByteLength(text.slice(index, end)) <= 8000) {
       ranges.push({ start: index, end });
       index = end;
+    } else if (candidateEnd > index + scheme.length) {
+      index = candidateEnd;
     } else {
       index += scheme.length;
     }
   }
   return ranges;
 }
+
+function isUrlCharacter(text: string, index: number): boolean {
+  const character = characterAt(text, index);
+  if (character === "") return false;
+  if (character.codePointAt(0)! <= 0x7f) return ASCII_URL_CHARACTERS.includes(character);
+  return /[\p{L}\p{M}\p{N}]/u.test(character);
+}
+
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += codePointWidth(text, index)) {
+    const codePoint = text.codePointAt(index)!;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+const ASCII_URL_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?#@!$&'()*+,;=%\"";
 
 function findEmphasisRanges(text: string, codeRanges: CodeRange[], urls: UrlRange[]): EmphasisRange[] {
   const delimiters = findDelimiters(text, codeRanges, urls);
