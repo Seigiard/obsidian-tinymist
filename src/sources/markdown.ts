@@ -97,6 +97,13 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       };
       const onRename = (oldPath: string, newPath: string): void => {
         if (state.ended || oldPath !== state.file) return;
+        if (host.exists(`${newPath}.typ`)) {
+          state.ended = true;
+          for (const open of clients.values()) closeClient(open);
+          clients.clear();
+          emit("ended");
+          return;
+        }
         const oldEntry = state.entry;
         const rootNow = host.root();
         if (!rootNow) return;
