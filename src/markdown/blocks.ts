@@ -28,6 +28,8 @@ interface QuotePrefix {
   offset: number;
 }
 
+const MAX_QUOTE_NESTING = 32;
+
 export function convertBlock(
   lines: readonly string[],
   line: number,
@@ -172,11 +174,17 @@ function readQuotePrefix(line: string | undefined): QuotePrefix | undefined {
   return { text: line.slice(index), offset: index };
 }
 
-function renderQuote(entries: readonly QuoteEntry[], state: InlineState, reportProblem: (line: number, message: string) => void): MappedLineBuilder[] {
+function renderQuote(
+  entries: readonly QuoteEntry[],
+  state: InlineState,
+  reportProblem: (line: number, message: string) => void,
+  quoteDepth = 0,
+): MappedLineBuilder[] {
   const first = entries[0];
   const callout = /^\[!([^\]]+)\]([+-])?(?:[ \t]+(.*))?$/u.exec(first.text);
   const lines: MappedLineBuilder[] = [];
   const opener = new MappedLineBuilder();
+  let bodyEntries: readonly QuoteEntry[];
   if (callout) {
     const kind = callout[1].toLowerCase();
     opener.appendInserted(`#callout(kind: ${quoteString(kind)}, title: `);
@@ -196,26 +204,34 @@ function renderQuote(entries: readonly QuoteEntry[], state: InlineState, reportP
       opener.appendInserted("]");
     }
     opener.appendInserted(")[");
+    bodyEntries = entries.slice(1);
   } else {
     opener.appendInserted("#std.quote(block: true)[");
-    if (first.text !== "") {
-      opener.appendBuilder(convertProseLine(first.text, (message) => reportProblem(first.line, message), first.offset, state));
-    }
+    bodyEntries = entries;
   }
-  lines.push(opener);
 
-  const bodyStart = 1;
-  const body = renderQuoteBody(entries.slice(bodyStart), state, reportProblem);
+  const body = renderQuoteBody(bodyEntries, state, reportProblem, quoteDepth);
   if (body.length === 0) {
     opener.appendInserted("]");
+    lines.push(opener);
     return lines;
   }
-  lines.push(...body);
+  if (callout) {
+    lines.push(opener, ...body);
+  } else {
+    opener.appendBuilder(body[0]);
+    lines.push(opener, ...body.slice(1));
+  }
   lines[lines.length - 1].appendInserted("]");
   return lines;
 }
 
-function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, reportProblem: (line: number, message: string) => void): MappedLineBuilder[] {
+function renderQuoteBody(
+  entries: readonly QuoteEntry[],
+  state: InlineState,
+  reportProblem: (line: number, message: string) => void,
+  quoteDepth: number,
+): MappedLineBuilder[] {
   const lines: MappedLineBuilder[] = [];
   const sourceLines = entries.map((entry) => entry.text);
   let index = 0;
@@ -236,6 +252,9 @@ function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, rep
         fence = undefined;
       } else {
         builder.appendSource(entry.text, entry.offset);
+        if (fence.kind === "other" && fence.closeLine < 0 && index === entries.length - 1) {
+          builder.appendInserted(` ${"`".repeat(fence.outputTicks)}`, entry.text.length);
+        }
       }
       lines.push(builder);
       index += 1;
@@ -244,6 +263,11 @@ function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, rep
 
     const nested = readQuotePrefix(entry.text);
     if (nested !== undefined) {
+      if (quoteDepth >= MAX_QUOTE_NESTING) {
+        lines.push(convertProseLine(entry.text, (message) => reportProblem(entry.line, message), entry.offset, state));
+        index += 1;
+        continue;
+      }
       const nestedEntries: QuoteEntry[] = [];
       while (index < entries.length) {
         const prefix = readQuotePrefix(entries[index].text);
@@ -251,7 +275,7 @@ function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, rep
         nestedEntries.push({ text: prefix.text, offset: entries[index].offset + prefix.offset, line: entries[index].line });
         index += 1;
       }
-      lines.push(...renderQuote(nestedEntries, state, reportProblem));
+      lines.push(...renderQuote(nestedEntries, state, reportProblem, quoteDepth + 1));
       continue;
     }
 
@@ -259,7 +283,12 @@ function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, rep
     if (opening !== undefined) {
       fence = analyzeFence(sourceLines, index, opening);
       const builder = new MappedLineBuilder();
-      if (opening.kind === "other") builder.appendInserted(`${opening.indentation}${"`".repeat(fence.outputTicks)}${opening.word}`);
+      if (opening.kind === "other") {
+        builder.appendInserted(`${opening.indentation}${"`".repeat(fence.outputTicks)}${opening.word}`);
+        if (fence.closeLine < 0 && index === entries.length - 1) {
+          builder.appendInserted(` ${"`".repeat(fence.outputTicks)}`, entry.text.length);
+        }
+      }
       lines.push(builder);
       index += 1;
       continue;

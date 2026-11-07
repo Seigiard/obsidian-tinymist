@@ -67,6 +67,8 @@ interface Delimiter {
   close: boolean;
 }
 
+const MAX_LINK_NESTING = 32;
+
 export function convertInlineText(
   text: string,
   sourceOffset = 0,
@@ -87,14 +89,14 @@ export function convertProseLine(line: string, reportProblem?: ProblemReporter, 
   return convertProseLinePrepared(prepared, reportProblem, sourceOffset);
 }
 
-function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}): MappedLineBuilder {
+function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}, linkDepth = 0): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
-  const urls = findUrls(text, codeRanges);
+  const urls = linkDepth < MAX_LINK_NESTING ? findUrls(text, codeRanges) : [];
   const emphasis = findEmphasisRanges(text, codeRanges, urls);
-  const markdownLinks = findMarkdownLinks(text, codeRanges);
+  const markdownLinks = linkDepth < MAX_LINK_NESTING ? findMarkdownLinks(text, codeRanges) : [];
   const wikilinks = findWikilinks(text, codeRanges);
-  const images = findImageRanges(text, codeRanges);
+  const images = findImageRanges(text, codeRanges, linkDepth < MAX_LINK_NESTING);
   const linebreaks = findLinebreaks(text, codeRanges);
   const codeByStart = new Map(codeRanges.map((range) => [range.start, range]));
   const urlByStart = new Map(urls.map((range) => [range.start, range]));
@@ -147,7 +149,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
             builder.appendInserted(`#std.link(${quoteString(markdown.target)});`, sourceOffset + markdown.start);
           } else {
             builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
-            builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+            builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
             builder.appendInserted("]", sourceOffset + markdown.end);
           }
         } else {
@@ -155,10 +157,10 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
         }
       } else if (/^https?:\/\//iu.test(markdown.target)) {
         builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
-        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
         builder.appendInserted("]", sourceOffset + markdown.end);
       } else {
-        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
       }
       index = markdown.end;
       continue;
@@ -166,7 +168,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const wikilink = wikilinkByStart.get(index);
     if (wikilink) {
-      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart));
+      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, {}, linkDepth));
       index = wikilink.end;
       continue;
     }
@@ -189,7 +191,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     if (mark) {
       const marker = mark.strong ? "*" : "_";
       builder.appendMapped(marker, sourceOffset + mark.start, mark.width);
-      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width));
+      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width, {}, linkDepth));
       builder.appendMapped(marker, sourceOffset + mark.end - mark.width, mark.width);
       index = mark.end;
       continue;
@@ -746,7 +748,7 @@ function findWikilinks(text: string, codeRanges: readonly CodeRange[]): Wikilink
   return ranges;
 }
 
-function findImageRanges(text: string, codeRanges: readonly CodeRange[]): ImageRange[] {
+function findImageRanges(text: string, codeRanges: readonly CodeRange[], recognizeMarkdownLinks = true): ImageRange[] {
   if (!text.includes("![")) return [];
   const ranges: ImageRange[] = [];
   let index = 0;
@@ -771,6 +773,7 @@ function findImageRanges(text: string, codeRanges: readonly CodeRange[]): ImageR
     index += 1;
   }
 
+  if (!recognizeMarkdownLinks) return ranges;
   for (const range of findMarkdownLinks(text, codeRanges)) {
     if (!range.image) continue;
     if (/^https?:\/\//iu.test(range.target)) continue;
