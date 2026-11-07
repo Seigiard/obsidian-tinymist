@@ -174,6 +174,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
         );
         builder.appendInserted("];", sourceOffset + markdown.end);
       } else {
+        builder.appendInserted("#[", sourceOffset + markdown.start);
         builder.appendBuilder(
           convertInline(
             text.slice(markdown.labelStart, markdown.labelEnd),
@@ -182,6 +183,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
             linkDepth + 1,
           ),
         );
+        builder.appendInserted("];", sourceOffset + markdown.end);
       }
       index = markdown.end;
       continue;
@@ -189,7 +191,9 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const wikilink = wikilinkByStart.get(index);
     if (wikilink) {
+      builder.appendInserted("#[", sourceOffset + wikilink.start);
       builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, { lineStart: true, escapeMarkdownMarkers: true }, linkDepth));
+      builder.appendInserted("];", sourceOffset + wikilink.end);
       index = wikilink.end;
       continue;
     }
@@ -266,8 +270,10 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           continue;
         }
       }
+      let equalsRunEnd = index + width;
+      while (equalsRunEnd < text.length && text[equalsRunEnd] === "=") equalsRunEnd += 1;
       if (
-        (character === "=" && (!options.escapeMarkdownMarkers || isWhitespace(text[index + width]))) ||
+        (character === "=" && (!options.escapeMarkdownMarkers || isWhitespace(text[equalsRunEnd]))) ||
         (character === "+" && (!text[index + width] || /\s/u.test(text[index + width])))
       ) {
         builder.appendEscaped(character, sourceOffset + index);

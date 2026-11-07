@@ -308,7 +308,7 @@ function renderQuoteBody(
     const table = readTable(sourceLines, index);
     if (table !== undefined) {
       const shifted = shiftTableOffsets(table, entries, index);
-      const rendered = renderTable(shifted, state, reportProblem, (line) => entries[index + line]?.line ?? entry.line);
+      const rendered = renderTable(shifted, state, reportProblem, (line) => entries[line]?.line ?? entry.line);
       for (const renderedLine of rendered.lines) lines.push(renderedLine);
       index = table.end;
       continue;
