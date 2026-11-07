@@ -447,7 +447,7 @@ test("R2: final raw Typst container lines discard comments but keep URL strings"
   // #given
   const text = sourceNote(["typst: true"], [
     "> [!note] N",
-    "> /typst #figure(rect())[cap] // figure",
+    "> /typst #rect()[cap] // figure",
     "",
     "> Quote",
     '> /typst #text["http://x"] // trailing',
@@ -457,7 +457,7 @@ test("R2: final raw Typst container lines discard comments but keep URL strings"
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
     '#callout(kind: "note", title: [N])[',
-    " #figure(rect())[cap] ]",
+    " #rect()[cap] ]",
     "",
     "#std.quote(block: true)[Quote",
     ' #text["http://x"] ]',

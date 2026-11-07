@@ -54,7 +54,7 @@ export const terminatorAndRawContainerCompileSample = sourceNote(
     "| Total<br>(approx.) | 1 |",
     "",
     "> [!note] N",
-    "> /typst #figure(rect())[cap] // figure",
+    "> /typst #rect()[cap] // figure",
     "",
     "> Quote",
     '> /typst #text["http://x"] // trailing',
