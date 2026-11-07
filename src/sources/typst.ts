@@ -76,20 +76,22 @@ export class SourceRegistry {
       return await pending.promise;
     }
 
+    const release = (): void => this.release(vaultPath);
     const state: PendingSource = {
       holders: 1,
-      promise: Promise.resolve(null),
+      promise: this.create(vaultPath, release).then(
+        (source) => {
+          this.pending.delete(vaultPath);
+          if (!source) return null;
+          this.held.set(vaultPath, { source, holders: state.holders });
+          return source;
+        },
+        (error: unknown) => {
+          this.pending.delete(vaultPath);
+          throw error;
+        },
+      ),
     };
-    const release = (): void => this.release(vaultPath);
-    state.promise = this.create(vaultPath, release).then((source) => {
-      this.pending.delete(vaultPath);
-      if (!source) return null;
-      this.held.set(vaultPath, { source, holders: state.holders });
-      return source;
-    }, (error: unknown) => {
-      this.pending.delete(vaultPath);
-      throw error;
-    });
     this.pending.set(vaultPath, state);
     return await state.promise;
   }

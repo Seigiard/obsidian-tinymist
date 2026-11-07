@@ -90,11 +90,10 @@ export class PreviewManager {
       void this.stop();
       return;
     }
-    const previous = this.source;
     const generation = ++this.generation;
     this.filePath = join(root, movedPath);
     this.notifyChange();
-    void this.rebindSource(movedPath, previous, generation);
+    void this.rebindSource(movedPath, generation);
   }
 
   onVaultDelete(deletedPath: string): void {
@@ -244,12 +243,7 @@ export class PreviewManager {
   private stopCurrent(): Promise<void> | null {
     const taskId = this.taskId;
     const source = this.source;
-    this.taskId = null;
-    this.taskFilePath = null;
-    this.source = null;
-    this.url = null;
-    this.filePath = null;
-    this.notifyChange();
+    this.clearTask();
     const lsp = this.plugin.lsp;
     if (taskId && lsp && lsp.status === "running") {
       return lsp
@@ -267,6 +261,10 @@ export class PreviewManager {
   private endTask(): void {
     this.generation++;
     this.source?.release();
+    this.clearTask();
+  }
+
+  private clearTask(): void {
     this.source = null;
     this.taskId = null;
     this.taskFilePath = null;
@@ -277,7 +275,6 @@ export class PreviewManager {
 
   private async rebindSource(
     vaultPath: string,
-    previous: TypstSource | null,
     generation: number,
   ): Promise<void> {
     let next: TypstSource | null = null;
@@ -288,14 +285,8 @@ export class PreviewManager {
       next?.release();
       return;
     }
-    if (!next) {
-      this.source = null;
-      previous?.release();
-      this.notifyChange();
-      return;
-    }
+    this.source?.release();
     this.source = next;
-    previous?.release();
   }
 
   private vaultRelativePath(filePath: string | null): string | null {
