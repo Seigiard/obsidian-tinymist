@@ -350,3 +350,76 @@ test("N6: table cells and callout titles escape Markdown line-start markers", ()
     '#callout(kind: "note", title: [\\= heading])[]',
   ]);
 });
+
+test("Q1: every plain quote line passes through the block rules", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "> ```js",
+    "> let x = 1;",
+    "> ```",
+    "",
+    "> | a | b |",
+    "> |---|---|",
+    "> | 1 | 2 |",
+    "",
+    "> > nested",
+    "> > more",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "#std.quote(block: true)[```js",
+    "let x = 1;",
+    "```]",
+    "",
+    "#std.quote(block: true)[#std.table(columns: 2, std.table.header([a], [b]),",
+    "",
+    "[1], [2])]",
+    "",
+    "#std.quote(block: true)[#std.quote(block: true)[nested",
+    "more]]",
+  ]);
+});
+
+test("Q2: an unclosed fence inside a callout closes before the container does", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["> [!note] Code", "> ```js", "> let x = 1;", "", "after"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    '#callout(kind: "note", title: [Code])[',
+    "```js",
+    "let x = 1; ```]",
+    "",
+    "after",
+  ]);
+});
+
+test("Q3: hostile nested labels, quotes, and emphasis remain bounded and line-shaped", () => {
+  // #given
+  const notes = [
+    sourceNote(["typst: true"], ["[".repeat(5_000) + "x" + "](a.md)".repeat(5_000)]),
+    sourceNote(["typst: true"], ["> ".repeat(5_000) + "x"]),
+    sourceNote(["typst: true"], ["**".repeat(5_000) + "x"]),
+    sourceNote(["typst: true"], ["[".repeat(33) + "x" + "](https://x.y)".repeat(33)]),
+  ];
+  // #when
+  const summaries = notes.map((text) => {
+    const conversion = convert(text, null);
+    return {
+      source: conversion.source,
+      inputLines: text.split("\n").length,
+      outputLines: conversion.typ.split("\n").length,
+      linkCalls: conversion.typ.split("#std.link(").length - 1,
+    };
+  });
+  // #then
+  assert.deepEqual(summaries, [
+    { source: true, inputLines: 4, outputLines: 4, linkCalls: 0 },
+    { source: true, inputLines: 4, outputLines: 4, linkCalls: 0 },
+    { source: true, inputLines: 4, outputLines: 4, linkCalls: 0 },
+    { source: true, inputLines: 4, outputLines: 4, linkCalls: 32 },
+  ]);
+});

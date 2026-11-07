@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
 import { convert } from "../src/markdown/convert";
-import { compileSample, constructCompileSample } from "./fixtures/markdown/notes";
+import { calloutFenceCompileSample, compileSample, constructCompileSample, quoteFenceCompileSample } from "./fixtures/markdown/notes";
 
 const BIN =
   process.env.TINYMIST_BIN ??
@@ -75,6 +75,38 @@ test("M1–M10/N3/N4: a note with every Markdown construct compiles with tinymis
     // #then
     assert.equal(result.status, 0, result.stderr);
     assert.equal(conversion.typ.split("\n")[3], "#std.table(columns: 2, std.table.header([Die], [Result]),");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Q1: a quote that begins with a non-Typst fence compiles", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-quote-fence-"));
+  const output = join(directory, "sample.typ");
+  const conversion = convert(quoteFenceCompileSample, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Q2: a callout with an unclosed non-Typst fence compiles", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-callout-fence-"));
+  const output = join(directory, "sample.typ");
+  const conversion = convert(calloutFenceCompileSample, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

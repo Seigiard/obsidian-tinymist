@@ -41,3 +41,7 @@ export const constructCompileSample = sourceNote(
     "[^1]",
   ],
 );
+
+export const quoteFenceCompileSample = sourceNote(["typst: true"], ["> ```js", "> let x = 1;", "> ```"]);
+
+export const calloutFenceCompileSample = sourceNote(["typst: true"], ["> [!note] Code", "> ```js", "> let x = 1;", "", "after"]);
