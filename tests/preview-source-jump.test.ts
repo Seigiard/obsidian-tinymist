@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { TypstSource } from "../src/sources";
 import TinymistPlugin from "../src/main";
@@ -73,13 +74,27 @@ test("preview clicks on a typ file reveal through the real source registry", asy
   // #given
   const app = testApp("/vault");
   const plugin = new JumpPlugin(app as never, {});
+  const realHold = plugin.sources.hold.bind(plugin.sources);
+  const holds: Array<{ file: string; source: TypstSource | null }> = [];
+  plugin.sources.hold = async (file) => {
+    const source = await realHold(file);
+    holds.push({ file, source });
+    return source;
+  };
 
   // #when
   plugin.jumpToSource({ filepath: "/vault/notes/a.typ", start: [7, 8], end: null });
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
-  assert.deepEqual(plugin.opened, [
-    { document: "/vault/notes/a.typ", line: 7, character: 8 },
-  ]);
+  assert.deepEqual(
+    {
+      holds: holds.map(({ file, source }) => ({ file, resolved: source !== null })),
+      opened: plugin.opened,
+    },
+    {
+      holds: [{ file: "notes/a.typ", resolved: true }],
+      opened: [{ document: join("/vault", "notes", "a.typ"), line: 7, character: 8 }],
+    },
+  );
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { test } from "node:test";
 import TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
@@ -281,7 +281,7 @@ test("renaming a running preview to a non-source releases its old source without
     // #then
     assert.deepEqual(
       { releases, filePath: manager.filePath, sourcePath: manager.sourcePath(), calls },
-      { releases: 1, filePath: "/vault/a.txt", sourcePath: null, calls: [] },
+      { releases: 1, filePath: normalize(join("/vault", "a.txt")), sourcePath: null, calls: [] },
     );
   } finally {
     await manager.stop();
@@ -852,7 +852,7 @@ test("a server dispose notification supersedes the start that created its task",
   const commandResult = deferred<{ staticServerPort: number }>();
   let holds = 0;
   let releases = 0;
-  let taskId: string | null = null;
+  let startTaskId = "";
   const calls: Array<Record<string, string | undefined>> = [];
   const plugin = {
     lsp: {
@@ -867,7 +867,7 @@ test("a server dispose notification supersedes the start that created its task",
         const commandTaskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
         calls.push({ command, taskId: typeof commandTaskId === "string" ? commandTaskId : undefined });
         if (command === "tinymist.doStartPreview") {
-          taskId = commandTaskId as string;
+          startTaskId = commandTaskId as string;
           commandReached.resolve();
           return await commandResult.promise;
         }
@@ -896,8 +896,7 @@ test("a server dispose notification supersedes the start that created its task",
     // #when
     const start = manager.start("/vault/chapter.typ");
     await waitFor(commandReached.promise, "the pending preview command");
-    (manager as unknown as { taskId: string | null }).taskId = taskId;
-    notifications.get("tinymist/preview/dispose")?.({ taskId });
+    notifications.get("tinymist/preview/dispose")?.({ taskId: startTaskId });
     commandResult.resolve({ staticServerPort: 4321 });
     const result = await start;
 
