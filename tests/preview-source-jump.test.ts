@@ -15,6 +15,7 @@ function source(
     document,
     inputs: undefined,
     pinnable: true,
+    exportable: true,
     pdf: "notes/chapter.pdf",
     open: () => ({ close: () => {} }),
     toSource: (position) => ({ line: position.line + 10, character: position.character + 20 }),
@@ -27,7 +28,7 @@ function source(
     release: () => {
       calls.push({ kind: "release" });
     },
-  };
+  } as TypstSource & { exportable: boolean };
 }
 
 class JumpPlugin extends TinymistPlugin {

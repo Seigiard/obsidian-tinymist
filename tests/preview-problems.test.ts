@@ -28,19 +28,26 @@ interface ProblemHarness {
   close(): Promise<void>;
 }
 
-async function problemHarness(problems: Problem[]): Promise<ProblemHarness> {
+async function problemHarness(
+  problems: Problem[],
+  initialDiagnostics: Array<{ path: string; diagnostics: LspDiagnostic[] }> = [],
+): Promise<ProblemHarness> {
   const app = testApp("/vault");
   const reveals: Position[] = [];
   const opened: Array<{ path: string; line: number; character: number }> = [];
   const sourceListeners = new Map<string, Set<() => void>>();
   const diagnostics = new Map<string, LspDiagnostic[]>();
   const diagnosticListeners = new Set<(uri: string) => void>();
+  for (const initial of initialDiagnostics) {
+    diagnostics.set(pathToUri(initial.path), initial.diagnostics);
+  }
   const source: ProblemSource = {
     file: "Notes/A.md",
     entry: "/vault/Notes/A.md.typ",
     document: "/vault/Notes/A.md.typ",
     inputs: undefined,
     pinnable: false,
+    exportable: false,
     pdf: "Notes/A.pdf",
     problems,
     open: () => ({ close: () => {} }),
@@ -57,7 +64,7 @@ async function problemHarness(problems: Problem[]): Promise<ProblemHarness> {
       return () => listeners?.delete(listener);
     },
     release: () => {},
-  };
+  } as ProblemSource & { exportable: boolean };
   const lsp = {
     status: "running",
     mainFile: null,
@@ -67,6 +74,7 @@ async function problemHarness(problems: Problem[]): Promise<ProblemHarness> {
     executeCommand: async (command: string) =>
       command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {},
     diagnostics: (uri: string) => diagnostics.get(uri) ?? [],
+    diagnosticUris: () => [...diagnostics.keys()],
   };
   const plugin = {
     app,
@@ -180,6 +188,34 @@ test("the preview problems list exists hidden when there are no problems", async
     assert.deepEqual(
       { count: h.view.contentEl.querySelectorAll("ul.tinymist-problems").length, hidden: list?.hidden ?? null },
       { count: 1, hidden: true },
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("the preview lists diagnostics that the client stored before the view was bound", async () => {
+  // #given
+  const h = await problemHarness([], [{
+    path: "/vault/Notes/A.md.typ",
+    diagnostics: [{
+      range: {
+        start: { line: 3, character: 8 },
+        end: { line: 3, character: 9 },
+      },
+      message: "unknown variable",
+    }],
+  }]);
+
+  // #when
+  const list = h.view.contentEl.querySelector<HTMLUListElement>("ul.tinymist-problems");
+  const text = [...(list?.querySelectorAll("li") ?? [])].map((entry) => entry.textContent);
+
+  // #then
+  try {
+    assert.deepEqual(
+      { text, hidden: list?.hidden ?? null },
+      { text: ["Notes/A.md:4 unknown variable"], hidden: false },
     );
   } finally {
     await h.close();

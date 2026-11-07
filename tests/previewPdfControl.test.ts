@@ -8,6 +8,7 @@ import type { AutomaticPdfExporter } from "../src/automatic-pdf";
 import { TypstView } from "../src/editor/typstView";
 import TinymistPlugin from "../src/main";
 import { PreviewView } from "../src/preview/previewView";
+import type { TypstSource } from "../src/sources";
 import { Menu, TFile, TestApp, TFolder, WorkspaceLeaf, testApp } from "./support/obsidian";
 
 const PREVIEW_URL = "http://127.0.0.1:4321";
@@ -220,6 +221,70 @@ test("preview header exposes one labeled keyboard checkbox for the selected sour
     await view.onClose();
     view.unload();
     h.close();
+  }
+});
+
+test("Markdown preview disables Automatic PDF while a Typst preview keeps it enabled", async () => {
+  // #given
+  const app = testApp("/vault");
+  const makeSource = (file: string, exportable: boolean): TypstSource => ({
+    file,
+    entry: `/vault/${file}${exportable ? "" : ".typ"}`,
+    document: `/vault/${file}${exportable ? "" : ".typ"}`,
+    inputs: undefined,
+    pinnable: exportable,
+    exportable,
+    pdf: file.replace(/\.[^.]+$/u, ".pdf"),
+    open: () => ({ close: () => {} }),
+    toSource: (position) => position,
+    toEntry: (position) => position,
+    reveal: async () => {},
+    describe: String,
+    on: () => () => {},
+    release: () => {},
+  } as TypstSource & { exportable: boolean });
+  const markdown = makeSource("Notes/A.md", false);
+  const typst = makeSource("Notes/A.typ", true);
+  let selected = markdown;
+  const plugin = {
+    preview: {
+      onChange: () => () => {},
+      currentSource: () => selected,
+      sourcePath: () => selected.file,
+      stop: async () => {},
+    },
+    onDiagnostics: () => () => {},
+    onAutomaticPdfChange: () => () => {},
+    automaticPdfEnabled: () => true,
+    setAutomaticPdf: async () => {},
+    lsp: null,
+    vaultBasePath: () => "/vault",
+  } as unknown as TinymistPlugin;
+  const markdownView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
+  selected = typst;
+  const typstView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
+
+  // #when
+  const markdownState = controlState(markdownView);
+  const typstState = controlState(typstView);
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        markdown: { disabled: markdownState.disabled, checked: markdownState.checked, label: markdownState.label },
+        typst: { disabled: typstState.disabled, checked: typstState.checked, label: typstState.label },
+      },
+      {
+        markdown: { disabled: true, checked: false, label: "Automatic PDF export" },
+        typst: { disabled: false, checked: true, label: "Automatic PDF export" },
+      },
+    );
+  } finally {
+    await markdownView.onClose();
+    markdownView.unload();
+    await typstView.onClose();
+    typstView.unload();
   }
 });
 

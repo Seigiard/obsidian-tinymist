@@ -19,6 +19,7 @@ function source(path: string, release: () => void): TypstSource {
     document: `/vault/${path}`,
     inputs: undefined,
     pinnable: true,
+    exportable: true,
     pdf: `${path}.pdf`,
     open: () => ({ close: () => {} }),
     toSource: (position) => position,
@@ -27,7 +28,7 @@ function source(path: string, release: () => void): TypstSource {
     describe: String,
     on: () => () => {},
     release,
-  };
+  } as TypstSource & { exportable: boolean };
 }
 
 test("pdfDestination replaces only the final extension of the final path segment", () => {
@@ -91,6 +92,36 @@ test("SourceRegistry shares a pending source until every holder releases it", as
       recreated: true,
       creates: 2,
     },
+  );
+});
+
+test("SourceRegistry disposes a shared source once after its final holder releases", async () => {
+  // #given
+  const lifecycle: string[] = [];
+  const adapter: SourceAdapter = {
+    mayBe: () => true,
+    create: async (path, release) => {
+      const created = source(path, release) as TypstSource & { dispose?: () => void };
+      created.dispose = () => lifecycle.push("dispose");
+      return created;
+    },
+  };
+  const registry = new SourceRegistry([adapter]);
+  const first = await registry.hold("notes/chapter.typ");
+  const second = await registry.hold("notes/chapter.typ");
+  assert.ok(first && second, "expected two holders of one source");
+
+  // #when
+  first.release();
+  const afterFirst = [...lifecycle];
+  second.release();
+  const afterSecond = [...lifecycle];
+  first.release();
+
+  // #then
+  assert.deepEqual(
+    { afterFirst, afterSecond, afterRepeatedRelease: lifecycle },
+    { afterFirst: [], afterSecond: ["dispose"], afterRepeatedRelease: ["dispose"] },
   );
 });
 
@@ -232,6 +263,7 @@ test("the typ adapter follows a wrapper created after the source is held", async
         document: held.document,
         pdf: held.pdf,
         pinnable: held.pinnable,
+        exportable: (held as TypstSource & { exportable?: boolean }).exportable,
         toSource: held.toSource(position),
         toEntry: held.toEntry(position),
         description: held.describe(new Error("broken")),
@@ -252,6 +284,7 @@ test("the typ adapter follows a wrapper created after the source is held", async
         document: join(root, "notes", "chapter.typ"),
         pdf: "notes/chapter.pdf",
         pinnable: true,
+        exportable: true,
         toSource: { line: 4, character: 7 },
         toEntry: { line: 4, character: 7 },
         description: "Error: broken",

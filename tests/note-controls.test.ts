@@ -112,6 +112,32 @@ test("a flagged Markdown view owns one removable Open preview header action", as
   }
 });
 
+test("an existing header action opens the file shown by its view at click time", async () => {
+  // #given
+  const h = await noteHarness();
+  await h.app.workspace.emit("file-open", h.file);
+  const action = h.view.actions.find(({ removed }) => !removed);
+  assert.ok(action, "expected the flagged view action");
+  const second = new TFile("Notes/B.md");
+  h.metadata.setFrontmatter(second.path, { typst: true });
+
+  // #when
+  h.view.file = second;
+  await h.app.workspace.emit("file-open", second);
+  await action.callback();
+  second.path = "Archive/C.md";
+  h.metadata.setFrontmatter(second.path, { typst: true });
+  await h.app.workspace.emit("file-open", second);
+  await action.callback();
+
+  // #then
+  try {
+    assert.deepEqual(h.plugin.opened, ["Notes/B.md", "Archive/C.md"]);
+  } finally {
+    h.plugin.onunload();
+  }
+});
+
 test("the Open preview command accepts a flagged Markdown file and starts its vault path", async () => {
   // #given
   const h = await noteHarness();
@@ -139,6 +165,8 @@ test("a Markdown preview start failure notice uses the described note path", asy
   const metadata = metadataCache({ "Notes/A.md": { typst: true } });
   const file = new TFile("Notes/A.md");
   const view = new MarkdownView(file);
+  Object.assign(view.editor, { getValue: () => "---\ntypst: true\n---\nText" });
+  app.vault.files.set(file.path, "---\ntypst: true\n---\nText");
   Object.assign(app, { metadataCache: metadata });
   Object.assign(app.workspace, {
     getActiveFile: () => file,
@@ -154,11 +182,22 @@ test("a Markdown preview start failure notice uses the described note path", asy
     async startLsp(_restart: boolean): Promise<void> {}
   }
   const plugin = new ErrorPlugin(app as never, {});
-  plugin.preview.start = async () => {
-    throw new Error("Notes/A.md:3:5: unknown variable");
-  };
   Notice.shown.length = 0;
   await plugin.onload();
+  plugin.lsp = {
+    status: "running",
+    mainFile: null,
+    onNotification: () => {},
+    setPreviewSource: () => {},
+    pinMain: () => {},
+    didOpen: () => {},
+    didChange: () => {},
+    didClose: () => {},
+    executeCommand: async () => {
+      throw new Error("/vault/Notes/A.md.typ:3:5: unknown variable");
+    },
+    stop: () => {},
+  } as never;
   const command = commands.find(({ id }) => id === "open-preview");
 
   // #when
@@ -171,7 +210,7 @@ test("a Markdown preview start failure notice uses the described note path", asy
       { accepted, notices: Notice.shown },
       {
         accepted: true,
-        notices: ["Tinymist preview failed: Error: Notes/A.md:3:5: unknown variable"],
+        notices: ["Tinymist preview failed: Notes/A.md:3:5: unknown variable"],
       },
     );
   } finally {

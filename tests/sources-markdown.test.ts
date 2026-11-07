@@ -21,7 +21,6 @@ interface MarkdownSourceHost {
   onEditorChange(listener: (vaultPath: string, text: string) => void): () => void;
   onRename(listener: (oldPath: string, newPath: string) => void): () => void;
   onDelete(listener: (vaultPath: string) => void): () => void;
-  onServerRestart(listener: () => void): () => void;
 }
 
 interface HostFixture {
@@ -31,7 +30,7 @@ interface HostFixture {
   emitEditorChange(path: string, text: string): void;
   emitRename(oldPath: string, newPath: string): void;
   emitDelete(path: string): void;
-  emitServerRestart(): void;
+  restartSubscriptions(): number;
 }
 
 interface HostOptions {
@@ -77,25 +76,29 @@ function fakeHost(options: HostOptions = {}): HostFixture {
     listeners.add(listener);
     return () => listeners.delete(listener);
   };
-  return {
-    host: {
-      root: () => options.root === undefined ? "/v" : options.root,
-      frontmatter: () => options.frontmatter === undefined ? { typst: true } : options.frontmatter,
-      editorText: () => options.editorText === undefined ? SOURCE_TEXT : options.editorText,
-      readFile: async (path) => {
-        readFiles.push(path);
-        return options.fileText ?? SOURCE_TEXT;
-      },
-      exists: (path) => existing.has(path),
-      kit: () => options.kit ?? null,
-      reveal: async (file, position) => {
-        reveals.push({ file, position });
-      },
-      onEditorChange: (listener) => subscribe(editorListeners, listener),
-      onRename: (listener) => subscribe(renameListeners, listener),
-      onDelete: (listener) => subscribe(deleteListeners, listener),
-      onServerRestart: (listener) => subscribe(restartListeners, listener),
+  const host: MarkdownSourceHost = {
+    root: () => options.root === undefined ? "/v" : options.root,
+    frontmatter: () => options.frontmatter === undefined ? { typst: true } : options.frontmatter,
+    editorText: () => options.editorText === undefined ? SOURCE_TEXT : options.editorText,
+    readFile: async (path) => {
+      readFiles.push(path);
+      return options.fileText ?? SOURCE_TEXT;
     },
+    exists: (path) => existing.has(path),
+    kit: () => options.kit ?? null,
+    reveal: async (file, position) => {
+      reveals.push({ file, position });
+    },
+    onEditorChange: (listener) => subscribe(editorListeners, listener),
+    onRename: (listener) => subscribe(renameListeners, listener),
+    onDelete: (listener) => subscribe(deleteListeners, listener),
+  };
+  Object.defineProperty(host, "onServerRestart", {
+    configurable: true,
+    value: (listener: () => void) => subscribe(restartListeners, listener),
+  });
+  return {
+    host,
     readFiles,
     reveals,
     emitEditorChange: (path, text) => {
@@ -107,9 +110,7 @@ function fakeHost(options: HostOptions = {}): HostFixture {
     emitDelete: (path) => {
       for (const listener of deleteListeners) listener(path);
     },
-    emitServerRestart: () => {
-      for (const listener of restartListeners) listener();
-    },
+    restartSubscriptions: () => restartListeners.size,
   };
 }
 
@@ -215,6 +216,7 @@ test("a Markdown source exposes literal virtual addresses and PDF destination", 
       document: source.document,
       inputs: source.inputs,
       pinnable: source.pinnable,
+      exportable: (source as TypstSource & { exportable?: boolean }).exportable,
       pdf: source.pdf,
     },
     {
@@ -223,6 +225,7 @@ test("a Markdown source exposes literal virtual addresses and PDF destination", 
       document: "/v/Notes/Арлидус.md.typ",
       inputs: undefined,
       pinnable: false,
+      exportable: false,
       pdf: "Notes/Арлидус.pdf",
     },
   );
@@ -269,6 +272,79 @@ test("open clients receive independent document updates and closing one stops it
   }
 });
 
+test("repeated opens on one client share one document until the final handle closes", async () => {
+  // #given
+  const fixture = fakeHost();
+  const source = await createSource(fixture);
+  const client = new RecordingClient();
+  const first = source.open(client as never);
+  const second = source.open(client as never);
+
+  // #when
+  fixture.emitEditorChange("Notes/Арлидус.md", "---\ntypst: true\n---\n/typst#let x = 1");
+  first.close();
+  fixture.emitEditorChange("Notes/Арлидус.md", "---\ntypst: true\n---\n/typst#let x = 2");
+  second.close();
+
+  // #then
+  assert.deepEqual(client.calls, [
+    { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
+    { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+    { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 2` },
+    { method: "didClose", path: "/v/Notes/Арлидус.md.typ" },
+  ]);
+});
+
+test("a shared Markdown source stays live until the registry's final holder releases it", async () => {
+  // #given
+  const fixture = fakeHost();
+  let creates = 0;
+  const adapter = await markdownAdapter(fixture.host);
+  const counted: SourceAdapter = {
+    mayBe: (path) => adapter.mayBe(path),
+    create: async (path, release) => {
+      creates++;
+      return await adapter.create(path, release);
+    },
+  };
+  const registry = new SourceRegistry([counted]);
+  const first = await registry.hold("Notes/Арлидус.md");
+  const second = await registry.hold("Notes/Арлидус.md");
+  assert.ok(first && second, "expected both holders to share a Markdown source");
+  const client = new RecordingClient();
+  const handle = second.open(client as never);
+
+  // #when
+  first.release();
+  fixture.emitEditorChange("Notes/Арлидус.md", "---\ntypst: true\n---\n/typst#let x = 1");
+  const heldAfterOne = registry.byDocument("/v/Notes/Арлидус.md.typ") === second;
+  second.release();
+  const heldAfterLast = registry.byDocument("/v/Notes/Арлидус.md.typ");
+  const third = await registry.hold("Notes/Арлидус.md");
+  assert.ok(third, "expected a fresh source after the final release");
+
+  // #then
+  try {
+    assert.deepEqual(
+      { calls: client.calls, heldAfterOne, heldAfterLast, recreated: third !== first, creates },
+      {
+        calls: [
+          { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
+          { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+          { method: "didClose", path: "/v/Notes/Арлидус.md.typ" },
+        ],
+        heldAfterOne: true,
+        heldAfterLast: null,
+        recreated: true,
+        creates: 2,
+      },
+    );
+  } finally {
+    handle.close();
+    third.release();
+  }
+});
+
 test("position maps preserve the translated non-ASCII column in both directions", async () => {
   // #given
   const source = await createSource(fakeHost());
@@ -294,18 +370,20 @@ test("reveal delegates the Markdown path and describe removes every virtual addr
   const description = source.describe(
     new Error("/v/Notes/A.md.typ:3:5: /v/Notes/A.md.typ has an unknown variable"),
   );
+  const stringDescription = source.describe("plain failure");
 
   // #then
   assert.deepEqual(
-    { reveals: fixture.reveals, description },
+    { reveals: fixture.reveals, description, stringDescription },
     {
       reveals: [{ file: "Notes/A.md", position: { line: 2, character: 7 } }],
-      description: "Error: Notes/A.md:3:5: Notes/A.md has an unknown variable",
+      description: "Notes/A.md:3:5: Notes/A.md has an unknown variable",
+      stringDescription: "plain failure",
     },
   );
 });
 
-test("rename, restart, and delete keep every open client on the current virtual document", async () => {
+test("rename and delete move every open client without an adapter-owned restart hook", async () => {
   // #given
   const fixture = fakeHost();
   let releases = 0;
@@ -319,10 +397,10 @@ test("rename, restart, and delete keep every open client on the current virtual 
   const events: string[] = [];
   source.on("moved", () => events.push("moved"));
   source.on("ended", () => events.push("ended"));
+  const restartSubscriptions = fixture.restartSubscriptions();
 
   // #when
   fixture.emitRename("Notes/A.md", "Archive/B.md");
-  fixture.emitServerRestart();
   fixture.emitDelete("Archive/B.md");
   source.release();
 
@@ -331,7 +409,6 @@ test("rename, restart, and delete keep every open client on the current virtual 
     const lifecycleCalls: ClientCall[] = [
       { method: "didOpen", path: "/v/Notes/A.md.typ", text: SOURCE_TYP },
       { method: "didClose", path: "/v/Notes/A.md.typ" },
-      { method: "didOpen", path: "/v/Archive/B.md.typ", text: SOURCE_TYP },
       { method: "didOpen", path: "/v/Archive/B.md.typ", text: SOURCE_TYP },
       { method: "didClose", path: "/v/Archive/B.md.typ" },
     ];
@@ -342,6 +419,7 @@ test("rename, restart, and delete keep every open client on the current virtual 
         events,
         addresses: { file: source.file, entry: source.entry, document: source.document, pdf: source.pdf },
         releases,
+        restartSubscriptions,
       },
       {
         first: lifecycleCalls,
@@ -354,6 +432,7 @@ test("rename, restart, and delete keep every open client on the current virtual 
           pdf: "Archive/B.pdf",
         },
         releases: 1,
+        restartSubscriptions: 0,
       },
     );
   } finally {

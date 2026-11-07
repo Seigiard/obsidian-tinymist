@@ -3,8 +3,10 @@ import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { test } from "node:test";
+import { LspClient } from "../src/lsp/client";
 import TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
+import { DEFAULT_SETTINGS } from "../src/settings";
 import { SourceRegistry, typAdapter, type TypstSource } from "../src/sources";
 
 function source(path: string, release: () => void, entryOffset = 0): TypstSource {
@@ -14,6 +16,7 @@ function source(path: string, release: () => void, entryOffset = 0): TypstSource
     document: `/vault/${path}`,
     inputs: `/input/${path}`,
     pinnable: true,
+    exportable: true,
     pdf: `${path}.pdf`,
     open: () => ({ close: () => {} }),
     toSource: (position) => position,
@@ -25,7 +28,7 @@ function source(path: string, release: () => void, entryOffset = 0): TypstSource
     describe: String,
     on: () => () => {},
     release,
-  };
+  } as TypstSource & { exportable: boolean };
 }
 
 function deferred<T>(): {
@@ -1556,6 +1559,7 @@ test("preview start, source rebind, and stop close each Markdown document before
     document: `/vault/${path}.typ`,
     inputs: undefined,
     pinnable: false,
+    exportable: false,
     pdf: path.replace(/\.md$/i, ".pdf"),
     open: () => {
       lifecycle.push(`open:${path}`);
@@ -1567,7 +1571,7 @@ test("preview start, source rebind, and stop close each Markdown document before
     describe: String,
     on: () => () => {},
     release: () => lifecycle.push(`release:${path}`),
-  });
+  } as TypstSource & { exportable: boolean });
   const plugin = {
     lsp: {
       status: "running",
@@ -1607,6 +1611,221 @@ test("preview start, source rebind, and stop close each Markdown document before
     ]);
   } finally {
     manager.dispose();
+  }
+});
+
+test("Markdown moved and ended events restart then stop the same held preview source", async () => {
+  // #given
+  const listeners = new Map<"moved" | "ended" | "problems", Set<() => void>>([
+    ["moved", new Set()],
+    ["ended", new Set()],
+    ["problems", new Set()],
+  ]);
+  let file = "Notes/A.md";
+  let entry = "/vault/Notes/A.md.typ";
+  let holds = 0;
+  let releases = 0;
+  let port = 4320;
+  const calls: Array<{ command: string; entry?: string }> = [];
+  const held = {
+    get file(): string { return file; },
+    get entry(): string { return entry; },
+    get document(): string { return entry; },
+    inputs: undefined,
+    pinnable: false,
+    exportable: false,
+    get pdf(): string { return file.replace(/\.md$/iu, ".pdf"); },
+    open: () => ({ close: () => {} }),
+    toSource: (position) => position,
+    toEntry: (position) => position,
+    reveal: async () => {},
+    describe: String,
+    on: (event, listener) => {
+      listeners.get(event)?.add(listener);
+      return () => listeners.get(event)?.delete(listener);
+    },
+    release: () => { releases++; },
+  } as TypstSource & { exportable: boolean };
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async (command: string, args: unknown[]) => {
+        const commandArgs = command === "tinymist.doStartPreview" ? args[0] as string[] : null;
+        calls.push({ command, ...(commandArgs ? { entry: commandArgs.at(-1) } : {}) });
+        return command === "tinymist.doStartPreview" ? { staticServerPort: ++port } : {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => {
+        holds++;
+        return held;
+      },
+      byDocument: () => null,
+      mayBeSource: () => false,
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  await manager.start("/vault/Notes/A.md");
+
+  // #when
+  file = "Notes/B.md";
+  entry = "/vault/Notes/B.md.typ";
+  for (const listener of listeners.get("moved") ?? []) listener();
+  manager.onVaultRename("Notes/B.md", "Notes/A.md");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const afterMove = { filePath: manager.filePath, url: manager.url };
+  for (const listener of listeners.get("ended") ?? []) listener();
+  manager.onVaultDelete("Notes/B.md");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  // #then
+  try {
+    assert.deepEqual(
+      { holds, releases, calls, afterMove, afterEnd: { filePath: manager.filePath, url: manager.url } },
+      {
+        holds: 1,
+        releases: 1,
+        calls: [
+          { command: "tinymist.doStartPreview", entry: "/vault/Notes/A.md.typ" },
+          { command: "tinymist.doKillPreview" },
+          { command: "tinymist.doStartPreview", entry: "/vault/Notes/B.md.typ" },
+          { command: "tinymist.doKillPreview" },
+        ],
+        afterMove: { filePath: "/vault/Notes/B.md", url: "http://127.0.0.1:4322" },
+        afterEnd: { filePath: null, url: null },
+      },
+    );
+  } finally {
+    manager.dispose();
+  }
+});
+
+test("startLsp restart reopens an active Markdown preview on the new client", async () => {
+  // #given
+  const clientIds = new WeakMap<LspClient, number>();
+  const documents: Array<{ client: number; method: "didOpen" | "didClose"; path: string }> = [];
+  const previewStarts: Array<{ client: number; entry: string }> = [];
+  let nextClientId = 1;
+  let creates = 0;
+  const mutablePrototype = LspClient.prototype as unknown as Record<string, unknown>;
+  const original = {
+    start: mutablePrototype.start,
+    stop: mutablePrototype.stop,
+    didOpen: mutablePrototype.didOpen,
+    didClose: mutablePrototype.didClose,
+    executeCommand: mutablePrototype.executeCommand,
+    setPreviewSource: mutablePrototype.setPreviewSource,
+    pinMain: mutablePrototype.pinMain,
+  };
+  mutablePrototype.start = async function (this: LspClient): Promise<void> {
+    clientIds.set(this, ++nextClientId);
+    this.status = "running";
+  };
+  mutablePrototype.stop = function (this: LspClient): void {
+    this.status = "stopped";
+  };
+  mutablePrototype.didOpen = function (this: LspClient, path: string): void {
+    documents.push({ client: clientIds.get(this) ?? -1, method: "didOpen", path });
+  };
+  mutablePrototype.didClose = function (this: LspClient, path: string): void {
+    documents.push({ client: clientIds.get(this) ?? -1, method: "didClose", path });
+  };
+  mutablePrototype.executeCommand = async function (this: LspClient, command: string, args: unknown[]): Promise<unknown> {
+    if (command === "tinymist.doStartPreview") {
+      previewStarts.push({
+        client: clientIds.get(this) ?? -1,
+        entry: (args[0] as string[]).at(-1) ?? "",
+      });
+      return { staticServerPort: 4320 + previewStarts.length };
+    }
+    return {};
+  };
+  mutablePrototype.setPreviewSource = (): void => {};
+  mutablePrototype.pinMain = (): void => {};
+
+  const adapter = {
+    mayBe: (path: string) => path.endsWith(".md"),
+    create: async (path: string, release: () => void) => {
+      creates++;
+      const entry = `/vault/${path}.typ`;
+      return {
+        file: path,
+        entry,
+        document: entry,
+        inputs: undefined,
+        pinnable: false,
+        exportable: false,
+        pdf: path.replace(/\.md$/iu, ".pdf"),
+        open: (client: LspClient) => {
+          client.didOpen(entry, "converted");
+          let open = true;
+          return { close: () => {
+            if (!open) return;
+            open = false;
+            client.didClose(entry);
+          } };
+        },
+        toSource: (position: { line: number; character: number }) => position,
+        toEntry: (position: { line: number; character: number }) => position,
+        reveal: async () => {},
+        describe: String,
+        on: () => () => {},
+        release,
+      } as TypstSource & { exportable: boolean };
+    },
+  };
+  const oldClient = new LspClient("old", "/vault", () => {});
+  oldClient.status = "running";
+  clientIds.set(oldClient, 1);
+  const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin;
+  Object.assign(plugin, {
+    settings: { ...DEFAULT_SETTINGS, binaryPath: "/fake/tinymist" },
+    lsp: oldClient,
+    app: {
+      vault: { adapter: { getBasePath: () => "/vault" } },
+      workspace: { getLeavesOfType: () => [], getActiveViewOfType: () => null },
+    },
+    sources: new SourceRegistry([adapter]),
+    resolveBinary: () => "/fake/tinymist",
+    vaultBasePath: () => "/vault",
+  });
+  const manager = new PreviewManager(plugin);
+  plugin.preview = manager;
+
+  try {
+    await manager.start("/vault/Notes/A.md");
+
+    // #when
+    await plugin.startLsp(true);
+
+    // #then
+    assert.deepEqual(
+      { documents, previewStarts, creates, active: { filePath: manager.filePath, url: manager.url } },
+      {
+        documents: [
+          { client: 1, method: "didOpen", path: "/vault/Notes/A.md.typ" },
+          { client: 1, method: "didClose", path: "/vault/Notes/A.md.typ" },
+          { client: 2, method: "didOpen", path: "/vault/Notes/A.md.typ" },
+        ],
+        previewStarts: [
+          { client: 1, entry: "/vault/Notes/A.md.typ" },
+          { client: 2, entry: "/vault/Notes/A.md.typ" },
+        ],
+        creates: 2,
+        active: { filePath: "/vault/Notes/A.md", url: "http://127.0.0.1:4322" },
+      },
+    );
+  } finally {
+    manager.dispose();
+    plugin.lsp?.stop();
+    Object.assign(mutablePrototype, original);
   }
 });
 

@@ -225,6 +225,10 @@ export class TestVault {
     return { name, callback, detach: () => callbacks.delete(callback) };
   }
 
+  offref(ref: { detach(): void }): void {
+    ref.detach();
+  }
+
   async emit(name: string, ...args: unknown[]): Promise<void> {
     const pending = [...(this.events.get(name) ?? [])].map((callback) => callback(...args));
     await Promise.all(pending);
@@ -303,6 +307,10 @@ export class TestWorkspace {
     if (!callbacks) this.events.set(name, (callbacks = new Set()));
     callbacks.add(callback);
     return { name, callback, detach: () => callbacks.delete(callback) };
+  }
+
+  offref(ref: { detach(): void }): void {
+    ref.detach();
   }
 
   onLayoutReady(callback: Callback): void {
