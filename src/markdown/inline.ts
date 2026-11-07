@@ -30,7 +30,7 @@ interface Delimiter {
   close: boolean;
 }
 
-export function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}): MappedLineBuilder {
+function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
   const urls = findUrls(text, codeRanges);
@@ -97,15 +97,9 @@ export function convertInline(text: string, sourceOffset: number, options: Inlin
       continue;
     }
 
-    if (character === "#" || character === "$" || character === "@" || character === "<" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_") {
+    if (character === "#" || character === "$" || character === "@" || character === "<" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_" || character === "/") {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
-      continue;
-    }
-
-    if (character === "/") {
-      builder.appendEscaped(character, sourceOffset + index);
-      index += 1;
       continue;
     }
 
@@ -400,15 +394,14 @@ function findClosing(delimiters: Map<string, number[]>, start: number, marker: s
 
 function canOpen(text: string, index: number, width: number): boolean {
   const next = characterAt(text, index + width);
-  const previous = index > 0 ? characterAt(text, index - codePointWidthBefore(text, index)) : "";
+  const previous = characterAt(text, index - codePointWidthBefore(text, index));
   if (!next || /\s/u.test(next)) return false;
   return !(isWord(previous) && isWord(next));
 }
 
 function canClose(text: string, index: number, width: number): boolean {
-  const previousIndex = index > 0 ? index - codePointWidthBefore(text, index) : -1;
-  const previous = previousIndex >= 0 ? characterAt(text, previousIndex) : "";
-  const next = index + width < text.length ? characterAt(text, index + width) : "";
+  const previous = characterAt(text, index - codePointWidthBefore(text, index));
+  const next = characterAt(text, index + width);
   if (!previous || /\s/u.test(previous)) return false;
   return !(isWord(previous) && isWord(next));
 }

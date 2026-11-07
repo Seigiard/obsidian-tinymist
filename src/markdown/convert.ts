@@ -3,7 +3,7 @@ import { convertProperty, findFrontmatterEnd, hasSourceFlag, quoteString, readFr
 import { convertProseLine } from "./inline";
 import { hasForbiddenLineBreak, MappedLineBuilder, sanitizeLine, type LineMap } from "./lineMap";
 
-/** The kit templates available to the markdown converter. */
+/** The kit templates available to the markdown converter: template id to Typst import path; defaultTemplate is an id, or empty for no import. */
 export interface KitView {
   templates: Record<string, string>;
   defaultTemplate: string;
@@ -48,18 +48,27 @@ export function convert(text: string, kit: KitView | null): Conversion {
   const problems: Problem[] = [];
   const outputLines: string[] = [];
   const maps: LineMap[] = [];
-  const template = selectTemplate(frontmatter, kit, problems);
-  const templateImport = template.path === undefined ? "" : `#import ${quoteString(template.path)}: *; `;
+  const template = selectTemplate(frontmatter, kit);
+  if (template.kind === "problem") problems.push({ line: template.line, message: template.message, fatal: true });
+  const templateImport = template.kind === "value" && template.path !== undefined ? `#import ${quoteString(template.path)}: *; ` : "";
 
   addGeneratedLine(outputLines, maps, `${BUILT_INS}${templateImport}#show: template.with(`, lines[0].length);
 
+  const emittedProperties = new Set<string>();
   for (const entry of frontmatter) {
     const sourceLine = lines[entry.line];
     let output = "";
     if ("name" in entry) {
       const result = convertProperty(entry);
       if (result.kind === "problem") problems.push({ line: entry.line, message: result.message, fatal: false });
-      else if (result.kind === "value") output = `${entry.name}: ${result.literal},`;
+      else if (result.kind === "value") {
+        if (emittedProperties.has(entry.name)) {
+          problems.push({ line: entry.line, message: `Property ${entry.name} is repeated`, fatal: false });
+        } else {
+          emittedProperties.add(entry.name);
+          output = `${entry.name}: ${result.literal},`;
+        }
+      }
     }
     addGeneratedLine(outputLines, maps, output, sourceLine.length);
   }

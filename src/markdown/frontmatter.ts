@@ -1,4 +1,4 @@
-import type { KitView, Problem } from "./convert";
+import type { KitView } from "./convert";
 
 export interface FrontmatterPropertyEntry {
   line: number;
@@ -7,27 +7,29 @@ export interface FrontmatterPropertyEntry {
   multiline: boolean;
 }
 
-export interface FrontmatterLineEntry {
+interface FrontmatterLineEntry {
   line: number;
 }
 
-export type FrontmatterEntry = FrontmatterPropertyEntry | FrontmatterLineEntry;
-
-export type PropertyConversion = { kind: "value"; literal: string } | { kind: "skip" } | { kind: "problem"; message: string };
-
-interface ParsedQuotedValue {
+type FrontmatterFlagEntry = {
+  line: number;
   value: string;
-  failure?: string;
-}
+  multiline: boolean;
+  flag: true;
+};
+
+type FrontmatterEntry = FrontmatterPropertyEntry | FrontmatterFlagEntry | FrontmatterLineEntry;
+
+type PropertyConversion = { kind: "value"; literal: string } | { kind: "skip" } | { kind: "problem"; message: string };
+
+type ParsedQuotedValue = { value: string } | { escape: string };
 
 type ValueFailure = "empty" | "multiline" | "malformed" | "quoted" | "deep" | "escape";
 
 type FailedValueResult = { failure: Exclude<ValueFailure, "escape"> } | { failure: "escape"; escape: string };
 type ValueResult = { literal: string } | FailedValueResult;
 
-interface TemplateSelection {
-  path: string | undefined;
-}
+type TemplateConversion = { kind: "value"; path: string | undefined } | { kind: "problem"; line: number; message: string };
 
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
@@ -78,7 +80,7 @@ export function findFrontmatterEnd(lines: readonly string[]): number {
 }
 
 export function hasSourceFlag(entries: readonly FrontmatterEntry[]): boolean {
-  return entries.some((entry) => "name" in entry && entry.name === "typst" && !entry.multiline && entry.value.trim() === "true");
+  return entries.some((entry) => "flag" in entry && !entry.multiline && entry.value.trim() === "true");
 }
 
 export function readFrontmatter(lines: readonly string[], end: number): FrontmatterEntry[] {
@@ -86,12 +88,9 @@ export function readFrontmatter(lines: readonly string[], end: number): Frontmat
   for (let line = 1; line < end; line += 1) {
     const property = parseProperty(lines[line]);
     if (property) {
-      entries.push({
-        line,
-        name: property.name,
-        value: property.value,
-        multiline: isBlockValue(property.value) || isIndentedNonBlank(lines[line + 1]),
-      });
+      const multiline = isBlockValue(property.value) || hasIndentedContinuation(lines, line, end);
+      if (property.kind === "flag") entries.push({ line, value: property.value, multiline, flag: true });
+      else entries.push({ line, name: property.name, value: property.value, multiline });
     } else {
       entries.push({ line });
     }
@@ -99,30 +98,33 @@ export function readFrontmatter(lines: readonly string[], end: number): Frontmat
   return entries;
 }
 
-export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitView | null, problems: Problem[]): TemplateSelection {
+export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitView | null): TemplateConversion {
   let explicit: { line: number; id: string } | undefined;
   for (const entry of entries) {
     if ("name" in entry && entry.name === "template" && !entry.multiline && explicit === undefined) {
       const id = unquoteTemplateId(entry.value.trim());
-    if (id !== "") explicit = { line: entry.line, id };
+      if (id !== "") {
+        explicit = { line: entry.line, id };
+        break;
+      }
     }
   }
 
   if (explicit !== undefined) {
     const path = lookupTemplate(kit, explicit.id);
     if (path === undefined) {
-      problems.push({ line: explicit.line, message: `Unknown Typst template ${explicit.id}`, fatal: true });
+      return { kind: "problem", line: explicit.line, message: `Unknown Typst template ${explicit.id}` };
     }
-    return { path };
+    return { kind: "value", path };
   }
 
   const defaultTemplate = kit && typeof kit.defaultTemplate === "string" ? kit.defaultTemplate.trim() : "";
-  if (defaultTemplate === "") return { path: undefined };
+  if (defaultTemplate === "") return { kind: "value", path: undefined };
   const path = lookupTemplate(kit, defaultTemplate);
   if (path === undefined) {
-    problems.push({ line: 0, message: `Unknown default Typst template ${defaultTemplate}`, fatal: true });
+    return { kind: "problem", line: 0, message: `Unknown default Typst template ${defaultTemplate}` };
   }
-  return { path };
+  return { kind: "value", path };
 }
 
 export function quoteString(value: string): string {
@@ -170,7 +172,6 @@ export function quoteString(value: string): string {
 }
 
 export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConversion {
-  if (entry.name === "typst") return { kind: "skip" };
   if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
     return { kind: "problem", message: `Property name ${entry.name || "<empty>"} is not a Typst identifier` };
   }
@@ -189,17 +190,21 @@ function lookupTemplate(kit: KitView | null, id: string): string | undefined {
   return typeof path === "string" ? path : undefined;
 }
 
-function parseProperty(line: string): { name: string; value: string } | undefined {
+function parseProperty(line: string): { kind: "flag"; value: string } | { kind: "property"; name: string; value: string } | undefined {
   if (line.startsWith("typst:")) {
     const value = line.slice("typst:".length);
-    if (value === "" || /^[ \t]/u.test(value)) return { name: "typst", value: stripYamlComment(value) };
+    if (value === "" || /^[ \t]/u.test(value)) return { kind: "flag", value: stripYamlComment(value) };
   }
   const match = /^typst-([^:]*):[ \t]*(.*)$/u.exec(line);
-  return match === null ? undefined : { name: match[1], value: stripYamlComment(match[2]) };
+  return match === null ? undefined : { kind: "property", name: match[1], value: stripYamlComment(match[2]) };
 }
 
-function isIndentedNonBlank(line: string): boolean {
-  return /^[ \t]+\S/u.test(line);
+function hasIndentedContinuation(lines: readonly string[], line: number, end: number): boolean {
+  for (let next = line + 1; next < end; next += 1) {
+    if (lines[next].trim() === "") continue;
+    return /^[ \t]+\S/u.test(lines[next]);
+  }
+  return false;
 }
 
 function unquoteTemplateId(value: string): string {
@@ -235,9 +240,7 @@ function parseValue(value: string, depth = 0): ValueResult {
   if (trimmed.startsWith('"')) {
     if (!isCompleteQuotedScalar(trimmed, '"')) return { failure: "quoted" };
     const decoded = decodeDoubleQuoted(trimmed.slice(1, -1));
-    return decoded.failure === undefined
-      ? { literal: quoteString(decoded.value) }
-      : { failure: "escape", escape: decoded.failure };
+    return "escape" in decoded ? { failure: "escape", escape: decoded.escape } : { literal: quoteString(decoded.value) };
   }
   if (trimmed.startsWith("'")) {
     if (!isCompleteQuotedScalar(trimmed, "'")) return { failure: "quoted" };
@@ -247,20 +250,7 @@ function parseValue(value: string, depth = 0): ValueResult {
 }
 
 function isCompleteQuotedScalar(value: string, quote: string): boolean {
-  for (let index = 1; index < value.length; index += 1) {
-    const character = value[index];
-    if (quote === "'" && character === "'" && value[index + 1] === "'") {
-      index += 1;
-      continue;
-    }
-    if (quote === '"' && character === "\\") {
-      if (index + 1 >= value.length) return false;
-      index += 1;
-      continue;
-    }
-    if (character === quote) return index === value.length - 1;
-  }
-  return false;
+  return findClosingQuote(value, 0, quote) === value.length - 1;
 }
 
 function isBlockValue(value: string): boolean {
@@ -289,24 +279,11 @@ function splitArrayItems(value: string): string[] | undefined {
   const items: string[] = [];
   let start = 0;
   let depth = 0;
-  let quote: string | undefined;
-  let escaped = false;
   let quoteAllowed = true;
   let afterQuote = false;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
-    if (quote) {
-      if (quote === "'" && character === "'" && value[index + 1] === "'") {
-        index += 1;
-      } else if (quote === '"' && escaped) {
-        escaped = false;
-      } else if (quote === '"' && character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = undefined;
-        afterQuote = true;
-      }
-    } else if (character === "[") {
+    if (character === "[") {
       if (afterQuote) return undefined;
       depth += 1;
       quoteAllowed = true;
@@ -327,13 +304,16 @@ function splitArrayItems(value: string): string[] | undefined {
     } else if (afterQuote) {
       if (!/\s/u.test(character)) return undefined;
     } else if ((character === '"' || character === "'") && quoteAllowed) {
-      quote = character;
+      const closing = findClosingQuote(value, index, character);
+      if (closing < 0) return undefined;
+      index = closing;
       quoteAllowed = false;
+      afterQuote = true;
     } else if (!/\s/u.test(character)) {
       quoteAllowed = false;
     }
   }
-  if (quote !== undefined || depth !== 0) return undefined;
+  if (depth !== 0) return undefined;
   const last = value.slice(start).trim();
   if (last !== "") items.push(last);
   return items.length === 0 ? undefined : items;
@@ -347,7 +327,7 @@ function decodeDoubleQuoted(value: string): ParsedQuotedValue {
       result += character;
       continue;
     }
-    const escape = value[index + 1]!;
+    const escape = value[index + 1];
     const simple = DOUBLE_QUOTE_ESCAPES.get(escape);
     if (simple !== undefined) {
       result += simple;
@@ -364,36 +344,41 @@ function decodeDoubleQuoted(value: string): ParsedQuotedValue {
           index += width + 1;
           continue;
         }
-        return { value: result, failure: value.slice(index, index + width + 2) };
+        return { escape: value.slice(index, index + width + 2) };
       }
     }
-    return { value: result, failure: `\\${escape}` };
+    return { escape: `\\${escape}` };
   }
   return { value: result };
+}
+
+function findClosingQuote(value: string, start: number, quote: string = value[start]): number {
+  for (let index = start + 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote === "'" && character === "'" && value[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      if (index + 1 >= value.length) return -1;
+      index += 1;
+      continue;
+    }
+    if (character === quote) return index;
+  }
+  return -1;
 }
 
 function stripYamlComment(value: string): string {
   const isArray = value.trimStart().startsWith("[");
   let depth = 0;
-  let quote: string | undefined;
-  let escaped = false;
   let quoteAllowed = true;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
-    if (quote) {
-      if (quote === "'" && character === "'" && value[index + 1] === "'") {
-        index += 1;
-      } else if (quote === '"' && escaped) {
-        escaped = false;
-      } else if (quote === '"' && character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
     if ((character === '"' || character === "'") && quoteAllowed) {
-      quote = character;
+      const closing = findClosingQuote(value, index, character);
+      if (closing < 0) return value.trimEnd();
+      index = closing;
       quoteAllowed = false;
       continue;
     }

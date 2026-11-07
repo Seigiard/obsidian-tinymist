@@ -10,7 +10,7 @@ interface Piece {
   identity: boolean;
 }
 
-export const FORBIDDEN_LINE_BREAKS = new Set(["\r", "\u000b", "\f", "\u0085", "\u2028", "\u2029"]);
+const FORBIDDEN_LINE_BREAKS = new Set(["\r", "\u000b", "\f", "\u0085", "\u2028", "\u2029"]);
 
 export class MappedLineBuilder {
   private readonly pieces: Piece[] = [];
@@ -84,7 +84,7 @@ export function sanitizeLine(line: string): string {
   return start === 0 ? line : result + line.slice(start);
 }
 
-export function isForbiddenLineBreak(character: string): boolean {
+function isForbiddenLineBreak(character: string): boolean {
   return FORBIDDEN_LINE_BREAKS.has(character);
 }
 

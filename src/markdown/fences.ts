@@ -27,7 +27,7 @@ export function parseFenceOpening(line: string): FenceOpening | undefined {
   if (info.includes("`")) return undefined;
   const trimmed = info.trim();
   if (trimmed === "typ") return { indentation, ticks, kind: "typ", word: "" };
-  const firstWord = trimmed.split(/\s+/u, 1)[0] ?? "";
+  const firstWord = trimmed.split(/\s+/u, 1)[0];
   const word = FENCE_WORD.test(firstWord) ? firstWord : "";
   return { indentation, ticks, kind: "other", word };
 }
