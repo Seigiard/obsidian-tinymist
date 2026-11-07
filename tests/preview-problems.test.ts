@@ -23,6 +23,7 @@ interface ProblemHarness {
   view: PreviewView;
   reveals: Position[];
   opened: Array<{ path: string; line: number; character: number }>;
+  move(file: string, entry: string): void;
   setDiagnostics(path: string, diagnostics: LspDiagnostic[]): void;
   emitDiagnostics(path: string): void;
   close(): Promise<void>;
@@ -38,13 +39,16 @@ async function problemHarness(
   const sourceListeners = new Map<string, Set<() => void>>();
   const diagnostics = new Map<string, LspDiagnostic[]>();
   const diagnosticListeners = new Set<(uri: string) => void>();
+  let sourceFile = "Notes/A.md";
+  let sourceEntry = "/vault/Notes/A.md.typ";
+  let previewPort = 4320;
   for (const initial of initialDiagnostics) {
     diagnostics.set(pathToUri(initial.path), initial.diagnostics);
   }
   const source: ProblemSource = {
-    file: "Notes/A.md",
-    entry: "/vault/Notes/A.md.typ",
-    document: "/vault/Notes/A.md.typ",
+    get file(): string { return sourceFile; },
+    get entry(): string { return sourceEntry; },
+    get document(): string { return sourceEntry; },
     inputs: undefined,
     pinnable: false,
     exportable: false,
@@ -72,7 +76,7 @@ async function problemHarness(
     setPreviewSource: () => {},
     pinMain: () => {},
     executeCommand: async (command: string) =>
-      command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {},
+      command === "tinymist.doStartPreview" ? { staticServerPort: ++previewPort } : {},
     diagnostics: (uri: string) => diagnostics.get(uri) ?? [],
     diagnosticUris: () => [...diagnostics.keys()],
   };
@@ -102,13 +106,18 @@ async function problemHarness(
   Object.assign(plugin, { preview: manager });
   await manager.start("/vault/Notes/A.md");
   const view = new PreviewView(new WorkspaceLeaf(app) as never, plugin as never);
-  view.setUrl("http://127.0.0.1:4321");
+  view.setUrl(manager.url!);
   return {
     manager,
     source,
     view,
     reveals,
     opened,
+    move: (file, entry) => {
+      sourceFile = file;
+      sourceEntry = entry;
+      for (const listener of sourceListeners.get("moved") ?? []) listener();
+    },
     setDiagnostics: (path, next) => diagnostics.set(pathToUri(path), next),
     emitDiagnostics: (path) => {
       for (const listener of diagnosticListeners) listener(pathToUri(path));
@@ -119,6 +128,44 @@ async function problemHarness(
     },
   };
 }
+
+test("the bound preview pane follows the replacement task URL after its Markdown source moves", async () => {
+  // #given
+  const h = await problemHarness([]);
+
+  // #when
+  h.move("Notes/B.md", "/vault/Notes/B.md.typ");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  // #then
+  try {
+    assert.equal(
+      h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")?.getAttribute("src"),
+      h.manager.url,
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("the bound preview pane follows the replacement task URL after an LSP restart", async () => {
+  // #given
+  const h = await problemHarness([]);
+
+  // #when
+  const previewPath = h.manager.onLspRestart()!;
+  await h.manager.start(previewPath);
+
+  // #then
+  try {
+    assert.equal(
+      h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")?.getAttribute("src"),
+      h.manager.url,
+    );
+  } finally {
+    await h.close();
+  }
+});
 
 test("the preview lists converter, translated note, and kit diagnostics and activates each target", async () => {
   // #given
