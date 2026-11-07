@@ -8,6 +8,7 @@ import type { AutomaticPdfExporter } from "../src/automatic-pdf";
 import { TypstView } from "../src/editor/typstView";
 import TinymistPlugin from "../src/main";
 import { PreviewView } from "../src/preview/previewView";
+import type { TypstSource } from "../src/sources";
 import { Menu, TFile, TestApp, TFolder, WorkspaceLeaf, testApp } from "./support/obsidian";
 
 const PREVIEW_URL = "http://127.0.0.1:4321";
@@ -223,6 +224,70 @@ test("preview header exposes one labeled keyboard checkbox for the selected sour
   }
 });
 
+test("Markdown preview disables Automatic PDF while a Typst preview keeps it enabled", async () => {
+  // #given
+  const app = testApp("/vault");
+  const makeSource = (file: string, exportable: boolean): TypstSource => ({
+    file,
+    entry: `/vault/${file}${exportable ? "" : ".typ"}`,
+    document: `/vault/${file}${exportable ? "" : ".typ"}`,
+    inputs: undefined,
+    pinnable: exportable,
+    exportable,
+    pdf: file.replace(/\.[^.]+$/u, ".pdf"),
+    open: () => ({ close: () => {} }),
+    toSource: (position) => position,
+    toEntry: (position) => position,
+    reveal: async () => {},
+    describe: String,
+    on: () => () => {},
+    release: () => {},
+  } as TypstSource & { exportable: boolean });
+  const markdown = makeSource("Notes/A.md", false);
+  const typst = makeSource("Notes/A.typ", true);
+  let selected = markdown;
+  const plugin = {
+    preview: {
+      onChange: () => () => {},
+      currentSource: () => selected,
+      sourcePath: () => selected.file,
+      stop: async () => {},
+    },
+    onDiagnostics: () => () => {},
+    onAutomaticPdfChange: () => () => {},
+    automaticPdfEnabled: () => true,
+    setAutomaticPdf: async () => {},
+    lsp: null,
+    vaultBasePath: () => "/vault",
+  } as unknown as TinymistPlugin;
+  const markdownView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
+  selected = typst;
+  const typstView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
+
+  // #when
+  const markdownState = controlState(markdownView);
+  const typstState = controlState(typstView);
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        markdown: { disabled: markdownState.disabled, checked: markdownState.checked, label: markdownState.label },
+        typst: { disabled: typstState.disabled, checked: typstState.checked, label: typstState.label },
+      },
+      {
+        markdown: { disabled: true, checked: false, label: "Automatic PDF export" },
+        typst: { disabled: false, checked: true, label: "Automatic PDF export" },
+      },
+    );
+  } finally {
+    await markdownView.onClose();
+    markdownView.unload();
+    await typstView.onClose();
+    typstView.unload();
+  }
+});
+
 test("preview header places automatic PDF export before native More options", async () => {
   // #given
   const h = await harness();
@@ -308,6 +373,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   h.app.vault.files.set("new/chapter.typ", "= Test\n");
   source.path = "new/chapter.typ";
   await h.app.vault.emit("rename", new TFolder("new"), "old");
+  const sourcePathAfterRename = h.plugin.preview.sourcePath();
+  const reboundSource = h.plugin.sources.byDocument(join(h.root, "new/chapter.typ"));
   checkbox(view).click();
   await settle();
   const renameCall = h.plugin.setCalls.at(-1);
@@ -333,6 +400,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
       {
         menuCheckedAfterPreview: menuToggle?.checked,
         afterMenu,
+        sourcePathAfterRename,
+        reboundSource: reboundSource?.file ?? null,
         renameCall,
         closedControlChecked,
         staleControlIsActionable: afterDelete.count > 0 && afterDelete.disabled === false,
@@ -342,6 +411,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
       {
         menuCheckedAfterPreview: true,
         afterMenu: false,
+        sourcePathAfterRename: "new/chapter.typ",
+        reboundSource: "new/chapter.typ",
         renameCall: { path: "new/chapter.typ", enabled: true },
         closedControlChecked: true,
         staleControlIsActionable: false,
