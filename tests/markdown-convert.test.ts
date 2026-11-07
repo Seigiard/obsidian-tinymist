@@ -94,12 +94,13 @@ test("C67: only the bare typst key selects a source and typst-typst remains an a
   );
 });
 
-test("C68: blank frontmatter lines do not end a continuation", () => {
+test("C68–C76: blank frontmatter lines do not create a continuation", () => {
   // #given
   const propertyContinuation = sourceNote(["typst: true", "typst-title: first", "", "  second"]);
   const flagContinuation = sourceNote(["typst: true", "", "  continued"]);
+  const ordinaryBlankLines = sourceNote(["typst: true", "", "typst-title: kept", "", "other: value"]);
   // #when
-  const conversions = [convert(propertyContinuation, KIT), convert(flagContinuation, KIT)];
+  const conversions = [convert(propertyContinuation, KIT), convert(flagContinuation, KIT), convert(ordinaryBlankLines, KIT)];
   // #then
   assert.deepEqual(
     {
@@ -108,6 +109,11 @@ test("C68: blank frontmatter lines do not end a continuation", () => {
         problems: conversions[0].problems,
       },
       flagSource: conversions[1].source,
+      ordinary: {
+        source: conversions[2].source,
+        lines: outputLines(conversions[2].typ),
+        problems: conversions[2].problems,
+      },
     },
     {
       property: {
@@ -115,6 +121,11 @@ test("C68: blank frontmatter lines do not end a continuation", () => {
         problems: [{ line: 2, message: "Property title has a multi-line value", fatal: false }],
       },
       flagSource: false,
+      ordinary: {
+        source: true,
+        lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", "", 'title: "kept",', "", "", ")"],
+        problems: [],
+      },
     },
   );
 });
@@ -131,6 +142,72 @@ test("C69: a repeated property is skipped after its first value", () => {
       lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", 'x: "first",', "", ")"],
       problems: [{ line: 3, message: "Property x is repeated", fatal: false }],
     },
+  );
+});
+
+test("C73: indented frontmatter comments leave flags, properties, and template selection unchanged", () => {
+  // #given
+  const flag = sourceNote(["typst: true", "", "  # note"]);
+  const property = sourceNote(["typst: true", "typst-title: T", "", "  # note"]);
+  const template = sourceNote(["typst: true", "typst-template: a", "", "  # note"]);
+  const templateKit = { templates: { a: "/a.typ", b: "/b.typ" }, defaultTemplate: "b" };
+  // #when
+  const conversions = [convert(flag, KIT), convert(property, KIT), convert(template, templateKit)];
+  // #then
+  assert.deepEqual(
+    {
+      flag: { source: conversions[0].source, problems: conversions[0].problems },
+      property: { line: outputLines(conversions[1].typ)[2], problems: conversions[1].problems },
+      template: { line: outputLines(conversions[2].typ)[0], problems: conversions[2].problems },
+    },
+    {
+      flag: { source: true, problems: [] },
+      property: { line: 'title: "T",', problems: [] },
+      template: { line: `${BUILT_INS}#import "/a.typ": *; #show: template.with(`, problems: [] },
+    },
+  );
+});
+
+test("C74: every later frontmatter name is repeated even after an invalid first value", () => {
+  // #given
+  const template = sourceNote(["typst: true", "typst-template: a", "typst-template: b"]);
+  const empty = sourceNote(["typst: true", "typst-x:", "typst-x: second"]);
+  const malformed = sourceNote(["typst: true", "typst-x: [a", "typst-x: 1"]);
+  const flag = sourceNote(["typst: true", "typst: false"]);
+  const templateKit = { templates: { a: "/a.typ", b: "/b.typ" }, defaultTemplate: "b" };
+  // #when
+  const conversions = [convert(template, templateKit), convert(empty, { templates: {}, defaultTemplate: "" }), convert(malformed, { templates: {}, defaultTemplate: "" }), convert(flag, { templates: {}, defaultTemplate: "" })];
+  // #then
+  assert.deepEqual(
+    conversions.map((conversion) => ({ source: conversion.source, lines: outputLines(conversion.typ), problems: conversion.problems })),
+    [
+      {
+        source: true,
+        lines: [`${BUILT_INS}#import "/a.typ": *; #show: template.with(`, "", "", "", ")"],
+        problems: [{ line: 3, message: "Property template is repeated", fatal: false }],
+      },
+      {
+        source: true,
+        lines: [`${BUILT_INS}#show: template.with(`, "", "", "", ")"],
+        problems: [
+          { line: 2, message: "Property x has no value", fatal: false },
+          { line: 3, message: "Property x is repeated", fatal: false },
+        ],
+      },
+      {
+        source: true,
+        lines: [`${BUILT_INS}#show: template.with(`, "", "", "", ")"],
+        problems: [
+          { line: 2, message: "Property x has a malformed list", fatal: false },
+          { line: 3, message: "Property x is repeated", fatal: false },
+        ],
+      },
+      {
+        source: true,
+        lines: [`${BUILT_INS}#show: template.with(`, "", "", ")"],
+        problems: [{ line: 2, message: "Property typst is repeated", fatal: false }],
+      },
+    ],
   );
 });
 
@@ -407,6 +484,19 @@ test("C15: a bare URL keeps its full target and leaves following prose unchanged
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.equal(outputLines(conversion.typ)[3], '*#std.link("https://example.com/a_b");*. Next sentence.');
+});
+
+test("C75: a bare URL strips only closing parentheses that exceed its opening parentheses", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["(see https://example.com/a(b))", "(https://en.wikipedia.org/wiki/Foo_(bar))", "https://x.y/a)"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), [
+    '(see #std.link("https://example.com/a(b)"));',
+    '(#std.link("https://en.wikipedia.org/wiki/Foo_(bar)"));',
+    '#std.link("https://x.y/a");)',
+  ]);
 });
 
 test("C16: emphasis between CJK characters remains emphasis", () => {
@@ -1032,7 +1122,7 @@ test("C53: nested list item text receives prose line-start escaping", () => {
 
 test("C54: malformed top-level quoted scalars are skipped with their own message", () => {
   // #given
-  const text = sourceNote(["typst: true", 'typst-a: "', "typst-a: '", 'typst-a: "a" junk "b"', "typst-a: 'a' b"]);
+  const text = sourceNote(["typst: true", 'typst-a: "', "typst-b: '", 'typst-c: "a" junk "b"', "typst-d: 'a' b"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
@@ -1042,9 +1132,9 @@ test("C54: malformed top-level quoted scalars are skipped with their own message
       lines: [`${BUILT_INS}#show: template.with(`, "", "", "", "", "", ")"],
       problems: [
         { line: 2, message: "Property a has a malformed value", fatal: false },
-        { line: 3, message: "Property a has a malformed value", fatal: false },
-        { line: 4, message: "Property a has a malformed value", fatal: false },
-        { line: 5, message: "Property a has a malformed value", fatal: false },
+        { line: 3, message: "Property b has a malformed value", fatal: false },
+        { line: 4, message: "Property c has a malformed value", fatal: false },
+        { line: 5, message: "Property d has a malformed value", fatal: false },
       ],
     },
   );
@@ -1202,14 +1292,26 @@ test("C71: source-note maps preserve generated, outside, and past-end positions"
       outsideMd: [conversion.toMd(-1, 8), conversion.toMd(5, 8)],
       outsideTyp: [conversion.toTyp(-1, 8), conversion.toTyp(5, 8)],
       pastEnd: [conversion.toMd(4, 5), conversion.toTyp(4, 5)],
-      generated: [conversion.toMd(0, 10), conversion.toTyp(0, 3), conversion.toMd(2, 4), conversion.toTyp(2, 4), conversion.toMd(3, 0), conversion.toTyp(3, 0)],
+      generated: [conversion.toMd(0, 10), conversion.toTyp(0, 3), conversion.toMd(2, 4), conversion.toTyp(2, 4), conversion.toMd(3, 0), conversion.toTyp(3, 0), conversion.toMd(3, 1), conversion.toTyp(3, 1)],
     },
     {
       outsideMd: [8, 8],
       outsideTyp: [8, 8],
       pastEnd: [5, 5],
-      generated: [0, 0, 0, 0, 0, 0],
+      generated: [0, 0, 0, 0, 0, 0, 0, 0],
     },
+  );
+});
+
+test("C76: non-typ fence delimiter columns are generated", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["```js", "const value = 1", "```"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    [conversion.toMd(3, 1), conversion.toTyp(3, 1), conversion.toMd(5, 1), conversion.toTyp(5, 1)],
+    [0, 0, 0, 0],
   );
 });
 
