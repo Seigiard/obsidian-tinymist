@@ -68,7 +68,6 @@ async function harness(): Promise<Harness> {
   const app = testApp(root);
   const plugin = new PreviewControlPlugin(app as never, {} as never);
   await plugin.onload();
-  plugin.sources = { mayBeSource: (path: string) => path.endsWith(".typ") } as never;
   return {
     root,
     app,
@@ -309,6 +308,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
   h.app.vault.files.set("new/chapter.typ", "= Test\n");
   source.path = "new/chapter.typ";
   await h.app.vault.emit("rename", new TFolder("new"), "old");
+  const sourcePathAfterRename = h.plugin.preview.sourcePath();
+  const reboundSource = h.plugin.sources.byDocument(join(h.root, "new/chapter.typ"));
   checkbox(view).click();
   await settle();
   const renameCall = h.plugin.setCalls.at(-1);
@@ -334,6 +335,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
       {
         menuCheckedAfterPreview: menuToggle?.checked,
         afterMenu,
+        sourcePathAfterRename,
+        reboundSource: reboundSource?.file ?? null,
         renameCall,
         closedControlChecked,
         staleControlIsActionable: afterDelete.count > 0 && afterDelete.disabled === false,
@@ -343,6 +346,8 @@ test("source menu and preview stay synchronized across folder rename, delete, cl
       {
         menuCheckedAfterPreview: true,
         afterMenu: false,
+        sourcePathAfterRename: "new/chapter.typ",
+        reboundSource: "new/chapter.typ",
         renameCall: { path: "new/chapter.typ", enabled: true },
         closedControlChecked: true,
         staleControlIsActionable: false,
