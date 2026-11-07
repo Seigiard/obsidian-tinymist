@@ -8,6 +8,7 @@ import {
   FileSystemAdapter,
   Modal,
   Notice,
+  MarkdownView,
   Plugin,
   TAbstractFile,
   TFile,
@@ -30,7 +31,16 @@ import { LspClient, LspStatus, uriToPath } from "./lsp/client";
 import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
-import { pdfDestination, SourceRegistry, typAdapter, typBookMain, type Position } from "./sources";
+import {
+  mdAdapter,
+  pdfDestination,
+  SourceRegistry,
+  typAdapter,
+  typBookMain,
+  type MarkdownSourceHost,
+  type Position,
+} from "./sources";
+import { registerNoteControls } from "./integrations/noteControls";
 import {
   DEFAULT_SETTINGS,
   parseFontPaths,
@@ -41,6 +51,7 @@ import {
 export default class TinymistPlugin extends Plugin {
   settings: TinymistSettings = DEFAULT_SETTINGS;
   lsp: LspClient | null = null;
+  private readonly markdownServerRestartListeners = new Set<() => void>();
   preview: PreviewManager = new PreviewManager(this);
   sources: SourceRegistry = new SourceRegistry([
     typAdapter({
@@ -48,6 +59,7 @@ export default class TinymistPlugin extends Plugin {
       reveal: (document, position) =>
         this.openAndPlaceCursor(document, position.line, position.character),
     }),
+    mdAdapter(this.markdownSourceHost()),
   ]);
   /** Undo history of recently closed .typ files, restored on reopen. */
   history = new HistoryCache();
@@ -109,9 +121,11 @@ export default class TinymistPlugin extends Plugin {
       id: "open-preview",
       name: "Open preview",
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(TypstView);
-        if (!view?.absolutePath()) return false;
-        if (!checking) void this.openPreview(view);
+        const path = this.activeSourcePath();
+        const root = this.vaultBasePath();
+        const relativePath = path && root ? this.vaultRelativePath(path) : null;
+        if (!path || !relativePath || !this.sources.mayBeSource(relativePath)) return false;
+        if (!checking) void this.openPreview(relativePath);
         return true;
       },
     });
@@ -202,6 +216,7 @@ export default class TinymistPlugin extends Plugin {
     });
 
     this.addSettingTab(new TinymistSettingTab(this.app, this));
+    registerNoteControls(this);
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) =>
@@ -469,6 +484,7 @@ export default class TinymistPlugin extends Plugin {
       new Notice("Tinymist: failed to start language server. See console.");
       return;
     }
+    for (const listener of this.markdownServerRestartListeners ?? []) listener();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TYPST)) {
       if (leaf.view instanceof TypstView) leaf.view.reannounce();
     }
@@ -537,16 +553,24 @@ export default class TinymistPlugin extends Plugin {
     let leaf =
       this.app.workspace
         .getLeavesOfType(VIEW_TYPE_TYPST)
-        .find(
-          (l) => l.view instanceof TypstView && l.view.file?.path === rel,
-        ) ?? null;
+        .find((candidate) => candidate.view instanceof TypstView && candidate.view.file?.path === rel) ??
+      this.app.workspace
+        .getLeavesOfType("markdown")
+        .find((candidate) => candidate.view instanceof MarkdownView && candidate.view.file?.path === rel) ??
+      null;
     if (leaf) {
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
     } else {
       leaf = this.app.workspace.getLeaf(false);
       await leaf.openFile(file);
     }
-    if (leaf.view instanceof TypstView) leaf.view.setCursor(line, character);
+    if (leaf.view instanceof TypstView) {
+      leaf.view.setCursor(line, character);
+    } else if (leaf.view instanceof MarkdownView) {
+      const position = { line, ch: character };
+      leaf.view.editor.setCursor(position);
+      leaf.view.editor.scrollIntoView({ from: position, to: position });
+    }
   }
 
   /** Apply an LSP WorkspaceEdit across open views and on-disk files. */
@@ -650,11 +674,17 @@ export default class TinymistPlugin extends Plugin {
       leaf.detach();
       return;
     }
-    await this.openPreview(view);
+    if (path) await this.openPreview(path);
   }
 
-  async openPreview(view: TypstView): Promise<void> {
-    const path = view.absolutePath();
+  async openPreview(vaultPath: string): Promise<void> {
+    const requested = typeof vaultPath === "string"
+      ? vaultPath
+      : (vaultPath as unknown as { absolutePath?: () => string | null }).absolutePath?.() ?? "";
+    const root = typeof (this as unknown as { vaultBasePath?: () => string | null }).vaultBasePath === "function"
+      ? this.vaultBasePath()
+      : null;
+    const path = root && !isAbsolute(requested) ? join(root, requested) : requested;
     if (!path) return;
     let url: string | null;
     try {
@@ -673,6 +703,56 @@ export default class TinymistPlugin extends Plugin {
     }
     if (leaf.view instanceof PreviewView) leaf.view.setUrl(url);
     void this.app.workspace.revealLeaf(leaf);
+  }
+
+  private activeSourcePath(): string | null {
+    const typst = this.app.workspace.getActiveViewOfType(TypstView)?.absolutePath();
+    if (typst) return typst;
+    const markdown = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path;
+    const root = this.vaultBasePath();
+    return markdown && root ? join(root, markdown) : markdown ?? null;
+  }
+
+  private markdownSourceHost(): MarkdownSourceHost {
+    return {
+      root: () => this.vaultBasePath(),
+      frontmatter: (vaultPath) => this.app.metadataCache.getCache(vaultPath)?.frontmatter ?? null,
+      editorText: (vaultPath) => {
+        for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+          if (!(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== vaultPath) continue;
+          return leaf.view.editor.getValue();
+        }
+        return null;
+      },
+      readFile: (vaultPath) => this.app.vault.adapter.read(vaultPath),
+      exists: (vaultPath) => this.app.vault.getAbstractFileByPath(vaultPath) instanceof TFile,
+      kit: () => null,
+      reveal: (vaultPath, position) => {
+        const root = this.vaultBasePath();
+        return root
+          ? this.openAndPlaceCursor(join(root, vaultPath), position.line, position.character)
+          : Promise.resolve();
+      },
+      onEditorChange: (listener) => {
+        const ref = this.app.workspace.on("editor-change", (editor, info) => {
+          if (!info.file) return;
+          listener(info.file.path, editor.getValue());
+        });
+        return () => this.app.workspace.offref(ref);
+      },
+      onRename: (listener) => {
+        const ref = this.app.vault.on("rename", (file, oldPath) => listener(oldPath, file.path));
+        return () => this.app.vault.offref(ref);
+      },
+      onDelete: (listener) => {
+        const ref = this.app.vault.on("delete", (file) => listener(file.path));
+        return () => this.app.vault.offref(ref);
+      },
+      onServerRestart: (listener) => {
+        this.markdownServerRestartListeners.add(listener);
+        return () => this.markdownServerRestartListeners.delete(listener);
+      },
+    };
   }
 
   private setStatusBar(status: LspStatus | "stopped"): void {

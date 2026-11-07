@@ -1,5 +1,8 @@
 import { ItemView, WorkspaceLeaf } from "obsidian";
 import type TinymistPlugin from "../main";
+import { uriToPath } from "../lsp/client";
+import type { Position } from "../sources";
+import { relative, sep } from "path";
 
 export const VIEW_TYPE_TYPST_PREVIEW = "tinymist-preview";
 
@@ -12,17 +15,27 @@ export class PreviewView extends ItemView {
   private pdfChangeHandler: (() => void) | null = null;
   private pdfRequest = 0;
   private closed = false;
+  private readonly problemsEl: HTMLUListElement;
+  private readonly diagnosticUris = new Set<string>();
+  private removeDiagnosticsListener: (() => void) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
     private plugin: TinymistPlugin,
   ) {
     super(leaf);
+    this.problemsEl = this.contentEl.createEl("ul", { cls: "tinymist-problems" });
     this.mountPdfControl();
     this.removePreviewListener = this.plugin.preview.onChange(() => {
       this.pdfRequest++;
       this.syncPdfControl();
+      this.syncProblems();
     });
+    this.removeDiagnosticsListener = this.plugin.onDiagnostics((uri) => {
+      this.diagnosticUris.add(uri);
+      this.syncProblems();
+    });
+    this.syncProblems();
     this.removePdfSettingListener = this.plugin.onAutomaticPdfChange(() => {
       this.pdfRequest++;
       this.syncPdfControl();
@@ -50,18 +63,84 @@ export class PreviewView extends ItemView {
     }
     if (this.iframe.src !== url) this.iframe.src = url;
     this.syncPdfControl();
+    this.syncProblems();
   }
 
   async onClose(): Promise<void> {
     this.cleanupPdfControl();
+    this.removeDiagnosticsListener?.();
+    this.removeDiagnosticsListener = null;
     await this.plugin.preview.stop();
+    this.syncProblems();
     this.iframe = null;
     await super.onClose();
   }
 
   unload(): void {
     this.cleanupPdfControl();
+    this.removeDiagnosticsListener?.();
+    this.removeDiagnosticsListener = null;
     super.unload();
+  }
+
+  private syncProblems(): void {
+    const source = this.plugin.preview.currentSource();
+    if (!source) {
+      this.problemsEl.replaceChildren();
+      this.problemsEl.hidden = true;
+      return;
+    }
+
+    const rows: Array<{ text: string; position: Position; otherPath?: string }> = [];
+    for (const problem of source.problems ?? []) {
+      rows.push({
+        text: `${source.file}:${problem.line + 1} ${problem.message}`,
+        position: { line: problem.line, character: 0 },
+      });
+    }
+
+    for (const uri of this.diagnosticUris) {
+      const path = diagnosticPath(uri);
+      const diagnostics = this.plugin.lsp?.diagnostics?.(uri) ?? [];
+      for (const diagnostic of diagnostics) {
+        if (path === source.entry) {
+          const position = source.toSource(diagnostic.range.start);
+          rows.push({
+            text: `${source.file}:${position.line + 1} ${diagnostic.message}`,
+            position,
+          });
+        } else {
+          const relativePath = this.relativePath(path);
+          rows.push({
+            text: `${relativePath}:${diagnostic.range.start.line + 1} ${diagnostic.message}`,
+            position: diagnostic.range.start,
+            otherPath: path,
+          });
+        }
+      }
+    }
+
+    this.problemsEl.replaceChildren(
+      ...rows.map(({ text, position, otherPath }) => {
+        const entry = document.createElement("li");
+        entry.textContent = text;
+        entry.addEventListener("click", () => {
+          if (otherPath) {
+            void this.plugin.openAndPlaceCursor(otherPath, position.line, position.character).catch(() => {});
+          } else {
+            void source.reveal(position).catch(() => {});
+          }
+        });
+        return entry;
+      }),
+    );
+    this.problemsEl.hidden = rows.length === 0;
+  }
+
+  private relativePath(path: string): string {
+    const root = this.plugin.vaultBasePath();
+    if (!root) return path;
+    return relative(root, path).split(sep).join("/");
   }
 
   private mountPdfControl(): void {
@@ -128,5 +207,13 @@ export class PreviewView extends ItemView {
         this.syncPdfControl();
       },
     );
+  }
+}
+
+function diagnosticPath(uri: string): string {
+  try {
+    return uriToPath(uri);
+  } catch {
+    return uri;
   }
 }

@@ -21,6 +21,7 @@ export interface TypstSource {
   readonly inputs: string | undefined;
   readonly pinnable: boolean;
   readonly pdf: string;
+  readonly problems?: readonly { line: number; message: string; fatal: boolean }[];
   open(client: LspClient): { close(): void };
   toSource(position: Position): Position;
   toEntry(position: Position): Position;

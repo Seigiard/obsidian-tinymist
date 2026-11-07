@@ -26,6 +26,8 @@ export class PreviewManager {
   private taskId: string | null = null;
   private taskFilePath: string | null = null;
   private source: TypstSource | null = null;
+  private sourceHandle: { close(): void } | null = null;
+  private removeSourceProblems: (() => void) | null = null;
   /** Advanced by every start, stop, rename, dispose, server-dispose notification, and LSP restart; a pending start or rebind is current only while it keeps the value it took. */
   private generation = 0;
   private pendingTaskId: string | null = null;
@@ -48,6 +50,10 @@ export class PreviewManager {
   sourcePath(): string | null {
     const vaultPath = this.vaultRelativePath(this.filePath);
     return vaultPath && this.plugin.sources.mayBeSource(vaultPath) ? vaultPath : null;
+  }
+
+  currentSource(): TypstSource | null {
+    return this.source;
   }
 
   private notifyChange(): void {
@@ -165,6 +171,15 @@ export class PreviewManager {
     }
     if (!source) throw new Error("preview source is unavailable");
 
+    let sourceHandle: { close(): void } | null = null;
+    try {
+      sourceHandle = source.open(lsp);
+    } catch (error) {
+      source.release();
+      if (generation !== this.generation) return null;
+      throw describedStartError(source, error);
+    }
+
     const taskId = Math.random().toString(36).slice(2, 9);
     const args = [
       "--task-id",
@@ -180,7 +195,7 @@ export class PreviewManager {
     }
     lsp.setPreviewSource(source.inputs);
     this.inputSet = true;
-    args.push("--page-title", basename(filePath), source.entry);
+    args.push("--page-title", basename(source.entry), source.entry);
 
     let result: PreviewResult;
     try {
@@ -192,28 +207,32 @@ export class PreviewManager {
       );
     } catch (error) {
       if (this.pendingTaskId === taskId) this.pendingTaskId = null;
+      sourceHandle?.close();
       source.release();
       if (generation !== this.generation) {
         return null;
       }
-      throw error;
+      throw describedStartError(source, error);
     }
     if (this.pendingTaskId === taskId) this.pendingTaskId = null;
     this.mainTaken = true;
     const port = result?.staticServerPort;
     if (generation !== this.generation || !port) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
+      sourceHandle?.close();
       source.release();
       if (generation !== this.generation) {
         return null;
       }
-      throw new Error("preview did not report a server port");
+      throw describedStartError(source, new Error("preview did not report a server port"));
     }
 
     const url = `http://127.0.0.1:${port}`;
     this.taskId = taskId;
     this.taskFilePath = filePath;
     this.source = source;
+    this.sourceHandle = sourceHandle;
+    this.removeSourceProblems = source.on("problems", () => this.notifyChange());
     this.filePath = filePath;
     this.url = url;
     this.notifyChange();
@@ -249,6 +268,7 @@ export class PreviewManager {
   private stopCurrent(): Promise<void> | null {
     const taskId = this.taskId;
     const source = this.source;
+    const sourceHandle = this.sourceHandle;
     this.clearTask();
     const lsp = this.plugin.lsp;
     if (taskId && lsp && lsp.status === "running") {
@@ -256,22 +276,28 @@ export class PreviewManager {
         .executeCommand("tinymist.doKillPreview", [taskId], 5000)
         .catch(() => {})
         .then(() => {
+          sourceHandle?.close();
           source?.release();
           this.settleClient();
         });
     }
+    sourceHandle?.close();
     source?.release();
     return null;
   }
 
   private endTask(): void {
     this.generation++;
+    this.sourceHandle?.close();
     this.source?.release();
     this.clearTask();
   }
 
   private clearTask(): void {
     this.source = null;
+    this.sourceHandle = null;
+    this.removeSourceProblems?.();
+    this.removeSourceProblems = null;
     this.taskId = null;
     this.taskFilePath = null;
     this.url = null;
@@ -291,8 +317,28 @@ export class PreviewManager {
       next?.release();
       return;
     }
-    this.source?.release();
+    const previousHandle = this.sourceHandle;
+    const previousSource = this.source;
+    previousHandle?.close();
+    previousSource?.release();
+    if (!next) {
+      this.source = null;
+      this.sourceHandle = null;
+      this.notifyChange();
+      return;
+    }
+    let nextHandle: { close(): void };
+    try {
+      const lsp = this.plugin.lsp;
+      nextHandle = lsp ? next.open(lsp) : { close: () => {} };
+    } catch (error) {
+      next.release();
+      if (generation === this.generation) throw describedStartError(next, error);
+      return;
+    }
     this.source = next;
+    this.sourceHandle = nextHandle;
+    this.removeSourceProblems = next.on("problems", () => this.notifyChange());
   }
 
   private vaultRelativePath(filePath: string | null): string | null {
@@ -313,4 +359,10 @@ export class PreviewManager {
     this.inputSet = false;
     this.mainTaken = false;
   }
+}
+
+function describedStartError(source: TypstSource, error: unknown): Error {
+  const description = source.describe(error);
+  if (description === String(error) && error instanceof Error) return error;
+  return new Error(description);
 }
