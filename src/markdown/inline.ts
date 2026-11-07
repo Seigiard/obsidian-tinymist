@@ -16,6 +16,7 @@ interface CodeRange {
 interface UrlRange {
   start: number;
   end: number;
+  trailingClosingParentheses: number;
 }
 
 interface InlineOptions {
@@ -68,8 +69,15 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const url = urlByStart.get(index);
     if (url) {
-      appendGeneratedLiteral(builder, "#std.link(\"", text.slice(url.start, url.end), "\");", sourceOffset + url.start, sourceOffset + url.start, sourceOffset + url.end);
+      const suffix = url.trailingClosingParentheses > 0 ? "\")" : "\");";
+      appendGeneratedLiteral(builder, "#std.link(\"", text.slice(url.start, url.end), suffix, sourceOffset + url.start, sourceOffset + url.start, sourceOffset + url.end);
       index = url.end;
+      if (url.trailingClosingParentheses > 0) {
+        const closingEnd = index + url.trailingClosingParentheses;
+        builder.appendSource(text.slice(index, closingEnd), sourceOffset + index);
+        index = closingEnd;
+        builder.appendInserted(";", sourceOffset + index);
+      }
       continue;
     }
 
@@ -267,7 +275,6 @@ function findCodeRanges(text: string): CodeRange[] {
     if (current.start < consumedThrough) continue;
     const openingStart = current.start + (current.escaped ? 1 : 0);
     const openingWidth = current.width - (current.escaped ? 1 : 0);
-    if (openingWidth <= 0) continue;
     const close = nextSameRun[run];
     if (close >= 0) {
       ranges.push({ start: openingStart, end: close + openingWidth, width: openingWidth });
@@ -294,18 +301,25 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
       continue;
     }
     let end = index + scheme.length;
-    let hasOpeningParenthesis = false;
+    let openingParentheses = 0;
+    let closingParentheses = 0;
     while (end < text.length && !/[\s<]/u.test(text[end])) {
-      if (text[end] === "(") hasOpeningParenthesis = true;
       if (code && end >= code.start) break;
+      if (text[end] === "(") openingParentheses += 1;
+      if (text[end] === ")") closingParentheses += 1;
       end += 1;
     }
+    let trailingClosingParentheses = 0;
     while (end > index + scheme.length && ".,:;!?\'\"*_~)".includes(text[end - 1])) {
-      if (text[end - 1] === ")" && hasOpeningParenthesis) break;
+      if (text[end - 1] === ")") {
+        if (closingParentheses <= openingParentheses) break;
+        closingParentheses -= 1;
+        trailingClosingParentheses += 1;
+      }
       end -= 1;
     }
     if (end > index + scheme.length) {
-      ranges.push({ start: index, end });
+      ranges.push({ start: index, end, trailingClosingParentheses: openingParentheses > 0 ? trailingClosingParentheses : 0 });
       index = end;
     } else {
       index += scheme.length;
@@ -421,7 +435,7 @@ function codePointWidth(text: string, index: number): number {
 }
 
 function isWord(character: string): boolean {
-  return character !== "" && /[\p{Alphabetic}\p{N}]/u.test(character) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
+  return /[\p{Alphabetic}\p{N}]/u.test(character) && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
 }
 
 function isEscaped(text: string, index: number): boolean {

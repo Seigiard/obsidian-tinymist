@@ -54,21 +54,23 @@ export function convert(text: string, kit: KitView | null): Conversion {
 
   addGeneratedLine(outputLines, maps, `${BUILT_INS}${templateImport}#show: template.with(`, lines[0].length);
 
-  const emittedProperties = new Set<string>();
+  const seenProperties = new Set<string>();
+  let seenSourceFlag = false;
   for (const entry of frontmatter) {
     const sourceLine = lines[entry.line];
     let output = "";
     if ("name" in entry) {
-      const result = convertProperty(entry);
-      if (result.kind === "problem") problems.push({ line: entry.line, message: result.message, fatal: false });
-      else if (result.kind === "value") {
-        if (emittedProperties.has(entry.name)) {
-          problems.push({ line: entry.line, message: `Property ${entry.name} is repeated`, fatal: false });
-        } else {
-          emittedProperties.add(entry.name);
-          output = `${entry.name}: ${result.literal},`;
-        }
+      if (seenProperties.has(entry.name)) {
+        problems.push({ line: entry.line, message: `Property ${entry.name} is repeated`, fatal: false });
+      } else {
+        seenProperties.add(entry.name);
+        const result = convertProperty(entry);
+        if (result.kind === "problem") problems.push({ line: entry.line, message: result.message, fatal: false });
+        else if (result.kind === "value") output = `${entry.name}: ${result.literal},`;
       }
+    } else if ("flag" in entry) {
+      if (seenSourceFlag) problems.push({ line: entry.line, message: "Property typst is repeated", fatal: false });
+      else seenSourceFlag = true;
     }
     addGeneratedLine(outputLines, maps, output, sourceLine.length);
   }
