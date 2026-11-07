@@ -70,7 +70,7 @@ export class TFile extends TAbstractFile {
     return this.name.replace(/\.[^.]*$/, "");
   }
   get extension(): string {
-    return this.name.split(".").pop()!;
+    return this.name.split(".").pop()!.toLowerCase();
   }
 }
 
