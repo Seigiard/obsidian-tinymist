@@ -1,4 +1,4 @@
-/** Builds a note whose frontmatter occupies the first and last lines. */
+/** Builds a note with the frontmatter block first, its delimiters included, then the body. */
 export function sourceNote(frontmatter: readonly string[], body: readonly string[] = []): string {
   return ["---", ...frontmatter, "---", ...body].join("\n");
 }

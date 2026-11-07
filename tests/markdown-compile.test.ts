@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,9 @@ import { compileSample } from "./fixtures/markdown/notes";
 const BIN =
   process.env.TINYMIST_BIN ??
   ["/opt/homebrew/bin/tinymist", "/usr/local/bin/tinymist", join(homedir(), ".cargo", "bin", "tinymist")].find(existsSync);
+const TYPST_BIN =
+  process.env.TYPST_BIN ??
+  ["/opt/homebrew/bin/typst", "/usr/local/bin/typst", join(homedir(), ".cargo", "bin", "typst")].find(existsSync);
 
 test("C9: converted Markdown sample compiles with tinymist", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
@@ -46,14 +49,11 @@ test("C13: a non-Typst fence with three backticks in its content compiles", { sk
   }
 });
 
-test("C22: a real template receives converted named arguments", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+test("C22: a real template receives converted named arguments", { skip: (!BIN || !TYPST_BIN) && "tinymist or typst not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-template-"));
-  const output = join(directory, "sample.typ");
-  writeFileSync(
-    join(directory, "template.typ"),
-    '#let template(body, title: none, pages: none) = { assert(title == "Pilot" and pages == 2); body }',
-  );
+  const output = join(directory, "note.typ");
+  copyFileSync(join(process.cwd(), "tests/fixtures/markdown/template.typ"), join(directory, "template.typ"));
   const conversion = convert("---\ntypst: true\ntypst-template: echo\ntypst-title: Pilot\ntypst-pages: 2\n---\nBody", {
     templates: { echo: "template.typ" },
     defaultTemplate: "",
@@ -61,10 +61,13 @@ test("C22: a real template receives converted named arguments", { skip: !BIN && 
   writeFileSync(output, conversion.typ);
   try {
     // #when
-    const compile = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    const compile = spawnSync(BIN!, ["compile", "note.typ"], { cwd: directory, encoding: "utf8" });
+    const query = spawnSync(TYPST_BIN!, ["query", "note.typ", "<template-args>", "--field", "value", "--one"], { cwd: directory, encoding: "utf8" });
     // #then
     assert.equal(compile.status, 0, compile.stderr);
     assert.deepEqual({ source: conversion.source, line: conversion.typ.split("\n")[3] }, { source: true, line: 'title: "Pilot",' });
+    assert.equal(query.status, 0, query.stderr);
+    assert.deepEqual(JSON.parse(query.stdout), { title: "Pilot", pages: 2 });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -14,7 +14,7 @@ const KIT = {
 };
 
 const BUILT_INS =
-  "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
+  "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 
 /** Counts the characters that Typst itself treats as line breaks. */
 function typstLineCount(text: string): number {
@@ -60,13 +60,25 @@ test("C2: only literal typst true in opening frontmatter selects a source", () =
     sourceNote(['typst: "true"']),
     sourceNote(["typst: yes"]),
     sourceNote(["typst: True"]),
+    sourceNote(["typst:true"]),
+    sourceNote(["typst: true", "  continued"]),
+    sourceNote(["typst: true # on"]),
     "text\n---\ntypst: true\n---",
     "---\ntypst: true",
   ];
   // #when
   const sources = notes.map((text) => convert(text, KIT).source);
   // #then
-  assert.deepEqual(sources, [true, true, false, false, false, false, false]);
+  assert.deepEqual(sources, [true, true, false, false, false, false, false, true, false, false]);
+});
+
+test("C66: typst true in a note body does not select a source", () => {
+  // #given
+  const text = sourceNote(["title: Ordinary note"], ["typst: true"]);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.equal(conversion.source, false);
 });
 
 test("C3: Typst line count stays equal for a source with every line-break character", () => {
@@ -992,4 +1004,130 @@ test("C56: an unclosed fence on its opening line appends a separated closing del
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(outputLines(conversion.typ), [`${BUILT_INS}#show: template.with(`, "", ")", "```js ```"]);
+});
+
+test("C57: incomplete and trailing flow arrays are skipped as malformed lists", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-a: [a, b", 'typst-b: ["a", "b"', "typst-c: [a, b] c", "typst-d: [[a] junk, b]"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ).slice(2), problems: conversion.problems },
+    {
+      lines: ["", "", "", "", ")"],
+      problems: [
+        { line: 2, message: "Property a has a malformed list", fatal: false },
+        { line: 3, message: "Property b has a malformed list", fatal: false },
+        { line: 4, message: "Property c has a malformed list", fatal: false },
+        { line: 5, message: "Property d has a malformed list", fatal: false },
+      ],
+    },
+  );
+});
+
+test("C58: list markers before non-ASCII whitespace stay escaped prose", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["-\u00a0x", "*\u3000x", "+\u00a0x", "1.\u3000x", "- -\u00a0x"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\-\u00a0x", "\\*\u3000x", "\\+\u00a0x", "1\\.\u3000x", "- \\-\u00a0x"]);
+});
+
+test("C59: a comment in a bare scalar with brackets is removed", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-title: Part [1 # see note"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ).slice(2), problems: conversion.problems },
+    { lines: ['title: "Part [1",', ")"], problems: [] },
+  );
+});
+
+test("C60: surrogate and out-of-range YAML escapes are rejected without throwing", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-surrogate: "\\uD800"', 'typst-large: "\\U00110000"']);
+  let conversion: ReturnType<typeof convert> | undefined;
+  // #when
+  assert.doesNotThrow(() => {
+    conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  });
+  // #then
+  assert.deepEqual(
+    { source: conversion?.source, lines: outputLines(conversion?.typ ?? "").slice(2), problems: conversion?.problems },
+    {
+      source: true,
+      lines: ["", "", ")"],
+      problems: [
+        { line: 2, message: "Property surrogate has an unknown escape \\uD800", fatal: false },
+        { line: 3, message: "Property large has an unknown escape \\U00110000", fatal: false },
+      ],
+    },
+  );
+});
+
+test("C62: appended delimiters on an unclosed fence map to the final source column", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["```js", "abc"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { toMd: [3, 4, 5, 6].map((column) => conversion.toMd(4, column)), toTyp: conversion.toTyp(4, 3) },
+    { toMd: [3, 3, 3, 3], toTyp: 3 },
+  );
+});
+
+test("C63: template paths retain Typst line-break characters through string escaping", () => {
+  // #given
+  const text = sourceNote(["typst: true"]);
+  const kit = { templates: { reference: "/x\u2028y.typ" }, defaultTemplate: "reference" };
+  // #when
+  const conversion = convert(text, kit);
+  const imported = outputLines(conversion.typ)[0].match(/#import [^;]+: \*;/u)?.[0];
+  // #then
+  assert.equal(imported, '#import "/x\\u{2028}y.typ": *;');
+});
+
+test("C64: built-in callout uses the standard-library block function", () => {
+  // #given
+  const text = sourceNote(["typst: true"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.equal(
+    outputLines(conversion.typ)[0],
+    "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; #show: template.with(",
+  );
+});
+
+test("C66: nested list columns map to their matching Markdown characters", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["- - *x* y"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    {
+      typ: outputLines(conversion.typ)[3],
+      toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((column) => conversion.toTyp(3, column)),
+      toMd: [0, 1, 2, 3, 4, 5, 6, 7].map((column) => conversion.toMd(3, column)),
+    },
+    { typ: "- - _x_ y", toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], toMd: [0, 1, 2, 3, 4, 5, 6, 7] },
+  );
+});
+
+test("C66: decoded form-feed and paragraph-separator escapes preserve Typst line identity", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-ff: "a\\x0cb"', 'typst-ps: "a\\u2029b"']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ).slice(2), lineCount: typstLineCount(conversion.typ) },
+    { lines: ['ff: "a\\u{c}b",', 'ps: "a\\u{2029}b",', ")"], lineCount: text.split("\n").length },
+  );
 });
