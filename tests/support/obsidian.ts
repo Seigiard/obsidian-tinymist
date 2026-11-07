@@ -313,6 +313,11 @@ export class TestWorkspace {
     await Promise.all(this.layoutReady.map((callback) => callback()));
   }
 
+  async emit(name: string, ...args: unknown[]): Promise<void> {
+    const pending = [...(this.events.get(name) ?? [])].map((callback) => callback(...args));
+    await Promise.all(pending);
+  }
+
   requestSaveLayout(): void {
     this.layoutSaves++;
   }
@@ -352,6 +357,53 @@ export class WorkspaceLeaf {
   constructor(public app: TestApp) {}
 
   detach(): void {}
+}
+
+export interface MarkdownActionRecord {
+  icon: string;
+  title: string;
+  callback: Callback;
+  element: HTMLElement;
+  removed: boolean;
+}
+
+export class MarkdownView extends Component {
+  readonly cursorCalls: Array<{ line: number; ch: number }> = [];
+  readonly scrollCalls: unknown[] = [];
+  readonly actions: MarkdownActionRecord[] = [];
+  readonly editor = {
+    setCursor: (position: { line: number; ch: number }): void => {
+      this.cursorCalls.push(position);
+    },
+    scrollIntoView: (range: unknown): void => {
+      this.scrollCalls.push(range);
+    },
+  };
+
+  constructor(public file: TFile | null = null) {
+    super();
+  }
+
+  addAction(icon: string, title: string, callback: Callback): HTMLElement {
+    const element = document.createElement("a");
+    element.dataset.icon = icon;
+    element.setAttribute("aria-label", title);
+    const record: MarkdownActionRecord = {
+      icon,
+      title,
+      callback,
+      element,
+      removed: false,
+    };
+    const remove = element.remove.bind(element);
+    element.remove = (): void => {
+      record.removed = true;
+      remove();
+    };
+    element.addEventListener("click", (event) => callback(event));
+    this.actions.push(record);
+    return element;
+  }
 }
 
 export class Plugin extends Component {

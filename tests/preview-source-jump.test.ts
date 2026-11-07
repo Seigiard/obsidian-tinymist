@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { TypstSource } from "../src/sources";
 import TinymistPlugin from "../src/main";
-import { testApp } from "./support/obsidian";
+import { MarkdownView, TFile, testApp } from "./support/obsidian";
 
 function source(
   document: string,
@@ -95,6 +95,61 @@ test("preview clicks on a typ file reveal through the real source registry", asy
     {
       holds: [{ file: "notes/a.typ", resolved: true }],
       opened: [{ document: join("/vault", "notes", "a.typ"), line: 7, character: 8 }],
+    },
+  );
+});
+
+test("placing a Markdown source cursor reuses its leaf or opens it before revealing", async () => {
+  // #given
+  const app = testApp("/vault");
+  app.vault.files.set("Notes/A.md", "text");
+  app.vault.files.set("Notes/B.md", "text");
+  const existingView = new MarkdownView(new TFile("Notes/A.md"));
+  const existingLeaf = { view: existingView };
+  const activeLeaves: unknown[] = [];
+  let leaves: unknown[] = [existingLeaf];
+  let requestedLeafArgument: unknown = null;
+  const openedView = new MarkdownView();
+  const openedLeaf = {
+    view: openedView,
+    openFile: async (file: TFile) => {
+      openedView.file = file;
+    },
+  };
+  Object.assign(app.workspace, {
+    getLeavesOfType: () => leaves,
+    setActiveLeaf: (leaf: unknown) => activeLeaves.push(leaf),
+    getLeaf: (argument: unknown) => {
+      requestedLeafArgument = argument;
+      return openedLeaf;
+    },
+  });
+  const plugin = new TinymistPlugin(app as never, {});
+
+  // #when
+  await plugin.openAndPlaceCursor("/vault/Notes/A.md", 2, 7);
+  leaves = [];
+  await plugin.openAndPlaceCursor("/vault/Notes/B.md", 4, 9);
+
+  // #then
+  assert.deepEqual(
+    {
+      existingCursor: existingView.cursorCalls,
+      existingScrolls: existingView.scrollCalls.length,
+      activeLeaves,
+      requestedLeafArgument,
+      openedFile: openedView.file?.path,
+      openedCursor: openedView.cursorCalls,
+      openedScrolls: openedView.scrollCalls.length,
+    },
+    {
+      existingCursor: [{ line: 2, ch: 7 }],
+      existingScrolls: 1,
+      activeLeaves: [existingLeaf],
+      requestedLeafArgument: false,
+      openedFile: "Notes/B.md",
+      openedCursor: [{ line: 4, ch: 9 }],
+      openedScrolls: 1,
     },
   );
 });

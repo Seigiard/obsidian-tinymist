@@ -1,0 +1,187 @@
+import "./support/dom";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { pathToUri, type LspDiagnostic } from "../src/lsp/client";
+import { PreviewManager } from "../src/preview/previewManager";
+import { PreviewView } from "../src/preview/previewView";
+import type { Position, TypstSource } from "../src/sources";
+import { WorkspaceLeaf, testApp } from "./support/obsidian";
+
+interface Problem {
+  line: number;
+  message: string;
+  fatal: boolean;
+}
+
+interface ProblemSource extends TypstSource {
+  problems: Problem[];
+}
+
+interface ProblemHarness {
+  manager: PreviewManager;
+  source: ProblemSource;
+  view: PreviewView;
+  reveals: Position[];
+  opened: Array<{ path: string; line: number; character: number }>;
+  setDiagnostics(path: string, diagnostics: LspDiagnostic[]): void;
+  emitDiagnostics(path: string): void;
+  close(): Promise<void>;
+}
+
+async function problemHarness(problems: Problem[]): Promise<ProblemHarness> {
+  const app = testApp("/vault");
+  const reveals: Position[] = [];
+  const opened: Array<{ path: string; line: number; character: number }> = [];
+  const sourceListeners = new Map<string, Set<() => void>>();
+  const diagnostics = new Map<string, LspDiagnostic[]>();
+  const diagnosticListeners = new Set<(uri: string) => void>();
+  const source: ProblemSource = {
+    file: "Notes/A.md",
+    entry: "/vault/Notes/A.md.typ",
+    document: "/vault/Notes/A.md.typ",
+    inputs: undefined,
+    pinnable: false,
+    pdf: "Notes/A.pdf",
+    problems,
+    open: () => ({ close: () => {} }),
+    toSource: (position) => ({ line: position.line, character: position.character + 2 }),
+    toEntry: (position) => ({ line: position.line, character: position.character - 2 }),
+    reveal: async (position) => {
+      reveals.push(position);
+    },
+    describe: String,
+    on: (event, listener) => {
+      let listeners = sourceListeners.get(event);
+      if (!listeners) sourceListeners.set(event, (listeners = new Set()));
+      listeners.add(listener);
+      return () => listeners?.delete(listener);
+    },
+    release: () => {},
+  };
+  const lsp = {
+    status: "running",
+    mainFile: null,
+    onNotification: () => {},
+    setPreviewSource: () => {},
+    pinMain: () => {},
+    executeCommand: async (command: string) =>
+      command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {},
+    diagnostics: (uri: string) => diagnostics.get(uri) ?? [],
+  };
+  const plugin = {
+    app,
+    lsp,
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => source,
+      byDocument: (document: string) => document === source.document ? source : null,
+      mayBeSource: () => true,
+    },
+    jumpToSource: () => {},
+    onDiagnostics: (listener: (uri: string) => void) => {
+      diagnosticListeners.add(listener);
+      return () => diagnosticListeners.delete(listener);
+    },
+    onAutomaticPdfChange: () => () => {},
+    automaticPdfEnabled: () => false,
+    setAutomaticPdf: async () => {},
+    openAndPlaceCursor: async (path: string, line: number, character: number) => {
+      opened.push({ path, line, character });
+    },
+  };
+  const manager = new PreviewManager(plugin as never);
+  Object.assign(plugin, { preview: manager });
+  await manager.start("/vault/Notes/A.md");
+  const view = new PreviewView(new WorkspaceLeaf(app) as never, plugin as never);
+  view.setUrl("http://127.0.0.1:4321");
+  return {
+    manager,
+    source,
+    view,
+    reveals,
+    opened,
+    setDiagnostics: (path, next) => diagnostics.set(pathToUri(path), next),
+    emitDiagnostics: (path) => {
+      for (const listener of diagnosticListeners) listener(pathToUri(path));
+    },
+    close: async () => {
+      await view.onClose();
+      manager.dispose();
+    },
+  };
+}
+
+test("the preview lists converter, translated note, and kit diagnostics and activates each target", async () => {
+  // #given
+  const h = await problemHarness([
+    { line: 1, message: "Property typst is repeated", fatal: false },
+  ]);
+  h.setDiagnostics(h.source.entry, [{
+    range: {
+      start: { line: 3, character: 8 },
+      end: { line: 3, character: 9 },
+    },
+    message: "unknown variable",
+  }]);
+  h.setDiagnostics("/vault/_typst/kit.typ", [{
+    range: {
+      start: { line: 1, character: 4 },
+      end: { line: 1, character: 5 },
+    },
+    message: "template failed",
+  }]);
+
+  // #when
+  h.emitDiagnostics(h.source.entry);
+  h.emitDiagnostics("/vault/_typst/kit.typ");
+  const list = h.view.contentEl.querySelector<HTMLUListElement>("ul.tinymist-problems");
+  const entries = [...(list?.querySelectorAll("li") ?? [])];
+  for (const entry of entries) entry.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await Promise.resolve();
+  const text = entries.map((entry) => entry.textContent);
+  const hiddenBeforeStop = list?.hidden ?? null;
+  await h.manager.stop();
+  const countAfterStop = list?.querySelectorAll("li").length ?? -1;
+
+  // #then
+  try {
+    assert.deepEqual(
+      { text, hiddenBeforeStop, reveals: h.reveals, opened: h.opened, countAfterStop },
+      {
+        text: [
+          "Notes/A.md:2 Property typst is repeated",
+          "Notes/A.md:4 unknown variable",
+          "_typst/kit.typ:2 template failed",
+        ],
+        hiddenBeforeStop: false,
+        reveals: [
+          { line: 1, character: 0 },
+          { line: 3, character: 10 },
+        ],
+        opened: [{ path: "/vault/_typst/kit.typ", line: 1, character: 4 }],
+        countAfterStop: 0,
+      },
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("the preview problems list exists hidden when there are no problems", async () => {
+  // #given
+  const h = await problemHarness([]);
+
+  // #when
+  const list = h.view.contentEl.querySelector<HTMLUListElement>("ul.tinymist-problems");
+
+  // #then
+  try {
+    assert.deepEqual(
+      { count: h.view.contentEl.querySelectorAll("ul.tinymist-problems").length, hidden: list?.hidden ?? null },
+      { count: 1, hidden: true },
+    );
+  } finally {
+    await h.close();
+  }
+});

@@ -1547,6 +1547,109 @@ test("stopping a newer preview waits for every superseded kill before resetting 
   }
 });
 
+test("preview start, source rebind, and stop close each Markdown document before release", async () => {
+  // #given
+  const lifecycle: string[] = [];
+  const makeSource = (path: string): TypstSource => ({
+    file: path,
+    entry: `/vault/${path}.typ`,
+    document: `/vault/${path}.typ`,
+    inputs: undefined,
+    pinnable: false,
+    pdf: path.replace(/\.md$/i, ".pdf"),
+    open: () => {
+      lifecycle.push(`open:${path}`);
+      return { close: () => lifecycle.push(`close:${path}`) };
+    },
+    toSource: (position) => position,
+    toEntry: (position) => position,
+    reveal: async () => {},
+    describe: String,
+    on: () => () => {},
+    release: () => lifecycle.push(`release:${path}`),
+  });
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async (command: string) =>
+        command === "tinymist.doStartPreview" ? { staticServerPort: 4321 } : {},
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => makeSource(path),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".md"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+
+  // #when
+  await manager.start("/vault/Notes/A.md");
+  manager.onVaultRename("Notes/B.md", "Notes/A.md");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await manager.stop();
+
+  // #then
+  try {
+    assert.deepEqual(lifecycle, [
+      "open:Notes/A.md",
+      "close:Notes/A.md",
+      "release:Notes/A.md",
+      "open:Notes/B.md",
+      "close:Notes/B.md",
+      "release:Notes/B.md",
+    ]);
+  } finally {
+    manager.dispose();
+  }
+});
+
+test("a preview start failure is described by its held source", async () => {
+  // #given
+  const held = source("Notes/A.md", () => {});
+  held.describe = () => "Notes/A.md:3:5: unknown variable";
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async () => {
+        throw new Error("/vault/Notes/A.md.typ:3:5: unknown variable");
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => held,
+      byDocument: () => null,
+      mayBeSource: () => true,
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+
+  // #when
+  const start = manager.start("/vault/Notes/A.md");
+
+  // #then
+  try {
+    await assert.rejects(start, {
+      name: "Error",
+      message: "Notes/A.md:3:5: unknown variable",
+    });
+  } finally {
+    manager.dispose();
+  }
+});
+
 test("a second stop preserves the pin due after a pending preview start fails", async () => {
   // #given
   const firstStart = deferred<{ staticServerPort: number }>();
