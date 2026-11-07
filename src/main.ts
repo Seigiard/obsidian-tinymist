@@ -51,7 +51,6 @@ import {
 export default class TinymistPlugin extends Plugin {
   settings: TinymistSettings = DEFAULT_SETTINGS;
   lsp: LspClient | null = null;
-  private readonly markdownServerRestartListeners = new Set<() => void>();
   preview: PreviewManager = new PreviewManager(this);
   sources: SourceRegistry = new SourceRegistry([
     typAdapter({
@@ -449,7 +448,7 @@ export default class TinymistPlugin extends Plugin {
 
   async startLsp(restart: boolean): Promise<void> {
     if (restart) this.resolvedBinary = undefined;
-    if (restart) this.preview.onLspRestart();
+    const previewPath = restart ? this.preview.onLspRestart() : null;
     if (this.lsp) {
       if (!restart && this.lsp.status === "running") return;
       this.lsp.stop();
@@ -484,7 +483,11 @@ export default class TinymistPlugin extends Plugin {
       new Notice("Tinymist: failed to start language server. See console.");
       return;
     }
-    for (const listener of this.markdownServerRestartListeners ?? []) listener();
+    if (previewPath) {
+      await this.preview.start(previewPath).catch((error: unknown) => {
+        console.error("[tinymist] failed to reopen preview:", error);
+      });
+    }
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TYPST)) {
       if (leaf.view instanceof TypstView) leaf.view.reannounce();
     }
@@ -691,7 +694,7 @@ export default class TinymistPlugin extends Plugin {
       url = await this.preview.start(path);
     } catch (err) {
       console.error("[tinymist] preview failed:", err);
-      new Notice(`Tinymist preview failed: ${String(err)}`, 8000);
+      new Notice(`Tinymist preview failed: ${err instanceof Error ? err.message : String(err)}`, 8000);
       return;
     }
     if (!url) return;
@@ -747,10 +750,6 @@ export default class TinymistPlugin extends Plugin {
       onDelete: (listener) => {
         const ref = this.app.vault.on("delete", (file) => listener(file.path));
         return () => this.app.vault.offref(ref);
-      },
-      onServerRestart: (listener) => {
-        this.markdownServerRestartListeners.add(listener);
-        return () => this.markdownServerRestartListeners.delete(listener);
       },
     };
   }

@@ -20,6 +20,7 @@ export interface TypstSource {
   /** Preview-source input for an entry wrapper; like entry, adapters read it live. */
   readonly inputs: string | undefined;
   readonly pinnable: boolean;
+  readonly exportable: boolean;
   readonly pdf: string;
   readonly problems?: readonly { line: number; message: string; fatal: boolean }[];
   open(client: LspClient): { close(): void };
@@ -27,6 +28,7 @@ export interface TypstSource {
   toEntry(position: Position): Position;
   reveal(position: Position): Promise<void>;
   describe(error: unknown): string;
+  dispose?(): void;
   on(
     event: "moved" | "ended" | "problems",
     listener: () => void,
@@ -123,7 +125,10 @@ export class SourceRegistry {
     const held = this.held.get(vaultPath);
     if (!held) return;
     held.holders--;
-    if (held.holders === 0) this.held.delete(vaultPath);
+    if (held.holders === 0) {
+      this.held.delete(vaultPath);
+      held.source.dispose?.();
+    }
   }
 }
 
@@ -163,6 +168,7 @@ export function typAdapter(options: TypAdapterOptions): SourceAdapter {
           return previewEntry(document, root).sourceInput;
         },
         pinnable: true,
+        exportable: true,
         pdf: pdfDestination(vaultPath),
         open: () => ({ close: () => {} }),
         toSource: (position) => position,

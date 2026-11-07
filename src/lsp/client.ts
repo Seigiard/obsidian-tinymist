@@ -137,6 +137,10 @@ export class LspClient {
     return this.diagnosticsByUri.get(uri) ?? [];
   }
 
+  diagnosticUris(): string[] {
+    return [...this.diagnosticsByUri.keys()];
+  }
+
   /** The server's process id while it runs. */
   get pid(): number | null {
     return this.proc?.pid ?? null;

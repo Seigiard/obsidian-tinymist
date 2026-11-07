@@ -35,6 +35,7 @@ export class PreviewView extends ItemView {
       this.diagnosticUris.add(uri);
       this.syncProblems();
     });
+    for (const uri of this.plugin.lsp?.diagnosticUris() ?? []) this.diagnosticUris.add(uri);
     this.syncProblems();
     this.removePdfSettingListener = this.plugin.onAutomaticPdfChange(() => {
       this.pdfRequest++;
@@ -184,13 +185,19 @@ export class PreviewView extends ItemView {
   private syncPdfControl(): void {
     const input = this.pdfControl;
     if (!input || this.closed) return;
-    const sourcePath = this.plugin.preview.sourcePath();
+    const source = this.plugin.preview.currentSource();
+    const sourcePath = source
+      ? source.exportable ? source.file : null
+      : this.plugin.preview.sourcePath();
     input.disabled = sourcePath === null;
     input.checked = sourcePath !== null && this.plugin.automaticPdfEnabled(sourcePath);
   }
 
   private changePdfSetting(input: HTMLInputElement): void {
-    const sourcePath = this.plugin.preview.sourcePath();
+    const source = this.plugin.preview.currentSource();
+    const sourcePath = source
+      ? source.exportable ? source.file : null
+      : this.plugin.preview.sourcePath();
     if (!sourcePath || input.disabled) {
       this.syncPdfControl();
       return;

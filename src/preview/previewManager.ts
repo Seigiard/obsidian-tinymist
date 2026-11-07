@@ -28,6 +28,8 @@ export class PreviewManager {
   private source: TypstSource | null = null;
   private sourceHandle: { close(): void } | null = null;
   private removeSourceProblems: (() => void) | null = null;
+  private removeSourceMoved: (() => void) | null = null;
+  private removeSourceEnded: (() => void) | null = null;
   /** Advanced by every start, stop, rename, dispose, server-dispose notification, and LSP restart; a pending start or rebind is current only while it keeps the value it took. */
   private generation = 0;
   private pendingTaskId: string | null = null;
@@ -48,6 +50,7 @@ export class PreviewManager {
 
   /** The selected preview source as an Obsidian vault-relative path. */
   sourcePath(): string | null {
+    if (this.source) return this.source.file;
     const vaultPath = this.vaultRelativePath(this.filePath);
     return vaultPath && this.plugin.sources.mayBeSource(vaultPath) ? vaultPath : null;
   }
@@ -78,13 +81,15 @@ export class PreviewManager {
   }
 
   /** Called by the plugin after a language-server (re)start. */
-  onLspRestart(): void {
+  onLspRestart(): string | null {
+    const activePath = this.taskId ? this.filePath : null;
     this.endTask();
     this.handlersRegistered = false;
+    return activePath;
   }
 
   onVaultRename(newPath: string, oldPath: string): void {
-    const currentPath = this.sourcePath();
+    const currentPath = this.source?.file ?? this.sourcePath();
     if (this.disposed || !currentPath) return;
     const oldPrefix = `${oldPath}/`;
     const movedPath =
@@ -106,7 +111,7 @@ export class PreviewManager {
   }
 
   onVaultDelete(deletedPath: string): void {
-    const currentPath = this.sourcePath();
+    const currentPath = this.source?.file ?? this.sourcePath();
     if (this.disposed || !currentPath) return;
     if (currentPath === deletedPath || currentPath.startsWith(`${deletedPath}/`)) {
       void this.stop();
@@ -233,6 +238,7 @@ export class PreviewManager {
     this.source = source;
     this.sourceHandle = sourceHandle;
     this.removeSourceProblems = source.on("problems", () => this.notifyChange());
+    this.bindSourceLifecycle(source);
     this.filePath = filePath;
     this.url = url;
     this.notifyChange();
@@ -298,6 +304,10 @@ export class PreviewManager {
     this.sourceHandle = null;
     this.removeSourceProblems?.();
     this.removeSourceProblems = null;
+    this.removeSourceMoved?.();
+    this.removeSourceMoved = null;
+    this.removeSourceEnded?.();
+    this.removeSourceEnded = null;
     this.taskId = null;
     this.taskFilePath = null;
     this.url = null;
@@ -319,6 +329,7 @@ export class PreviewManager {
     }
     const previousHandle = this.sourceHandle;
     const previousSource = this.source;
+    this.removeSourceLifecycle();
     previousHandle?.close();
     previousSource?.release();
     if (!next) {
@@ -339,6 +350,88 @@ export class PreviewManager {
     this.source = next;
     this.sourceHandle = nextHandle;
     this.removeSourceProblems = next.on("problems", () => this.notifyChange());
+    this.bindSourceLifecycle(next);
+  }
+
+  private bindSourceLifecycle(source: TypstSource): void {
+    this.removeSourceMoved = source.on("moved", () => {
+      void this.restartMovedSource(source);
+    });
+    this.removeSourceEnded = source.on("ended", () => {
+      void this.stop();
+    });
+  }
+
+  private removeSourceLifecycle(): void {
+    this.removeSourceMoved?.();
+    this.removeSourceMoved = null;
+    this.removeSourceEnded?.();
+    this.removeSourceEnded = null;
+  }
+
+  private async restartMovedSource(source: TypstSource): Promise<void> {
+    if (this.disposed || this.source !== source) return;
+    const lsp = this.plugin.lsp;
+    if (!lsp || lsp.status !== "running") return;
+    const generation = ++this.generation;
+    const taskId = this.taskId;
+    const previousHandle = this.sourceHandle;
+    this.taskId = null;
+    this.taskFilePath = null;
+    this.url = null;
+    this.sourceHandle = null;
+    this.filePath = this.absolutePath(source.file);
+    this.notifyChange();
+    if (taskId) {
+      await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
+    }
+    previousHandle?.close();
+    if (generation !== this.generation || this.disposed || this.source !== source) return;
+    const handle = source.open(lsp);
+    const nextTaskId = Math.random().toString(36).slice(2, 9);
+    const args = [
+      "--task-id",
+      nextTaskId,
+      "--data-plane-host",
+      "127.0.0.1:0",
+      "--partial-rendering=true",
+    ];
+    if (this.plugin.settings.invertPreviewColors !== "never") {
+      args.push(`--invert-colors=${this.plugin.settings.invertPreviewColors}`);
+    }
+    lsp.setPreviewSource(source.inputs);
+    args.push("--page-title", basename(source.entry), source.entry);
+    let result: PreviewResult;
+    try {
+      result = await lsp.executeCommand<PreviewResult>(
+        "tinymist.doStartPreview",
+        [args],
+        20000,
+      );
+    } catch {
+      handle.close();
+      if (generation === this.generation && this.source === source) {
+        this.sourceHandle = null;
+        this.notifyChange();
+      }
+      return;
+    }
+    const port = result?.staticServerPort;
+    if (generation !== this.generation || this.disposed || this.source !== source || !port) {
+      await lsp.executeCommand("tinymist.doKillPreview", [nextTaskId], 5000).catch(() => {});
+      handle.close();
+      return;
+    }
+    this.taskId = nextTaskId;
+    this.taskFilePath = this.filePath;
+    this.sourceHandle = handle;
+    this.url = `http://127.0.0.1:${port}`;
+    this.notifyChange();
+  }
+
+  private absolutePath(vaultPath: string): string | null {
+    const root = this.plugin.vaultBasePath();
+    return root ? join(root, vaultPath) : null;
   }
 
   private vaultRelativePath(filePath: string | null): string | null {

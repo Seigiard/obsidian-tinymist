@@ -6,17 +6,18 @@ export function registerNoteControls(plugin: TinymistPlugin): void {
   const actions = new WeakMap<MarkdownView, HTMLElement>();
 
   const refresh = (view: MarkdownView | null): void => {
-    if (!view?.file) return;
+    if (!view) return;
     const existing = actions.get(view);
-    const path = view.file.path;
-    if (!plugin.sources.mayBeSource(path)) {
+    const path = view.file?.path ?? null;
+    if (!path || !plugin.sources.mayBeSource(path)) {
       existing?.remove();
       actions.delete(view);
       return;
     }
     if (existing) return;
     const action = view.addAction("eye", "Open preview", () => {
-      void plugin.openPreview(path).catch(() => {});
+      const currentPath = view.file?.path;
+      if (currentPath) void plugin.openPreview(currentPath).catch(() => {});
     });
     actions.set(view, action);
   };
