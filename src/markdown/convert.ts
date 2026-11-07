@@ -18,8 +18,9 @@ export interface Problem {
 
 /**
  * The converted note and zero-based UTF-16 line/column maps. Generated lines
- * map every column to 0. A line outside the note or a column past its end
- * returns the input column unchanged.
+ * map every column to 0. `source: false` means the note is not a print source:
+ * `typ` and `problems` are empty, and both maps return the input column. A line
+ * outside the note or a column past its end returns the input column unchanged.
  */
 export interface Conversion {
   source: boolean;

@@ -1,4 +1,4 @@
-import { isForbiddenLineBreak, MappedLineBuilder } from "./lineMap";
+import { MappedLineBuilder } from "./lineMap";
 
 interface EmphasisRange {
   start: number;
@@ -97,12 +97,6 @@ export function convertInline(text: string, sourceOffset: number, options: Inlin
       continue;
     }
 
-    if (isForbiddenLineBreak(character)) {
-      builder.appendMapped(" ", sourceOffset + index, width);
-      index += width;
-      continue;
-    }
-
     if (character === "#" || character === "$" || character === "@" || character === "<" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_") {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
@@ -134,37 +128,65 @@ export function convertInline(text: string, sourceOffset: number, options: Inlin
   return builder;
 }
 
-export function convertProseLine(line: string): MappedLineBuilder {
+export function convertProseLine(line: string, sourceOffset = 0): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const heading = /^(#+)([ \t]+)(.*)$/u.exec(line);
   if (heading) {
-    builder.appendMapped("=".repeat(heading[1].length), 0, heading[1].length);
-    builder.appendSource(heading[2], heading[1].length);
-    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }));
+    builder.appendMapped("=".repeat(heading[1].length), sourceOffset, heading[1].length);
+    builder.appendSource(heading[2], sourceOffset + heading[1].length);
+    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), sourceOffset + heading[1].length + heading[2].length, { lineStart: true }));
     return builder;
   }
   const unordered = /^([ \t]*)([-*+])([ \t]+)(.*)$/u.exec(line);
   if (unordered) {
     const markerStart = unordered[1].length;
-    builder.appendSource(unordered[1], 0);
-    builder.appendMapped("-", markerStart, 1);
-    builder.appendSource(unordered[3], markerStart + 1);
-    builder.appendBuilder(convertInline(line.slice(markerStart + 1 + unordered[3].length), markerStart + 1 + unordered[3].length, { lineStart: true }));
+    const contentStart = markerStart + 1 + unordered[3].length;
+    builder.appendSource(unordered[1], sourceOffset);
+    builder.appendMapped("-", sourceOffset + markerStart, 1);
+    builder.appendSource(unordered[3], sourceOffset + markerStart + 1);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
     return builder;
   }
   const ordered = /^([ \t]*)(\d+\.)([ \t]+)(.*)$/u.exec(line);
   if (ordered) {
     const contentStart = ordered[1].length + ordered[2].length + ordered[3].length;
-    builder.appendSource(ordered[1], 0);
-    builder.appendSource(ordered[2], ordered[1].length);
-    builder.appendSource(ordered[3], ordered[1].length + ordered[2].length);
-    builder.appendBuilder(convertInline(line.slice(contentStart), contentStart, { lineStart: true }));
+    builder.appendSource(ordered[1], sourceOffset);
+    builder.appendSource(ordered[2], sourceOffset + ordered[1].length);
+    builder.appendSource(ordered[3], sourceOffset + ordered[1].length + ordered[2].length);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
     return builder;
   }
   const indentationLength = leadingIndentLength(line);
-  builder.appendSource(line.slice(0, indentationLength), 0);
-  builder.appendBuilder(convertInline(line.slice(indentationLength), indentationLength, { lineStart: true }));
+  builder.appendSource(line.slice(0, indentationLength), sourceOffset);
+  builder.appendBuilder(convertInline(line.slice(indentationLength), sourceOffset + indentationLength, { lineStart: true }));
   return builder;
+}
+
+function appendListText(builder: MappedLineBuilder, text: string, sourceOffset: number): void {
+  let index = 0;
+  while (index < text.length) {
+    const marker = text[index];
+    if (marker === "-" || marker === "*") {
+      let contentStart = index + 1;
+      if (contentStart >= text.length || (text[contentStart] !== " " && text[contentStart] !== "\t")) break;
+      while (contentStart < text.length && (text[contentStart] === " " || text[contentStart] === "\t")) contentStart += 1;
+      builder.appendMapped("-", sourceOffset + index, 1);
+      builder.appendSource(text.slice(index + 1, contentStart), sourceOffset + index + 1);
+      index = contentStart;
+      continue;
+    }
+
+    let digitEnd = index;
+    while (digitEnd < text.length && text[digitEnd] >= "0" && text[digitEnd] <= "9") digitEnd += 1;
+    if (digitEnd === index || text[digitEnd] !== ".") break;
+    let contentStart = digitEnd + 1;
+    if (contentStart >= text.length || (text[contentStart] !== " " && text[contentStart] !== "\t")) break;
+    while (contentStart < text.length && (text[contentStart] === " " || text[contentStart] === "\t")) contentStart += 1;
+    builder.appendSource(text.slice(index, digitEnd + 1), sourceOffset + index);
+    builder.appendSource(text.slice(digitEnd + 1, contentStart), sourceOffset + digitEnd + 1);
+    index = contentStart;
+  }
+  builder.appendBuilder(convertInline(text.slice(index), sourceOffset + index, { lineStart: true }));
 }
 
 function appendGeneratedLiteral(
@@ -183,8 +205,6 @@ function appendGeneratedLiteral(
     const character = content.slice(offset, offset + width);
     if (character === "\\" || character === '"') {
       builder.appendEscaped(character, contentStart + offset);
-    } else if (isForbiddenLineBreak(character)) {
-      builder.appendMapped(" ", contentStart + offset, width);
     } else {
       builder.appendSource(character, contentStart + offset);
     }
@@ -335,9 +355,12 @@ function findDelimiters(text: string, codeRanges: CodeRange[], urls: UrlRange[])
       continue;
     }
     const marker = text[index];
-    const width = text[index + 1] === marker ? 2 : 1;
-    delimiters.push({ index, marker, width, open: canOpen(text, index, width), close: canClose(text, index, width) });
-    index += width;
+    const start = index;
+    while (index < text.length && text[index] === marker) index += 1;
+    const width = index - start;
+    if (width === 1 || width === 2) {
+      delimiters.push({ index: start, marker, width, open: canOpen(text, start, width), close: canClose(text, start, width) });
+    }
   }
   return delimiters;
 }

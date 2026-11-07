@@ -20,7 +20,7 @@ interface ParsedQuotedValue {
   failure?: string;
 }
 
-type ValueFailure = "empty" | "multiline" | "malformed" | "deep" | "escape";
+type ValueFailure = "empty" | "multiline" | "malformed" | "quoted" | "deep" | "escape";
 
 type ValueResult = { literal: string } | { failure: ValueFailure; escape?: string };
 
@@ -78,7 +78,7 @@ export function findFrontmatterEnd(lines: readonly string[]): number {
 
 export function hasSourceFlag(lines: readonly string[], end: number): boolean {
   return lines.slice(1, end).some((line) => {
-    const match = /^typst:[ \t]*(.*)$/u.exec(line);
+    const match = /^typst:(.*)$/u.exec(line);
     return match !== null && stripYamlComment(match[1]).trim() === "true";
   });
 }
@@ -105,7 +105,8 @@ export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitVie
   let explicit: { line: number; id: string } | undefined;
   for (const entry of entries) {
     if ("name" in entry && entry.name === "template" && !entry.multiline && explicit === undefined) {
-      explicit = { line: entry.line, id: unquoteTemplateId(entry.value.trim()) };
+      const id = unquoteTemplateId(entry.value.trim());
+      if (id !== "") explicit = { line: entry.line, id };
     }
   }
 
@@ -127,7 +128,47 @@ export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitVie
 }
 
 export function quoteString(value: string): string {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\t", "\\t").replaceAll("\r", "\\r").replaceAll("\0", "\\0")}"`;
+  let result = '"';
+  for (const character of value) {
+    switch (character) {
+      case "\\":
+        result += "\\\\";
+        break;
+      case '"':
+        result += '\\"';
+        break;
+      case "\n":
+        result += "\\n";
+        break;
+      case "\t":
+        result += "\\t";
+        break;
+      case "\r":
+        result += "\\r";
+        break;
+      case "\0":
+        result += "\\u{0}";
+        break;
+      case "\u000b":
+        result += "\\u{b}";
+        break;
+      case "\f":
+        result += "\\u{c}";
+        break;
+      case "\u0085":
+        result += "\\u{85}";
+        break;
+      case "\u2028":
+        result += "\\u{2028}";
+        break;
+      case "\u2029":
+        result += "\\u{2029}";
+        break;
+      default:
+        result += character;
+    }
+  }
+  return `${result}"`;
 }
 
 export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConversion {
@@ -173,6 +214,8 @@ function propertyFailureMessage(name: string, result: { failure: ValueFailure; e
       return `Property ${name} has a multi-line value`;
     case "malformed":
       return `Property ${name} has a malformed list`;
+    case "quoted":
+      return `Property ${name} has a malformed value`;
     case "deep":
       return `Property ${name} nests lists deeper than ${MAX_ARRAY_DEPTH} levels`;
     case "escape":
@@ -186,16 +229,35 @@ function parseValue(value: string, depth = 0): ValueResult {
   if (isBlockValue(trimmed)) return { failure: "multiline" };
   if (trimmed === "true" || trimmed === "false" || NUMBER.test(trimmed)) return { literal: trimmed };
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) return parseArray(trimmed, depth);
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+  if (trimmed.startsWith('"')) {
+    if (!isCompleteQuotedScalar(trimmed, '"')) return { failure: "quoted" };
     const decoded = decodeDoubleQuoted(trimmed.slice(1, -1));
     return decoded.failure === undefined
       ? { literal: quoteString(decoded.value) }
       : { failure: "escape", escape: decoded.failure };
   }
-  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+  if (trimmed.startsWith("'")) {
+    if (!isCompleteQuotedScalar(trimmed, "'")) return { failure: "quoted" };
     return { literal: quoteString(trimmed.slice(1, -1).replaceAll("''", "'")) };
   }
   return { literal: quoteString(trimmed) };
+}
+
+function isCompleteQuotedScalar(value: string, quote: string): boolean {
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote === "'" && character === "'" && value[index + 1] === "'") {
+      index += 1;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      if (index + 1 >= value.length) return false;
+      index += 1;
+      continue;
+    }
+    if (character === quote) return index === value.length - 1;
+  }
+  return false;
 }
 
 function isBlockValue(value: string): boolean {
@@ -249,11 +311,13 @@ function splitArrayItems(value: string): string[] | undefined {
       if (depth < 0) return undefined;
       if (afterQuote) afterQuote = false;
       quoteAllowed = false;
-    } else if (character === "," && depth === 0) {
-      const item = value.slice(start, index).trim();
-      if (item === "") return undefined;
-      items.push(item);
-      start = index + 1;
+    } else if (character === ",") {
+      if (depth === 0) {
+        const item = value.slice(start, index).trim();
+        if (item === "") return undefined;
+        items.push(item);
+        start = index + 1;
+      }
       quoteAllowed = true;
       afterQuote = false;
     } else if (afterQuote) {
@@ -340,7 +404,7 @@ function stripYamlComment(value: string): string {
       quoteAllowed = true;
       continue;
     }
-    if (character === "#" && index > 0 && (value[index - 1] === " " || value[index - 1] === "\t")) return value.slice(0, index).trimEnd();
+    if (character === "#" && depth === 0 && (index === 0 || value[index - 1] === " " || value[index - 1] === "\t")) return value.slice(0, index).trimEnd();
     if (!/\s/u.test(character)) quoteAllowed = false;
   }
   return value.trimEnd();
