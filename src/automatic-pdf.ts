@@ -298,7 +298,7 @@ export class AutomaticPdfController {
   }
 
   private async onModify(file: TAbstractFile): Promise<void> {
-    if (!(file instanceof TFile) || !this.host.sources.mayBeSource(file.path)) return;
+    if (!(file instanceof TFile)) return;
     const entry = this.entries.get(file.path);
     if (!entry?.enabled || this.disposed) return;
     void this.enqueue(file.path, false);

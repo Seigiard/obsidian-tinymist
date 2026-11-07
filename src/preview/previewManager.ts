@@ -26,8 +26,9 @@ export class PreviewManager {
   private taskId: string | null = null;
   private taskFilePath: string | null = null;
   private source: TypstSource | null = null;
-  /** Every operation that replaces or ends a preview advances this value. */
+  /** Advanced by every start, stop, rename, dispose, server-dispose notification, and LSP restart; a pending start or rebind is current only while it keeps the value it took. */
   private generation = 0;
+  private pendingTaskId: string | null = null;
   private inputSet = false;
   private mainTaken = false;
   private readonly pendingStarts = new Set<Promise<string | null>>();
@@ -60,6 +61,8 @@ export class PreviewManager {
       const { taskId } = (params as { taskId?: string }) ?? {};
       if (taskId && taskId === this.taskId) {
         this.endTask();
+      } else if (taskId && taskId === this.pendingTaskId) {
+        this.generation++;
       }
     });
     lsp.onNotification("tinymist/preview/scrollSource", (params) => {
@@ -181,18 +184,21 @@ export class PreviewManager {
 
     let result: PreviewResult;
     try {
+      this.pendingTaskId = taskId;
       result = await lsp.executeCommand<PreviewResult>(
         "tinymist.doStartPreview",
         [args],
         20000,
       );
     } catch (error) {
+      if (this.pendingTaskId === taskId) this.pendingTaskId = null;
       source.release();
       if (generation !== this.generation) {
         return null;
       }
       throw error;
     }
+    if (this.pendingTaskId === taskId) this.pendingTaskId = null;
     this.mainTaken = true;
     const port = result?.staticServerPort;
     if (generation !== this.generation || !port) {
