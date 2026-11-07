@@ -335,7 +335,7 @@ test("a rebind that becomes stale releases its deferred source", async () => {
     await manager.start("/vault/a.typ");
     calls.length = 0;
     manager.onVaultRename("b.typ", "a.typ");
-    await rebindReached.promise;
+    await waitFor(rebindReached.promise, "the rename source hold");
 
     // #when
     await manager.stop();
@@ -848,8 +848,11 @@ test("restarting the language server supersedes a pending start and releases its
 test("a server dispose notification supersedes the start that created its task", async () => {
   // #given
   const notifications = new Map<string, (params: unknown) => void>();
+  const commandReached = deferred<void>();
+  const commandResult = deferred<{ staticServerPort: number }>();
   let holds = 0;
   let releases = 0;
+  let taskId: string | null = null;
   const calls: Array<Record<string, string | undefined>> = [];
   const plugin = {
     lsp: {
@@ -861,9 +864,14 @@ test("a server dispose notification supersedes the start that created its task",
       setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
       pinMain: () => calls.push({ method: "pinMain" }),
       executeCommand: async (command: string, args: unknown[]) => {
-        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
-        calls.push({ command, taskId: typeof taskId === "string" ? taskId : undefined });
-        return { staticServerPort: 4321 };
+        const commandTaskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        calls.push({ command, taskId: typeof commandTaskId === "string" ? commandTaskId : undefined });
+        if (command === "tinymist.doStartPreview") {
+          taskId = commandTaskId as string;
+          commandReached.resolve();
+          return await commandResult.promise;
+        }
+        return {};
       },
     },
     settings: { invertPreviewColors: "never" },
@@ -883,13 +891,15 @@ test("a server dispose notification supersedes the start that created its task",
   const manager = new PreviewManager(plugin);
   const originalRandom = Math.random;
   Math.random = () => 0.123456789;
-  const unsubscribe = manager.onChange(() => {
-    notifications.get("tinymist/preview/dispose")?.({ taskId: "4fzzzxj" });
-  });
 
   try {
     // #when
-    const result = await manager.start("/vault/chapter.typ");
+    const start = manager.start("/vault/chapter.typ");
+    await waitFor(commandReached.promise, "the pending preview command");
+    (manager as unknown as { taskId: string | null }).taskId = taskId;
+    notifications.get("tinymist/preview/dispose")?.({ taskId });
+    commandResult.resolve({ staticServerPort: 4321 });
+    const result = await start;
 
     // #then
     assert.deepEqual(
@@ -901,13 +911,13 @@ test("a server dispose notification supersedes the start that created its task",
         calls: [
           { method: "setPreviewSource", input: "/input/chapter.typ" },
           { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
           { method: "setPreviewSource", input: undefined },
           { method: "pinMain" },
         ],
       },
     );
   } finally {
-    unsubscribe();
     Math.random = originalRandom;
     manager.dispose();
   }
@@ -917,7 +927,6 @@ test("disposing a deferred rename rebind releases both sources", async () => {
   // #given
   const rebindHold = deferred<TypstSource>();
   const rebindReached = deferred<void>();
-  const reboundReleased = deferred<void>();
   let holds = 0;
   let releases = 0;
   const calls: string[] = [];
@@ -964,10 +973,12 @@ test("disposing a deferred rename rebind releases both sources", async () => {
     rebindHold.resolve(
       source("b.typ", () => {
         releases++;
-        reboundReleased.resolve();
       }),
     );
-    await waitFor(reboundReleased.promise, "the deferred rename source release");
+    await waitFor(
+      new Promise<void>((resolve) => setTimeout(resolve, 0)),
+      "the deferred rename source settlement",
+    );
 
     // #then
     assert.deepEqual(
