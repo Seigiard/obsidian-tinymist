@@ -17,3 +17,23 @@ export const compileSample = sourceNote(
     "```",
   ],
 );
+
+export const constructCompileSample = sourceNote(
+  ["typst: true"],
+  [
+    "| Die | Result |",
+    "| --- | --- |",
+    "| 1\\|2 | first<br>second |",
+    "> [!info] Source",
+    "> - item",
+    "",
+    "> Quote",
+    "[[X#H|Y]] [[#H]] [web](https://x.y/a)",
+    "![[image.png|400]]",
+    "before %%hidden%% after",
+    "![[Note]]",
+    "<u>text</u>",
+    "$x^2$",
+    "[^1]",
+  ],
+);

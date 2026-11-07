@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { convert } from "../src/markdown/convert";
-import { compileSample } from "./fixtures/markdown/notes";
+import { compileSample, constructCompileSample } from "./fixtures/markdown/notes";
 
 const BIN =
   process.env.TINYMIST_BIN ??
@@ -23,6 +23,25 @@ test("C9: converted Markdown sample compiles with tinymist", { skip: !BIN && "ti
     // #then
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual({ source: conversion.source, line: conversion.typ.split("\n")[3] }, { source: true, line: "= Release notes" });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("M1–M10: a note with every new Markdown construct compiles with tinymist", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-constructs-"));
+  const output = join(directory, "sample.typ");
+  mkdirSync(join(directory, "image"));
+  writeFileSync(join(directory, "image.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9dQAAAABJRU5ErkJggg==", "base64"));
+  const conversion = convert(constructCompileSample, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(conversion.typ.split("\n")[3], "#std.table(columns: 2, std.table.header([Die], [Result]),");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
