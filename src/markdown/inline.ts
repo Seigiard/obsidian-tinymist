@@ -97,7 +97,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
       continue;
     }
 
-    if (character === "#" || character === "$" || character === "@" || character === "<" || character === ">" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_" || character === "/") {
+    if (character === "#" || character === "$" || character === "@" || character === "<" || character === "~" || character === "[" || character === "]" || character === "`" || character === "*" || character === "_" || character === "/") {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
       continue;
