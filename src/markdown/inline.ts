@@ -1,4 +1,11 @@
 import { MappedLineBuilder } from "./lineMap";
+import { quoteString } from "./frontmatter";
+
+export interface InlineState {
+  commentOpen: boolean;
+}
+
+export type ProblemReporter = (message: string) => void;
 
 interface EmphasisRange {
   start: number;
@@ -22,6 +29,35 @@ interface InlineOptions {
   lineStart?: boolean;
 }
 
+interface MarkdownLinkRange {
+  start: number;
+  end: number;
+  labelStart: number;
+  labelEnd: number;
+  target: string;
+  image: boolean;
+}
+
+interface WikilinkRange {
+  start: number;
+  end: number;
+  display: string;
+  displayStart: number;
+}
+
+interface ImageRange {
+  start: number;
+  end: number;
+  path: string;
+  width?: number;
+  height?: number;
+}
+
+interface LinebreakRange {
+  start: number;
+  end: number;
+}
+
 interface Delimiter {
   index: number;
   marker: string;
@@ -30,14 +66,36 @@ interface Delimiter {
   close: boolean;
 }
 
+export function convertInlineText(text: string, sourceOffset = 0, reportProblem?: ProblemReporter, state?: InlineState): MappedLineBuilder {
+  const inlineState = state ?? { commentOpen: false };
+  const prepared = stripComments(text, inlineState);
+  reportUnsupportedConstructs(prepared, reportProblem);
+  return convertInline(prepared, sourceOffset);
+}
+
+export function convertProseLine(line: string, reportProblem?: ProblemReporter, sourceOffset = 0, state?: InlineState): MappedLineBuilder {
+  const inlineState = state ?? { commentOpen: false };
+  const prepared = stripComments(line, inlineState);
+  reportUnsupportedConstructs(prepared, reportProblem);
+  return convertProseLinePrepared(prepared, reportProblem, sourceOffset);
+}
+
 function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
   const urls = findUrls(text, codeRanges);
   const emphasis = findEmphasisRanges(text, codeRanges, urls);
+  const markdownLinks = findMarkdownLinks(text, codeRanges);
+  const wikilinks = findWikilinks(text, codeRanges);
+  const images = findImageRanges(text, codeRanges);
+  const linebreaks = findLinebreaks(text, codeRanges);
   const codeByStart = new Map(codeRanges.map((range) => [range.start, range]));
   const urlByStart = new Map(urls.map((range) => [range.start, range]));
   const emphasisByStart = new Map(emphasis.map((range) => [range.start, range]));
+  const markdownByStart = new Map(markdownLinks.map((range) => [range.start, range]));
+  const wikilinkByStart = new Map(wikilinks.map((range) => [range.start, range]));
+  const imageByStart = new Map(images.map((range) => [range.start, range]));
+  const linebreakByStart = new Map(linebreaks.map((range) => [range.start, range]));
   let index = 0;
 
   while (index < text.length) {
@@ -63,6 +121,43 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
         );
       }
       index = code.end;
+      continue;
+    }
+
+    const image = imageByStart.get(index);
+    if (image) {
+      const dimensions = image.width === undefined ? "" : `, width: ${image.width}pt${image.height === undefined ? "" : `, height: ${image.height}pt`}`;
+      builder.appendInserted(`#std.image(${quoteString(image.path)}${dimensions})`, sourceOffset + image.start);
+      index = image.end;
+      continue;
+    }
+
+    const markdown = markdownByStart.get(index);
+    if (markdown) {
+      if (markdown.image) {
+        builder.appendInserted(`#std.image(${quoteString(markdown.target)})`, sourceOffset + markdown.start);
+      } else if (/^https?:\/\//iu.test(markdown.target)) {
+        builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
+        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+        builder.appendInserted("]", sourceOffset + markdown.end);
+      } else {
+        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+      }
+      index = markdown.end;
+      continue;
+    }
+
+    const wikilink = wikilinkByStart.get(index);
+    if (wikilink) {
+      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart));
+      index = wikilink.end;
+      continue;
+    }
+
+    const linebreak = linebreakByStart.get(index);
+    if (linebreak) {
+      builder.appendInserted("#std.linebreak()", sourceOffset + linebreak.start);
+      index = linebreak.end;
       continue;
     }
 
@@ -139,37 +234,37 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
   return builder;
 }
 
-export function convertProseLine(line: string): MappedLineBuilder {
+function convertProseLinePrepared(line: string, _reportProblem: ProblemReporter | undefined, sourceOffset: number): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const heading = /^(#+)([ \t]+)(.*)$/u.exec(line);
   if (heading) {
-    builder.appendMapped("=".repeat(heading[1].length), 0, heading[1].length);
-    builder.appendSource(heading[2], heading[1].length);
-    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }));
+    builder.appendMapped("=".repeat(heading[1].length), sourceOffset, heading[1].length);
+    builder.appendSource(heading[2], sourceOffset + heading[1].length);
+    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), sourceOffset + heading[1].length + heading[2].length, { lineStart: true }));
     return builder;
   }
   const unordered = /^([ \t]*)([-*+])([ \t]+)(.*)$/u.exec(line);
   if (unordered) {
     const markerStart = unordered[1].length;
     const contentStart = markerStart + 1 + unordered[3].length;
-    builder.appendSource(unordered[1], 0);
-    builder.appendMapped("-", markerStart, 1);
-    builder.appendSource(unordered[3], markerStart + 1);
-    appendListText(builder, line.slice(contentStart), contentStart);
+    builder.appendSource(unordered[1], sourceOffset);
+    builder.appendMapped("-", sourceOffset + markerStart, 1);
+    builder.appendSource(unordered[3], sourceOffset + markerStart + 1);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
     return builder;
   }
   const ordered = /^([ \t]*)(\d+\.)([ \t]+)(.*)$/u.exec(line);
   if (ordered) {
     const contentStart = ordered[1].length + ordered[2].length + ordered[3].length;
-    builder.appendSource(ordered[1], 0);
-    builder.appendSource(ordered[2], ordered[1].length);
-    builder.appendSource(ordered[3], ordered[1].length + ordered[2].length);
-    appendListText(builder, line.slice(contentStart), contentStart);
+    builder.appendSource(ordered[1], sourceOffset);
+    builder.appendSource(ordered[2], sourceOffset + ordered[1].length);
+    builder.appendSource(ordered[3], sourceOffset + ordered[1].length + ordered[2].length);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
     return builder;
   }
   const indentationLength = leadingIndentLength(line);
-  builder.appendSource(line.slice(0, indentationLength), 0);
-  builder.appendBuilder(convertInline(line.slice(indentationLength), indentationLength, { lineStart: true }));
+  builder.appendSource(line.slice(0, indentationLength), sourceOffset);
+  builder.appendBuilder(convertInline(line.slice(indentationLength), sourceOffset + indentationLength, { lineStart: true }));
   return builder;
 }
 
@@ -458,4 +553,258 @@ function isEscaped(text: string, index: number): boolean {
 
 function isMarkdownEscapeTarget(character: string): boolean {
   return /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/u.test(character);
+}
+
+function stripComments(text: string, state: InlineState): string {
+  if (!state.commentOpen && !text.includes("%%")) return text;
+  let result = "";
+  let index = 0;
+  while (index < text.length) {
+    if (state.commentOpen) {
+      const close = text.indexOf("%%", index);
+      if (close < 0) return result;
+      state.commentOpen = false;
+      index = close + 2;
+      continue;
+    }
+    const open = text.indexOf("%%", index);
+    if (open < 0) {
+      result += text.slice(index);
+      return result;
+    }
+    result += text.slice(index, open);
+    state.commentOpen = true;
+    index = open + 2;
+  }
+  return result;
+}
+
+function reportUnsupportedConstructs(text: string, reportProblem?: ProblemReporter): void {
+  if (!reportProblem) return;
+  if (!text.includes("![[") && !text.includes("<") && !text.includes("$") && !text.includes("[^")) return;
+
+  const codeRanges = findCodeRanges(text);
+  if (hasUnsupportedEmbed(text, codeRanges)) reportProblem("Note embed has no Typst form");
+  if (hasUnsupportedHtml(text, codeRanges)) reportProblem("HTML has no Typst form");
+  if (hasLatexMath(text, codeRanges)) reportProblem("LaTeX math has no Typst form");
+  if (hasFootnote(text, codeRanges)) reportProblem("Footnote has no Typst form");
+}
+
+function hasUnsupportedEmbed(text: string, codeRanges: readonly CodeRange[]): boolean {
+  let index = 0;
+  while (index < text.length - 2) {
+    const start = text.indexOf("![[", index);
+    if (start < 0) return false;
+    if (!isInsideRange(start, codeRanges)) {
+      const end = text.indexOf("]]", start + 3);
+      if (end >= 0) {
+        const path = text.slice(start + 3, end).split("|", 1)[0].trim();
+        if (!isImagePath(path)) return true;
+        index = end + 2;
+        continue;
+      }
+    }
+    index = start + 3;
+  }
+  return false;
+}
+
+function hasUnsupportedHtml(text: string, codeRanges: readonly CodeRange[]): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "<" || isEscaped(text, index) || isInsideRange(index, codeRanges)) continue;
+    const end = text.indexOf(">", index + 1);
+    if (end < 0) continue;
+    const tag = text.slice(index, end + 1);
+    if (!/^<br\s*\/?>(?:$|.)/iu.test(tag) && /^<\/?[A-Za-z][^>]*>$/u.test(tag)) return true;
+    index = end;
+  }
+  return false;
+}
+
+function hasLatexMath(text: string, codeRanges: readonly CodeRange[]): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "$" && !isEscaped(text, index) && !isInsideRange(index, codeRanges)) return true;
+  }
+  return false;
+}
+
+function hasFootnote(text: string, codeRanges: readonly CodeRange[]): boolean {
+  for (let index = 0; index < text.length - 2; index += 1) {
+    if (text[index] !== "[" || text[index + 1] !== "^" || isEscaped(text, index) || isInsideRange(index, codeRanges)) continue;
+    const close = text.indexOf("]", index + 2);
+    if (close >= 0) return true;
+  }
+  return false;
+}
+
+function findMarkdownLinks(text: string, codeRanges: readonly CodeRange[]): MarkdownLinkRange[] {
+  if (!text.includes("](")) return [];
+  const ranges: MarkdownLinkRange[] = [];
+  let index = 0;
+  while (index < text.length) {
+    if (isInsideRange(index, codeRanges)) {
+      index += 1;
+      continue;
+    }
+    const image = text[index] === "!" && text[index + 1] === "[";
+    const bracket = image ? index + 1 : text[index] === "[" ? index : -1;
+    if (bracket < 0 || isEscaped(text, bracket)) {
+      index += codePointWidth(text, index);
+      continue;
+    }
+    const closeBracket = findClosingBracket(text, bracket + 1);
+    if (closeBracket < 0 || text[closeBracket + 1] !== "(") {
+      index = bracket + 1;
+      continue;
+    }
+    const closeParen = findClosingParen(text, closeBracket + 2);
+    if (closeParen < 0) {
+      index = closeBracket + 2;
+      continue;
+    }
+    ranges.push({
+      start: image ? index : bracket,
+      end: closeParen + 1,
+      labelStart: bracket + 1,
+      labelEnd: closeBracket,
+      target: text.slice(closeBracket + 2, closeParen),
+      image,
+    });
+    index = closeParen + 1;
+  }
+  return ranges;
+}
+
+function findWikilinks(text: string, codeRanges: readonly CodeRange[]): WikilinkRange[] {
+  if (!text.includes("[[")) return [];
+  const ranges: WikilinkRange[] = [];
+  let index = 0;
+  while (index < text.length - 3) {
+    const start = text.indexOf("[[", index);
+    if (start < 0) break;
+    if (isInsideRange(start, codeRanges) || isEscaped(text, start)) {
+      index = start + 2;
+      continue;
+    }
+    if (start > 0 && text[start - 1] === "!") {
+      index = start + 2;
+      continue;
+    }
+    const close = text.indexOf("]]", start + 2);
+    if (close < 0) break;
+    const body = text.slice(start + 2, close);
+    const separator = body.indexOf("|");
+    const target = (separator < 0 ? body : body.slice(0, separator)).trim();
+    const explicitDisplay = separator < 0 ? "" : body.slice(separator + 1);
+    const display = explicitDisplay === "" ? wikilinkTargetDisplay(target) : explicitDisplay;
+    const displayStart = separator < 0 ? start + 2 + wikilinkTargetDisplayStart(target) : start + 2 + separator + 1;
+    ranges.push({ start, end: close + 2, display, displayStart });
+    index = close + 2;
+  }
+  return ranges;
+}
+
+function findImageRanges(text: string, codeRanges: readonly CodeRange[]): ImageRange[] {
+  if (!text.includes("![")) return [];
+  const ranges: ImageRange[] = [];
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] === "!" && text[index + 1] === "[" && text[index + 2] === "[") {
+      if (isInsideRange(index, codeRanges)) {
+        index += 3;
+        continue;
+      }
+      const close = text.indexOf("]]", index + 3);
+      if (close >= 0) {
+        const parts = text.slice(index + 3, close).split("|");
+        const path = parts.shift()?.trim() ?? "";
+        if (isImagePath(path)) {
+          const dimensions = parseDimensions(parts.join("|").trim());
+          ranges.push({ start: index, end: close + 2, path, ...dimensions });
+          index = close + 2;
+          continue;
+        }
+      }
+    }
+    index += 1;
+  }
+
+  for (const range of findMarkdownLinks(text, codeRanges)) {
+    if (!range.image) continue;
+    ranges.push({ start: range.start, end: range.end, path: range.target });
+  }
+  return ranges;
+}
+
+function findLinebreaks(text: string, codeRanges: readonly CodeRange[]): LinebreakRange[] {
+  if (!text.includes("<br")) return [];
+  const ranges: LinebreakRange[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (isInsideRange(index, codeRanges) || text[index] !== "<") continue;
+    const match = /^(?:<br>|<br\/>|<br \/>)/iu.exec(text.slice(index));
+    if (!match || isEscaped(text, index)) continue;
+    ranges.push({ start: index, end: index + match[0].length });
+    index += match[0].length - 1;
+  }
+  return ranges;
+}
+
+function isImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|svg)$/iu.test(path.split("#", 1)[0]);
+}
+
+function parseDimensions(value: string): { width?: number; height?: number } {
+  if (value === "") return {};
+  const match = /^(\d+)(?:x(\d+))?$/iu.exec(value);
+  if (!match) return {};
+  return { width: Number(match[1]), height: match[2] === undefined ? undefined : Number(match[2]) };
+}
+
+function wikilinkTargetDisplay(target: string): string {
+  const hash = target.indexOf("#");
+  if (hash < 0) return target;
+  if (target.startsWith("#")) return target.slice(hash + 1);
+  return target.slice(0, hash);
+}
+
+function wikilinkTargetDisplayStart(target: string): number {
+  const hash = target.indexOf("#");
+  if (hash >= 0 && target.startsWith("#")) return hash + 1;
+  return 0;
+}
+
+function findClosingBracket(text: string, start: number): number {
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (text[index] === "[") depth += 1;
+    else if (text[index] === "]") {
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+function findClosingParen(text: string, start: number): number {
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (text[index] === "(") depth += 1;
+    else if (text[index] === ")") {
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+function isInsideRange(index: number, ranges: readonly CodeRange[]): boolean {
+  return ranges.some((range) => index >= range.start && index < range.end);
 }

@@ -1,0 +1,232 @@
+import { quoteString } from "./frontmatter";
+import { convertInlineText, convertProseLine, type InlineState, type ProblemReporter } from "./inline";
+import { MappedLineBuilder } from "./lineMap";
+
+export interface BlockConversion {
+  end: number;
+  lines: MappedLineBuilder[];
+}
+
+interface TableCell {
+  text: string;
+  start: number;
+}
+
+interface TableRow {
+  cells: TableCell[];
+}
+
+interface QuoteEntry {
+  text: string;
+  offset: number;
+  line: number;
+}
+
+interface QuotePrefix {
+  text: string;
+  offset: number;
+}
+
+export function convertBlock(
+  lines: readonly string[],
+  line: number,
+  state: InlineState,
+  reportProblem: (line: number, message: string) => void,
+): BlockConversion | undefined {
+  const table = readTable(lines, line);
+  if (table !== undefined) return renderTable(table, state, reportProblem);
+
+  const first = readQuotePrefix(lines[line]);
+  if (first === undefined) return undefined;
+  const entries: QuoteEntry[] = [];
+  let end = line;
+  while (end < lines.length) {
+    const prefix = readQuotePrefix(lines[end]);
+    if (prefix === undefined) break;
+    entries.push({ text: prefix.text, offset: prefix.offset, line: end });
+    end += 1;
+  }
+  return { end, lines: renderQuote(entries, state, reportProblem) };
+}
+
+function readTable(lines: readonly string[], start: number): { end: number; header: TableRow; rows: TableRow[] } | undefined {
+  const header = parseTableRow(lines[start]);
+  if (header === undefined || start + 1 >= lines.length || !isTableDelimiter(lines[start + 1])) return undefined;
+  let end = start + 2;
+  const rows: TableRow[] = [];
+  while (end < lines.length) {
+    const row = parseTableRow(lines[end]);
+    if (row === undefined) break;
+    rows.push(row);
+    end += 1;
+  }
+  return { end, header, rows };
+}
+
+function renderTable(
+  table: { end: number; header: TableRow; rows: TableRow[] },
+  state: InlineState,
+  reportProblem: (line: number, message: string) => void,
+): BlockConversion {
+  const lines: MappedLineBuilder[] = [];
+  const columns = table.header.cells.length;
+  const headerLine = table.end - table.rows.length - 2;
+  const header = new MappedLineBuilder();
+  header.appendInserted(`#std.table(columns: ${columns}, std.table.header(`);
+  appendCells(header, table.header.cells, state, (message) => reportProblem(headerLine, message));
+  header.appendInserted(")");
+  if (table.rows.length === 0) header.appendInserted(")");
+  else header.appendInserted(",");
+  lines.push(header);
+  lines.push(new MappedLineBuilder());
+
+  table.rows.forEach((row, index) => {
+    const line = new MappedLineBuilder();
+    const rowLine = table.end - table.rows.length + index;
+    const normalized = normalizeCells(row, columns, table.header.cells.length, reportProblem, rowLine);
+    appendCells(line, normalized, state, (message) => reportProblem(rowLine, message));
+    line.appendInserted(index === table.rows.length - 1 ? ")" : ",");
+    lines.push(line);
+  });
+  return { end: table.end, lines };
+}
+
+function appendCells(
+  builder: MappedLineBuilder,
+  cells: readonly TableCell[],
+  state: InlineState,
+  reportProblem: ProblemReporter | undefined,
+): void {
+  cells.forEach((cell, index) => {
+    if (index > 0) builder.appendInserted(", ");
+    builder.appendInserted("[");
+    builder.appendBuilder(convertInlineText(cell.text, cell.start, reportProblem, state));
+    builder.appendInserted("]");
+  });
+}
+
+function normalizeCells(
+  row: TableRow,
+  columns: number,
+  headerColumns: number,
+  reportProblem: (line: number, message: string) => void,
+  line: number,
+): TableCell[] {
+  if (row.cells.length > columns) {
+    reportProblem(line, `Table row has ${row.cells.length} cells, the header has ${headerColumns}`);
+    return row.cells.slice(0, columns);
+  }
+  const cells = row.cells.slice();
+  while (cells.length < columns) cells.push({ text: "", start: 0 });
+  return cells;
+}
+
+function parseTableRow(line: string | undefined): TableRow | undefined {
+  if (line === undefined) return undefined;
+  let start = 0;
+  while (start < line.length && line[start] === " " && start < 3) start += 1;
+  if (line[start] !== "|") return undefined;
+  const end = line.endsWith("|") ? line.length - 1 : line.length;
+  const cells: TableCell[] = [];
+  let cellStart = start + 1;
+  let index = cellStart;
+  while (index < end) {
+    if (line[index] === "\\" && line[index + 1] === "|") {
+      index += 2;
+      continue;
+    }
+    if (line[index] !== "|") {
+      index += 1;
+      continue;
+    }
+    cells.push(makeCell(line, cellStart, index));
+    cellStart = index + 1;
+    index += 1;
+  }
+  cells.push(makeCell(line, cellStart, end));
+  return { cells };
+}
+
+function makeCell(line: string, start: number, end: number): TableCell {
+  let text = line.slice(start, end).trim();
+  text = text.replaceAll("\\|", "|");
+  const leftTrim = line.slice(start, end).length - line.slice(start, end).trimStart().length;
+  return { text, start: start + leftTrim };
+}
+
+function isTableDelimiter(line: string | undefined): boolean {
+  const row = parseTableRow(line);
+  return row !== undefined && row.cells.length > 0 && row.cells.every((cell) => /^:?-+:?$/u.test(cell.text));
+}
+
+function readQuotePrefix(line: string | undefined): QuotePrefix | undefined {
+  if (line === undefined) return undefined;
+  let index = 0;
+  while (index < line.length && line[index] === " " && index < 3) index += 1;
+  if (line[index] !== ">") return undefined;
+  index += 1;
+  if (line[index] === " " || line[index] === "\t") index += 1;
+  return { text: line.slice(index), offset: index };
+}
+
+function renderQuote(entries: readonly QuoteEntry[], state: InlineState, reportProblem: (line: number, message: string) => void): MappedLineBuilder[] {
+  const first = entries[0];
+  const callout = /^\[!([^\]]+)\]([+-])?(?:[ \t]+(.*))?$/u.exec(first.text);
+  const lines: MappedLineBuilder[] = [];
+  const opener = new MappedLineBuilder();
+  if (callout) {
+    const kind = callout[1].toLowerCase();
+    opener.appendInserted(`#callout(kind: ${quoteString(kind)}, title: `);
+    if (callout[3] === undefined || callout[3] === "") {
+      opener.appendInserted("none");
+    } else {
+      opener.appendInserted("[");
+      opener.appendBuilder(convertInlineText(callout[3], first.offset + first.text.indexOf(callout[3]), (message) => reportProblem(first.line, message), state));
+      opener.appendInserted("]");
+    }
+    opener.appendInserted(")[");
+  } else {
+    opener.appendInserted("#std.quote(block: true)[");
+    if (first.text !== "") {
+      opener.appendBuilder(convertProseLine(first.text, (message) => reportProblem(first.line, message), first.offset, state));
+    }
+  }
+  lines.push(opener);
+
+  const bodyStart = 1;
+  const body = renderQuoteBody(entries.slice(bodyStart), state, reportProblem);
+  if (body.length === 0) {
+    opener.appendInserted("]");
+    return lines;
+  }
+  lines.push(...body);
+  lines[lines.length - 1].appendInserted("]");
+  return lines;
+}
+
+function renderQuoteBody(entries: readonly QuoteEntry[], state: InlineState, reportProblem: (line: number, message: string) => void): MappedLineBuilder[] {
+  const lines: MappedLineBuilder[] = [];
+  let index = 0;
+  while (index < entries.length) {
+    const nested = readQuotePrefix(entries[index].text);
+    if (nested !== undefined) {
+      const nestedEntries: QuoteEntry[] = [];
+      while (index < entries.length) {
+        const prefix = readQuotePrefix(entries[index].text);
+        if (prefix === undefined) break;
+        nestedEntries.push({ text: prefix.text, offset: entries[index].offset + prefix.offset, line: entries[index].line });
+        index += 1;
+      }
+      lines.push(...renderQuote(nestedEntries, state, reportProblem));
+      continue;
+    }
+    const entry = entries[index];
+    if (entry.text === "") {
+      lines.push(new MappedLineBuilder());
+    } else {
+      lines.push(convertProseLine(entry.text, (message) => reportProblem(entry.line, message), entry.offset, state));
+    }
+    index += 1;
+  }
+  return lines;
+}

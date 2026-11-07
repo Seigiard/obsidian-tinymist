@@ -1,6 +1,7 @@
+import { convertBlock } from "./blocks";
 import { analyzeFence, parseFenceOpening, type FenceState } from "./fences";
 import { convertProperty, findFrontmatterEnd, hasSourceFlag, quoteString, readFrontmatter, selectTemplate } from "./frontmatter";
-import { convertProseLine } from "./inline";
+import { convertProseLine, type InlineState } from "./inline";
 import { hasForbiddenLineBreak, MappedLineBuilder, sanitizeLine, type LineMap } from "./lineMap";
 
 /** The kit templates available to the markdown converter: template id to Typst import path; defaultTemplate is an id, or empty for no import. */
@@ -78,6 +79,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
   addGeneratedLine(outputLines, maps, ")", lines[frontmatterEnd].length);
 
   let fence: FenceState | undefined;
+  const inlineState: InlineState = { commentOpen: false };
   for (let line = frontmatterEnd + 1; line < lines.length; line += 1) {
     const sourceLine = lines[line];
     const builder = new MappedLineBuilder();
@@ -110,7 +112,17 @@ export function convert(text: string, kit: KitView | null): Conversion {
           problems.push({ line, message: "Typst code contains a line-break character", fatal: true });
         }
       } else {
-        builder.appendBuilder(convertProseLine(sourceLine));
+        const block = convertBlock(lines, line, inlineState, (problemLine, message) => problems.push({ line: problemLine, message, fatal: false }));
+        if (block !== undefined) {
+          for (let blockLine = 0; blockLine < block.lines.length; blockLine += 1) {
+            const result = block.lines[blockLine].finish(lines[line + blockLine].length);
+            outputLines.push(result.text);
+            maps.push(result.map);
+          }
+          line = block.end - 1;
+          continue;
+        }
+        builder.appendBuilder(convertProseLine(sourceLine, (message) => problems.push({ line, message, fatal: false }), 0, inlineState));
       }
     }
 
