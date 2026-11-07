@@ -441,6 +441,35 @@ test("rename and delete move every open client without an adapter-owned restart 
   }
 });
 
+test("renaming a Markdown source onto an occupied virtual address ends its open document", async () => {
+  // #given
+  const fixture = fakeHost({ existing: ["Notes/B.md.typ"] });
+  const source = await createSource(fixture, "Notes/A.md");
+  const client = new RecordingClient();
+  const handle = source.open(client as never);
+  client.calls.splice(0);
+  const events: string[] = [];
+  source.on("moved", () => events.push("moved"));
+  source.on("ended", () => events.push("ended"));
+
+  // #when
+  fixture.emitRename("Notes/A.md", "Notes/B.md");
+
+  // #then
+  try {
+    assert.deepEqual(
+      { calls: client.calls, events, entry: source.entry },
+      {
+        calls: [{ method: "didClose", path: "/v/Notes/A.md.typ" }],
+        events: ["ended"],
+        entry: "/v/Notes/A.md.typ",
+      },
+    );
+  } finally {
+    handle.close();
+  }
+});
+
 test("a full Markdown preview start and edit send no md address to Tinymist", async () => {
   // #given
   const fixture = fakeHost({ editorText: SOURCE_TEXT });
