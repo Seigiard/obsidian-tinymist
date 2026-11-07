@@ -11,7 +11,7 @@ import {
   compileSample,
   constructCompileSample,
   quoteFenceCompileSample,
-  terminatorAndRawContainerCompileSample,
+  terminatorRawAndLabelCompileSample,
 } from "./fixtures/markdown/notes";
 
 const BIN =
@@ -118,11 +118,11 @@ test("Q2: a callout with an unclosed non-Typst fence compiles", { skip: !BIN && 
   }
 });
 
-test("R1/R2: terminated inline calls and final raw Typst container lines compile", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+test("R1/X1/X2: terminated inline calls, verbatim raw lines, and escaped labels compile", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-terminator-raw-container-"));
   const output = join(directory, "sample.typ");
-  const conversion = convert(terminatorAndRawContainerCompileSample, { templates: {}, defaultTemplate: "" });
+  const conversion = convert(terminatorRawAndLabelCompileSample, { templates: {}, defaultTemplate: "" });
   writeFileSync(output, conversion.typ);
   try {
     // #when

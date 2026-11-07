@@ -46,17 +46,29 @@ export const quoteFenceCompileSample = sourceNote(["typst: true"], ["> ```js", "
 
 export const calloutFenceCompileSample = sourceNote(["typst: true"], ["> [!note] Code", "> ```js", "> let x = 1;", "", "after"]);
 
-export const terminatorAndRawContainerCompileSample = sourceNote(
+export const terminatorRawAndLabelCompileSample = sourceNote(
   ["typst: true"],
   [
     "| Label | Value |",
     "| --- | --- |",
     "| Total<br>(approx.) | 1 |",
     "",
-    "> [!note] N",
-    "> /typst #rect()[cap] // figure",
+    "> [!tip] Syntax",
+    "> /typst Use `//` for a comment",
     "",
-    "> Quote",
-    '> /typst #text["http://x"] // trailing',
+    "> [!tip] Link",
+    "> /typst See https://typst.app for docs",
+    "",
+    "> /typst #text[https://example.com]",
+    "",
+    "[[- draft]] is a note title",
+    "| Left | Right |",
+    "| --- | --- |",
+    "| [[- draft]] | [[+ idea]] |",
+    "| kept | row |",
+    "[[1. Intro]] covers",
+    "> [!note] [[1. Intro]]",
+    "",
+    "[- item](https://x.com)",
   ],
 );

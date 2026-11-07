@@ -443,23 +443,56 @@ test("R1: generated inline calls terminate before adjacent Typst postfix syntax"
   ]);
 });
 
-test("R2: final raw Typst container lines discard comments but keep URL strings", () => {
+test("X1: final raw Typst container lines pass through verbatim before their closing bracket", () => {
   // #given
   const text = sourceNote(["typst: true"], [
-    "> [!note] N",
-    "> /typst #rect()[cap] // figure",
+    "> [!tip] Syntax",
+    "> /typst Use `//` for a comment",
     "",
-    "> Quote",
-    '> /typst #text["http://x"] // trailing',
+    "> [!tip] Link",
+    "> /typst See https://typst.app for docs",
+    "",
+    "> /typst #text[https://example.com]",
   ]);
   // #when
   const conversion = convert(text, null);
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    '#callout(kind: "note", title: [N])[',
-    " #rect()[cap] ]",
+    '#callout(kind: "tip", title: [Syntax])[',
+    " Use `//` for a comment]",
     "",
-    "#std.quote(block: true)[Quote",
-    ' #text["http://x"] ]',
+    '#callout(kind: "tip", title: [Link])[',
+    " See https://typst.app for docs]",
+    "",
+    "#std.quote(block: true)[ #text[https://example.com]]",
+  ]);
+});
+
+test("X2: wikilink displays and Markdown link labels escape line-start markers", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "[[- draft]] is a note title",
+    "| Left | Right |",
+    "| --- | --- |",
+    "| [[- draft]] | [[+ idea]] |",
+    "| kept | row |",
+    "[[1. Intro]] covers",
+    "> [!note] [[1. Intro]]",
+    "",
+    "[- item](https://x.com)",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "\\- draft is a note title",
+    "#std.table(columns: 2, std.table.header([Left], [Right]),",
+    "",
+    "[\\- draft], [\\+ idea],",
+    "[kept], [row])",
+    "1\\. Intro covers",
+    '#callout(kind: "note", title: [1\\. Intro])[]',
+    "",
+    '#std.link("https://x.com")[\\- item];',
   ]);
 });
