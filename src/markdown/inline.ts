@@ -115,10 +115,27 @@ export function convertInline(text: string, sourceOffset: number, options: Inlin
       continue;
     }
 
-    if (options.lineStart && index === 0 && (character === "=" || (character === "+" && (!text[index + width] || /\s/u.test(text[index + width]))))) {
-      builder.appendEscaped(character, sourceOffset + index);
-      index += width;
-      continue;
+    if (options.lineStart && index === 0) {
+      if (character === "-" && isNonMarkdownWhitespace(text[index + width])) {
+        builder.appendEscaped(character, sourceOffset + index);
+        index += width;
+        continue;
+      }
+      if (character >= "0" && character <= "9") {
+        let digitEnd = index;
+        while (digitEnd < text.length && text[digitEnd] >= "0" && text[digitEnd] <= "9") digitEnd += 1;
+        if (text[digitEnd] === "." && isNonMarkdownWhitespace(text[digitEnd + 1])) {
+          builder.appendSource(text.slice(index, digitEnd), sourceOffset + index);
+          builder.appendEscaped(".", sourceOffset + digitEnd);
+          index = digitEnd + 1;
+          continue;
+        }
+      }
+      if (character === "=" || (character === "+" && (!text[index + width] || /\s/u.test(text[index + width])))) {
+        builder.appendEscaped(character, sourceOffset + index);
+        index += width;
+        continue;
+      }
     }
 
     builder.appendSource(character, sourceOffset + index);
@@ -128,37 +145,37 @@ export function convertInline(text: string, sourceOffset: number, options: Inlin
   return builder;
 }
 
-export function convertProseLine(line: string, sourceOffset = 0): MappedLineBuilder {
+export function convertProseLine(line: string): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const heading = /^(#+)([ \t]+)(.*)$/u.exec(line);
   if (heading) {
-    builder.appendMapped("=".repeat(heading[1].length), sourceOffset, heading[1].length);
-    builder.appendSource(heading[2], sourceOffset + heading[1].length);
-    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), sourceOffset + heading[1].length + heading[2].length, { lineStart: true }));
+    builder.appendMapped("=".repeat(heading[1].length), 0, heading[1].length);
+    builder.appendSource(heading[2], heading[1].length);
+    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }));
     return builder;
   }
   const unordered = /^([ \t]*)([-*+])([ \t]+)(.*)$/u.exec(line);
   if (unordered) {
     const markerStart = unordered[1].length;
     const contentStart = markerStart + 1 + unordered[3].length;
-    builder.appendSource(unordered[1], sourceOffset);
-    builder.appendMapped("-", sourceOffset + markerStart, 1);
-    builder.appendSource(unordered[3], sourceOffset + markerStart + 1);
-    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
+    builder.appendSource(unordered[1], 0);
+    builder.appendMapped("-", markerStart, 1);
+    builder.appendSource(unordered[3], markerStart + 1);
+    appendListText(builder, line.slice(contentStart), contentStart);
     return builder;
   }
   const ordered = /^([ \t]*)(\d+\.)([ \t]+)(.*)$/u.exec(line);
   if (ordered) {
     const contentStart = ordered[1].length + ordered[2].length + ordered[3].length;
-    builder.appendSource(ordered[1], sourceOffset);
-    builder.appendSource(ordered[2], sourceOffset + ordered[1].length);
-    builder.appendSource(ordered[3], sourceOffset + ordered[1].length + ordered[2].length);
-    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
+    builder.appendSource(ordered[1], 0);
+    builder.appendSource(ordered[2], ordered[1].length);
+    builder.appendSource(ordered[3], ordered[1].length + ordered[2].length);
+    appendListText(builder, line.slice(contentStart), contentStart);
     return builder;
   }
   const indentationLength = leadingIndentLength(line);
-  builder.appendSource(line.slice(0, indentationLength), sourceOffset);
-  builder.appendBuilder(convertInline(line.slice(indentationLength), sourceOffset + indentationLength, { lineStart: true }));
+  builder.appendSource(line.slice(0, indentationLength), 0);
+  builder.appendBuilder(convertInline(line.slice(indentationLength), indentationLength, { lineStart: true }));
   return builder;
 }
 
@@ -217,6 +234,10 @@ function leadingIndentLength(text: string): number {
   let index = 0;
   while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
   return index;
+}
+
+function isNonMarkdownWhitespace(character: string | undefined): boolean {
+  return character !== undefined && /\s/u.test(character) && character !== " " && character !== "\t";
 }
 
 function findCodeRanges(text: string): CodeRange[] {

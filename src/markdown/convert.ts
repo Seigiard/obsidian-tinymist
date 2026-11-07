@@ -31,7 +31,7 @@ export interface Conversion {
 }
 
 const BUILT_INS =
-  "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
+  "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 
 /** The caller strips BOM and CRLF before this call; lines are zero-based and columns are UTF-16 code units. */
 export function convert(text: string, kit: KitView | null): Conversion {
@@ -40,14 +40,16 @@ export function convert(text: string, kit: KitView | null): Conversion {
   const lines = rawLines.map(sanitizeLine);
   const frontmatterEnd = findFrontmatterEnd(lines);
 
-  if (frontmatterEnd < 0 || !hasSourceFlag(lines, frontmatterEnd)) return emptyConversion();
+  if (frontmatterEnd < 0) return emptyConversion();
+
+  const frontmatter = readFrontmatter(lines, frontmatterEnd);
+  if (!hasSourceFlag(frontmatter)) return emptyConversion();
 
   const problems: Problem[] = [];
   const outputLines: string[] = [];
   const maps: LineMap[] = [];
-  const frontmatter = readFrontmatter(lines, frontmatterEnd);
   const template = selectTemplate(frontmatter, kit, problems);
-  const templateImport = template.path === undefined ? "" : `#import ${quoteString(sanitizeLine(template.path))}: *; `;
+  const templateImport = template.path === undefined ? "" : `#import ${quoteString(template.path)}: *; `;
 
   addGeneratedLine(outputLines, maps, `${BUILT_INS}${templateImport}#show: template.with(`, lines[0].length);
 
@@ -79,7 +81,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
           problems.push({ line, message: "Typst code contains a line-break character", fatal: true });
         }
         if (fence.kind === "other" && fence.closeLine < 0 && line === lines.length - 1) {
-          builder.appendInserted(`${sourceLine.endsWith("`") ? " " : ""}${"`".repeat(fence.outputTicks)}`);
+          builder.appendInserted(`${sourceLine.endsWith("`") ? " " : ""}${"`".repeat(fence.outputTicks)}`, sourceLine.length);
         }
       }
     } else {

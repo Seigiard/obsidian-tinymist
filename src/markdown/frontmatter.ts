@@ -22,7 +22,8 @@ interface ParsedQuotedValue {
 
 type ValueFailure = "empty" | "multiline" | "malformed" | "quoted" | "deep" | "escape";
 
-type ValueResult = { literal: string } | { failure: ValueFailure; escape?: string };
+type FailedValueResult = { failure: Exclude<ValueFailure, "escape"> } | { failure: "escape"; escape: string };
+type ValueResult = { literal: string } | FailedValueResult;
 
 interface TemplateSelection {
   path: string | undefined;
@@ -76,11 +77,8 @@ export function findFrontmatterEnd(lines: readonly string[]): number {
   return -1;
 }
 
-export function hasSourceFlag(lines: readonly string[], end: number): boolean {
-  return lines.slice(1, end).some((line) => {
-    const match = /^typst:(.*)$/u.exec(line);
-    return match !== null && stripYamlComment(match[1]).trim() === "true";
-  });
+export function hasSourceFlag(entries: readonly FrontmatterEntry[]): boolean {
+  return entries.some((entry) => "name" in entry && entry.name === "typst" && !entry.multiline && entry.value.trim() === "true");
 }
 
 export function readFrontmatter(lines: readonly string[], end: number): FrontmatterEntry[] {
@@ -106,14 +104,14 @@ export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitVie
   for (const entry of entries) {
     if ("name" in entry && entry.name === "template" && !entry.multiline && explicit === undefined) {
       const id = unquoteTemplateId(entry.value.trim());
-      if (id !== "") explicit = { line: entry.line, id };
+    if (id !== "") explicit = { line: entry.line, id };
     }
   }
 
   if (explicit !== undefined) {
     const path = lookupTemplate(kit, explicit.id);
     if (path === undefined) {
-      problems.push({ line: explicit.line, message: `Unknown Typst template ${explicit.id || "<empty>"}`, fatal: true });
+      problems.push({ line: explicit.line, message: `Unknown Typst template ${explicit.id}`, fatal: true });
     }
     return { path };
   }
@@ -172,6 +170,7 @@ export function quoteString(value: string): string {
 }
 
 export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConversion {
+  if (entry.name === "typst") return { kind: "skip" };
   if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
     return { kind: "problem", message: `Property name ${entry.name || "<empty>"} is not a Typst identifier` };
   }
@@ -191,6 +190,10 @@ function lookupTemplate(kit: KitView | null, id: string): string | undefined {
 }
 
 function parseProperty(line: string): { name: string; value: string } | undefined {
+  if (line.startsWith("typst:")) {
+    const value = line.slice("typst:".length);
+    if (value === "" || /^[ \t]/u.test(value)) return { name: "typst", value: stripYamlComment(value) };
+  }
   const match = /^typst-([^:]*):[ \t]*(.*)$/u.exec(line);
   return match === null ? undefined : { name: match[1], value: stripYamlComment(match[2]) };
 }
@@ -206,7 +209,7 @@ function unquoteTemplateId(value: string): string {
   return value;
 }
 
-function propertyFailureMessage(name: string, result: { failure: ValueFailure; escape?: string }): string {
+function propertyFailureMessage(name: string, result: FailedValueResult): string {
   switch (result.failure) {
     case "empty":
       return `Property ${name} has no value`;
@@ -219,7 +222,7 @@ function propertyFailureMessage(name: string, result: { failure: ValueFailure; e
     case "deep":
       return `Property ${name} nests lists deeper than ${MAX_ARRAY_DEPTH} levels`;
     case "escape":
-      return `Property ${name} has an unknown escape ${result.escape ?? "\\"}`;
+      return `Property ${name} has an unknown escape ${result.escape}`;
   }
 }
 
@@ -228,7 +231,7 @@ function parseValue(value: string, depth = 0): ValueResult {
   if (trimmed === "") return { failure: "empty" };
   if (isBlockValue(trimmed)) return { failure: "multiline" };
   if (trimmed === "true" || trimmed === "false" || NUMBER.test(trimmed)) return { literal: trimmed };
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) return parseArray(trimmed, depth);
+  if (trimmed.startsWith("[")) return parseArray(trimmed, depth);
   if (trimmed.startsWith('"')) {
     if (!isCompleteQuotedScalar(trimmed, '"')) return { failure: "quoted" };
     const decoded = decodeDoubleQuoted(trimmed.slice(1, -1));
@@ -266,6 +269,7 @@ function isBlockValue(value: string): boolean {
 
 function parseArray(value: string, depth: number): ValueResult {
   if (depth >= MAX_ARRAY_DEPTH) return { failure: "deep" };
+  if (!value.endsWith("]")) return { failure: "malformed" };
   const inner = value.slice(1, -1).trim();
   if (inner === "") return { literal: "()" };
   const items = splitArrayItems(inner);
@@ -343,8 +347,7 @@ function decodeDoubleQuoted(value: string): ParsedQuotedValue {
       result += character;
       continue;
     }
-    const escape = value[index + 1];
-    if (escape === undefined) return { value: result, failure: "\\" };
+    const escape = value[index + 1]!;
     const simple = DOUBLE_QUOTE_ESCAPES.get(escape);
     if (simple !== undefined) {
       result += simple;
@@ -355,10 +358,13 @@ function decodeDoubleQuoted(value: string): ParsedQuotedValue {
     if (width > 0) {
       const digits = value.slice(index + 2, index + 2 + width);
       const codePoint = Number.parseInt(digits, 16);
-      if (digits.length === width && new RegExp(`^[0-9A-Fa-f]{${width}}$`, "u").test(digits) && codePoint <= 0x10ffff) {
-        result += String.fromCodePoint(codePoint);
-        index += width + 1;
-        continue;
+      if (new RegExp(`^[0-9A-Fa-f]{${width}}$`, "u").test(digits)) {
+        if (codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          result += String.fromCodePoint(codePoint);
+          index += width + 1;
+          continue;
+        }
+        return { value: result, failure: value.slice(index, index + width + 2) };
       }
     }
     return { value: result, failure: `\\${escape}` };
@@ -367,6 +373,7 @@ function decodeDoubleQuoted(value: string): ParsedQuotedValue {
 }
 
 function stripYamlComment(value: string): string {
+  const isArray = value.trimStart().startsWith("[");
   let depth = 0;
   let quote: string | undefined;
   let escaped = false;
@@ -390,17 +397,17 @@ function stripYamlComment(value: string): string {
       quoteAllowed = false;
       continue;
     }
-    if (character === "[") {
+    if (isArray && character === "[") {
       depth += 1;
       quoteAllowed = true;
       continue;
     }
-    if (character === "]") {
+    if (isArray && character === "]") {
       depth = Math.max(0, depth - 1);
       quoteAllowed = false;
       continue;
     }
-    if (character === "," && depth > 0) {
+    if (isArray && character === "," && depth > 0) {
       quoteAllowed = true;
       continue;
     }
