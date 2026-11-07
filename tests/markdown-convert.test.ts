@@ -545,7 +545,7 @@ test("C82: bare URLs stop before punctuation, format characters, and the 8 KB li
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(outputLines(conversion.typ).slice(3), [
-    "\\<#std.link(\"https://x.y\");\\>",
+    "\\<#std.link(\"https://x.y\");>",
     "\\[#std.link(\"https://x.y\");\\]",
     '«#std.link("https://x.y");»',
     '请看#std.link("https://x.y");。下一句',
@@ -823,7 +823,7 @@ test("C83: source-note maps return an invalid input column unchanged without thr
     }
   });
   // #then
-  assert.deepEqual(maps, [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
+  assert.deepStrictEqual(maps, [7, 7, NaN, NaN, 7, 7, 1.5, 1.5, 7, 7, undefined, undefined, 7, 7, Infinity, Infinity]);
 });
 
 test("C84: blank template values report a problem, while a comment-only value uses the default", () => {
