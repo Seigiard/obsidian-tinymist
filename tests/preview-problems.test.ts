@@ -1,4 +1,4 @@
-import "./support/dom";
+import { iframeSrcAssignmentCount } from "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pathToUri, type LspDiagnostic } from "../src/lsp/client";
@@ -24,6 +24,7 @@ interface ProblemHarness {
   reveals: Position[];
   opened: Array<{ path: string; line: number; character: number }>;
   move(file: string, entry: string): void;
+  emitProblems(): void;
   setDiagnostics(path: string, diagnostics: LspDiagnostic[]): void;
   emitDiagnostics(path: string): void;
   close(): Promise<void>;
@@ -118,6 +119,9 @@ async function problemHarness(
       sourceEntry = entry;
       for (const listener of sourceListeners.get("moved") ?? []) listener();
     },
+    emitProblems: () => {
+      for (const listener of sourceListeners.get("problems") ?? []) listener();
+    },
     setDiagnostics: (path, next) => diagnostics.set(pathToUri(path), next),
     emitDiagnostics: (path) => {
       for (const listener of diagnosticListeners) listener(pathToUri(path));
@@ -132,6 +136,8 @@ async function problemHarness(
 test("the bound preview pane follows the replacement task URL after its Markdown source moves", async () => {
   // #given
   const h = await problemHarness([]);
+  const iframe = h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")!;
+  const assignmentsBeforeMove = iframeSrcAssignmentCount(iframe);
 
   // #when
   h.move("Notes/B.md", "/vault/Notes/B.md.typ");
@@ -139,9 +145,12 @@ test("the bound preview pane follows the replacement task URL after its Markdown
 
   // #then
   try {
-    assert.equal(
-      h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")?.getAttribute("src"),
-      h.manager.url,
+    assert.deepEqual(
+      {
+        assignments: iframeSrcAssignmentCount(iframe) - assignmentsBeforeMove,
+        src: iframe.getAttribute("src"),
+      },
+      { assignments: 1, src: h.manager.url },
     );
   } finally {
     await h.close();
@@ -151,6 +160,8 @@ test("the bound preview pane follows the replacement task URL after its Markdown
 test("the bound preview pane follows the replacement task URL after an LSP restart", async () => {
   // #given
   const h = await problemHarness([]);
+  const iframe = h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")!;
+  const assignmentsBeforeRestart = iframeSrcAssignmentCount(iframe);
 
   // #when
   const previewPath = h.manager.onLspRestart()!;
@@ -158,9 +169,39 @@ test("the bound preview pane follows the replacement task URL after an LSP resta
 
   // #then
   try {
-    assert.equal(
-      h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")?.getAttribute("src"),
-      h.manager.url,
+    assert.deepEqual(
+      {
+        assignments: iframeSrcAssignmentCount(iframe) - assignmentsBeforeRestart,
+        src: iframe.getAttribute("src"),
+      },
+      { assignments: 1, src: h.manager.url },
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("the bound preview pane assigns src only when a change notification has a new URL", async () => {
+  // #given
+  const h = await problemHarness([]);
+  const iframe = h.view.contentEl.querySelector<HTMLIFrameElement>("iframe")!;
+  const assignmentsBeforeProblems = iframeSrcAssignmentCount(iframe);
+
+  // #when
+  h.emitProblems();
+  const assignmentsAfterProblems = iframeSrcAssignmentCount(iframe);
+  h.move("Notes/B.md", "/vault/Notes/B.md.typ");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        unchangedUrl: assignmentsAfterProblems - assignmentsBeforeProblems,
+        newUrl: iframeSrcAssignmentCount(iframe) - assignmentsAfterProblems,
+        src: iframe.getAttribute("src"),
+      },
+      { unchangedUrl: 0, newUrl: 1, src: h.manager.url },
     );
   } finally {
     await h.close();

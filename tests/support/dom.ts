@@ -15,6 +15,21 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>", {
 const w = dom.window as unknown as Record<string, unknown> & typeof dom.window;
 Object.defineProperty(w.navigator, "platform", { value: "MacIntel", configurable: true });
 
+const iframeSrcAssignments = new WeakMap<HTMLIFrameElement, number>();
+const iframeSrc = Object.getOwnPropertyDescriptor(w.HTMLIFrameElement.prototype, "src");
+if (!iframeSrc?.get || !iframeSrc.set) throw new Error("jsdom iframe src accessors are unavailable");
+Object.defineProperty(w.HTMLIFrameElement.prototype, "src", {
+  configurable: iframeSrc.configurable,
+  enumerable: iframeSrc.enumerable,
+  get(this: HTMLIFrameElement): string {
+    return iframeSrc.get!.call(this) as string;
+  },
+  set(this: HTMLIFrameElement, value: string) {
+    iframeSrcAssignments.set(this, (iframeSrcAssignments.get(this) ?? 0) + 1);
+    iframeSrc.set!.call(this, value);
+  },
+});
+
 const define = (k: string, v: unknown) =>
   Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
 define("window", w);
@@ -63,5 +78,9 @@ html.createEl = function <K extends keyof HTMLElementTagNameMap>(
   this.appendChild(child);
   return child;
 };
+
+export function iframeSrcAssignmentCount(iframe: HTMLIFrameElement): number {
+  return iframeSrcAssignments.get(iframe) ?? 0;
+}
 
 export { dom };
