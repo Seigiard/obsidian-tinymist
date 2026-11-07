@@ -64,7 +64,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
         problems.push({ line: entry.line, message: `Property ${entry.name} is repeated`, fatal: false });
       } else {
         seenProperties.add(entry.name);
-        const result = convertProperty(entry);
+        const result = convertProperty(entry, sourceLine);
         if (result.kind === "problem") problems.push({ line: entry.line, message: result.message, fatal: false });
         else if (result.kind === "value") output = `${entry.name}: ${result.literal},`;
       }

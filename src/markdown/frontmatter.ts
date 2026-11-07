@@ -89,7 +89,7 @@ export function readFrontmatter(lines: readonly string[], end: number): Frontmat
   for (let line = 1; line < end; line += 1) {
     const property = parseProperty(lines[line]);
     if (property) {
-      const multiline = isBlockValue(property.value) || hasIndentedContinuation(lines, line, end);
+      const multiline = isBlockValue(property.value) || hasIndentedContinuation(lines, line, end, property.value);
       if (property.kind === "flag") entries.push({ line, value: property.value, multiline, flag: true });
       else entries.push({ line, name: property.name, value: property.value, multiline });
     } else {
@@ -168,12 +168,16 @@ export function quoteString(value: string): string {
   return `${result}"`;
 }
 
-export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConversion {
+export function convertProperty(entry: FrontmatterPropertyEntry, sourceLine = ""): PropertyConversion {
   if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
     return { kind: "problem", message: `Property name ${entry.name || "<empty>"} is not a Typst identifier` };
   }
   if (entry.name === "template") {
-    return entry.multiline ? { kind: "problem", message: "Property template has a multi-line value" } : { kind: "skip" };
+    if (entry.multiline) return { kind: "problem", message: "Property template has a multi-line value" };
+    if (entry.value.trim() === "" && /^typst-template:[ \t]*$/u.test(sourceLine)) {
+      return { kind: "problem", message: "Property template has no value" };
+    }
+    return { kind: "skip" };
   }
   const parsed = entry.multiline ? { failure: "multiline" as const } : parseValue(entry.value);
   if ("failure" in parsed) return { kind: "problem", message: propertyFailureMessage(entry.name, parsed) };
@@ -196,10 +200,11 @@ function parseProperty(line: string): { kind: "flag"; value: string } | { kind: 
   return match === null ? undefined : { kind: "property", name: match[1], value: stripYamlComment(match[2]) };
 }
 
-function hasIndentedContinuation(lines: readonly string[], line: number, end: number): boolean {
+function hasIndentedContinuation(lines: readonly string[], line: number, end: number, value: string): boolean {
   for (let next = line + 1; next < end; next += 1) {
     const trimmed = lines[next].trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (value.trim() === "" && /^-([ \t]|$)/u.test(lines[next])) return true;
     return /^[ \t]+\S/u.test(lines[next]);
   }
   return false;

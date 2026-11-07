@@ -16,7 +16,6 @@ interface CodeRange {
 interface UrlRange {
   start: number;
   end: number;
-  trailingClosingParentheses: number;
 }
 
 interface InlineOptions {
@@ -69,15 +68,8 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const url = urlByStart.get(index);
     if (url) {
-      const suffix = url.trailingClosingParentheses > 0 ? "\")" : "\");";
-      appendGeneratedLiteral(builder, "#std.link(\"", text.slice(url.start, url.end), suffix, sourceOffset + url.start, sourceOffset + url.start, sourceOffset + url.end);
+      appendGeneratedLiteral(builder, "#std.link(\"", text.slice(url.start, url.end), "\");", sourceOffset + url.start, sourceOffset + url.start, sourceOffset + url.end);
       index = url.end;
-      if (url.trailingClosingParentheses > 0) {
-        const closingEnd = index + url.trailingClosingParentheses;
-        builder.appendSource(text.slice(index, closingEnd), sourceOffset + index);
-        index = closingEnd;
-        builder.appendInserted(";", sourceOffset + index);
-      }
       continue;
     }
 
@@ -309,17 +301,15 @@ function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
       if (text[end] === ")") closingParentheses += 1;
       end += 1;
     }
-    let trailingClosingParentheses = 0;
     while (end > index + scheme.length && ".,:;!?\'\"*_~)".includes(text[end - 1])) {
       if (text[end - 1] === ")") {
         if (closingParentheses <= openingParentheses) break;
         closingParentheses -= 1;
-        trailingClosingParentheses += 1;
       }
       end -= 1;
     }
     if (end > index + scheme.length) {
-      ranges.push({ start: index, end, trailingClosingParentheses: openingParentheses > 0 ? trailingClosingParentheses : 0 });
+      ranges.push({ start: index, end });
       index = end;
     } else {
       index += scheme.length;
