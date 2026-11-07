@@ -80,6 +80,7 @@ const BUILT_INS =
   "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 const FORBIDDEN_LINE_BREAKS = new Set(["\r", "\u000b", "\f", "\u0085", "\u2028", "\u2029"]);
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
+const FENCE_WORD = /^[\p{XID_Start}_][\p{XID_Continue}_-]*$/u;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 const INVALID_PROPERTY_NAMES = new Set([
   "none",
@@ -185,7 +186,8 @@ class MappedLineBuilder {
 /** The caller strips BOM and CRLF before this call; lines are zero-based and columns are UTF-16 code units. */
 export function convert(text: string, kit: KitView | null): Conversion {
   const input = typeof text === "string" ? text : String(text ?? "");
-  const lines = input.split("\n");
+  const rawLines = input.split("\n");
+  const lines = rawLines.map(sanitizeLine);
   const frontmatterEnd = findFrontmatterEnd(lines);
 
   if (frontmatterEnd < 0 || !hasSourceFlag(lines, frontmatterEnd)) {
@@ -212,14 +214,14 @@ export function convert(text: string, kit: KitView | null): Conversion {
       if (!PROPERTY_NAME.test(entry.name) || INVALID_PROPERTY_NAMES.has(entry.name)) {
         addProblem(problems, entry.line, `Property name ${entry.name || "<empty>"} is not a Typst identifier`, false);
       } else if (entry.name !== "template") {
-        const literal = parseValue(entry.value ?? "");
-        if (literal === undefined || entry.multiline) {
-          addProblem(problems, entry.line, `Property ${entry.name} has no scalar value`, false);
+        const parsed = entry.multiline ? { failure: "multiline" as const } : parseValue(entry.value ?? "");
+        if ("failure" in parsed) {
+          addProblem(problems, entry.line, propertyFailureMessage(entry.name, parsed), false);
         } else {
-          output = `${entry.name}: ${literal},`;
+          output = `${entry.name}: ${parsed.literal},`;
         }
       } else if (entry.multiline) {
-        addProblem(problems, entry.line, `Property ${entry.name} has no scalar value`, false);
+        addProblem(problems, entry.line, propertyFailureMessage(entry.name, { failure: "multiline" }), false);
       }
     }
     addGeneratedLine(outputLines, maps, sanitizeLine(output), sourceLine.length);
@@ -240,7 +242,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
         fence = undefined;
       } else {
         appendNormalized(builder, sourceLine, 0);
-        if (fence.kind === "typ" && hasForbiddenLineBreak(sourceLine)) {
+        if (fence.kind === "typ" && hasForbiddenLineBreak(rawLines[line])) {
           addProblem(problems, line, "Typst code contains a line-break character", true);
         }
         if (fence.kind === "other" && fence.closeLine < 0 && line === lines.length - 1) {
@@ -261,7 +263,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
       } else if (sourceLine.startsWith("/typst")) {
         const code = sourceLine.slice(6);
         appendNormalized(builder, code, 6);
-        if (hasForbiddenLineBreak(sourceLine)) {
+        if (hasForbiddenLineBreak(rawLines[line])) {
           addProblem(problems, line, "Typst code contains a line-break character", true);
         }
       } else {
@@ -278,7 +280,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
 
   return {
     source: true,
-    typ: outputLines.map(sanitizeLine).join("\n"),
+    typ: outputLines.join("\n"),
     toMd(line, column) {
       if (line < 0 || line >= maps.length || column < 0 || column >= maps[line].toMd.length) return column;
       return maps[line].toMd[column];
@@ -305,7 +307,7 @@ function parseFenceOpening(line: string): FenceOpening | undefined {
   const trimmed = info.trim();
   if (trimmed === "typ") return { indentation, ticks, kind: "typ", word: "" };
   const firstWord = trimmed.split(/\s+/u, 1)[0] ?? "";
-  const word = /^[A-Za-z0-9_+.#-]+$/u.test(firstWord) ? firstWord : "";
+  const word = FENCE_WORD.test(firstWord) ? firstWord : "";
   return { indentation, ticks, kind: "other", word };
 }
 
@@ -373,7 +375,10 @@ function findFrontmatterEnd(lines: readonly string[]): number {
 }
 
 function hasSourceFlag(lines: readonly string[], end: number): boolean {
-  return lines.slice(1, end).some((line) => /^typst:[ \t]*true[ \t]*$/u.test(line));
+  return lines.slice(1, end).some((line) => {
+    const match = /^typst:[ \t]*(.*)$/u.exec(line);
+    return match !== null && stripYamlComment(match[1]).trim() === "true";
+  });
 }
 
 function addGeneratedLine(output: string[], maps: LineMap[], line: string, sourceLength: number): void {
@@ -443,8 +448,8 @@ function lookupTemplate(kit: KitView | null, id: string): string | undefined {
 }
 
 function parseProperty(line: string): { name: string; value: string } | undefined {
-  const match = /^typst-([^:]*):[ \t]*(.*)$/u.exec(sanitizeLine(line));
-  return match ? { name: match[1], value: match[2] } : undefined;
+  const match = /^typst-([^:]*):[ \t]*(.*)$/u.exec(line);
+  return match ? { name: match[1], value: stripYamlComment(match[2]) } : undefined;
 }
 
 function isIndentedNonBlank(line: string): boolean {
@@ -458,36 +463,64 @@ function unquoteTemplateId(value: string): string {
   return value;
 }
 
-function parseValue(value: string, depth = 0): string | undefined {
+type ValueFailure = "empty" | "multiline" | "malformed" | "deep" | "escape";
+
+type ValueResult = { literal: string } | { failure: ValueFailure; escape?: string };
+
+function propertyFailureMessage(name: string, result: { failure: ValueFailure; escape?: string }): string {
+  switch (result.failure) {
+    case "empty":
+      return `Property ${name} has no value`;
+    case "multiline":
+      return `Property ${name} has a multi-line value`;
+    case "malformed":
+      return `Property ${name} has a malformed list`;
+    case "deep":
+      return `Property ${name} nests lists deeper than ${MAX_ARRAY_DEPTH} levels`;
+    case "escape":
+      return `Property ${name} has an unknown escape ${result.escape ?? "\\"}`;
+  }
+}
+
+function parseValue(value: string, depth = 0): ValueResult {
   const trimmed = value.trim();
-  if (trimmed === "" || isBlockValue(trimmed)) return undefined;
-  if (trimmed === "true" || trimmed === "false" || NUMBER.test(trimmed)) return trimmed;
+  if (trimmed === "") return { failure: "empty" };
+  if (isBlockValue(trimmed)) return { failure: "multiline" };
+  if (trimmed === "true" || trimmed === "false" || NUMBER.test(trimmed)) return { literal: trimmed };
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
     return parseArray(trimmed, depth);
   }
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return quoteString(trimmed.slice(1, -1));
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    const decoded = decodeDoubleQuoted(trimmed.slice(1, -1));
+    return decoded.failure === undefined
+      ? { literal: quoteString(decoded.value) }
+      : { failure: "escape", escape: decoded.failure };
   }
-  return quoteString(trimmed);
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return { literal: quoteString(trimmed.slice(1, -1).replaceAll("''", "'")) };
+  }
+  return { literal: quoteString(trimmed) };
 }
 
 function isBlockValue(value: string): boolean {
   return /^[|>](?:[+-]?[0-9]?|[0-9]?[+-]?)[ \t]*$/u.test(value);
 }
 
-function parseArray(value: string, depth: number): string | undefined {
-  if (depth >= MAX_ARRAY_DEPTH) return undefined;
+function parseArray(value: string, depth: number): ValueResult {
+  if (depth >= MAX_ARRAY_DEPTH) return { failure: "deep" };
   const inner = value.slice(1, -1).trim();
-  if (inner === "") return "()";
+  if (inner === "") return { literal: "()" };
   const items = splitArrayItems(inner);
-  if (!items) return undefined;
+  if (!items) return { failure: "malformed" };
   const literals: string[] = [];
   for (const item of items) {
-    const literal = parseValue(item, depth + 1);
-    if (literal === undefined) return undefined;
-    literals.push(literal);
+    const parsed = parseValue(item, depth + 1);
+    if ("failure" in parsed) {
+      return parsed.failure === "deep" || parsed.failure === "escape" ? parsed : { failure: "malformed" };
+    }
+    literals.push(parsed.literal);
   }
-  return `(${literals.join(", ")},)`;
+  return { literal: `(${literals.join(", ")},)` };
 }
 
 function splitArrayItems(value: string): string[] | undefined {
@@ -497,22 +530,28 @@ function splitArrayItems(value: string): string[] | undefined {
   let quote: string | undefined;
   let escaped = false;
   let quoteAllowed = true;
+  let afterQuote = false;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
     if (quote) {
-      if (escaped) {
+      if (quote === "'" && character === "'" && value[index + 1] === "'") {
+        index += 1;
+      } else if (quote === '"' && escaped) {
         escaped = false;
-      } else if (character === "\\") {
+      } else if (quote === '"' && character === "\\") {
         escaped = true;
       } else if (character === quote) {
         quote = undefined;
+        afterQuote = true;
       }
     } else if (character === "[") {
+      if (afterQuote) return undefined;
       depth += 1;
       quoteAllowed = true;
     } else if (character === "]") {
       depth -= 1;
       if (depth < 0) return undefined;
+      if (afterQuote) afterQuote = false;
       quoteAllowed = false;
     } else if (character === "," && depth === 0) {
       const item = value.slice(start, index).trim();
@@ -520,6 +559,9 @@ function splitArrayItems(value: string): string[] | undefined {
       items.push(item);
       start = index + 1;
       quoteAllowed = true;
+      afterQuote = false;
+    } else if (afterQuote) {
+      if (!/\s/u.test(character)) return undefined;
     } else if ((character === '"' || character === "'") && quoteAllowed) {
       quote = character;
       quoteAllowed = false;
@@ -534,7 +576,91 @@ function splitArrayItems(value: string): string[] | undefined {
 }
 
 function quoteString(value: string): string {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\t", "\\t").replaceAll("\r", "\\r").replaceAll("\0", "\\0")}"`;
+}
+
+function decodeDoubleQuoted(value: string): { value: string; failure?: string } {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== "\\") {
+      result += character;
+      continue;
+    }
+    const escape = value[index + 1];
+    if (escape === undefined) return { value: result, failure: "\\" };
+    const simple = new Map([
+      ["\\", "\\"],
+      ['"', '"'],
+      ["'", "'"],
+      ["/", "/"],
+      ["n", "\n"],
+      ["t", "\t"],
+      ["r", "\r"],
+      ["0", "\0"],
+      [" ", " "],
+    ]).get(escape);
+    if (simple !== undefined) {
+      result += simple;
+      index += 1;
+      continue;
+    }
+    const width = escape === "x" ? 2 : escape === "u" ? 4 : escape === "U" ? 8 : 0;
+    if (width > 0) {
+      const digits = value.slice(index + 2, index + 2 + width);
+      if (digits.length === width && new RegExp(`^[0-9A-Fa-f]{${width}}$`, "u").test(digits)) {
+        result += String.fromCodePoint(Number.parseInt(digits, 16));
+        index += width + 1;
+        continue;
+      }
+    }
+    return { value: result, failure: `\\${escape}` };
+  }
+  return { value: result };
+}
+
+function stripYamlComment(value: string): string {
+  let depth = 0;
+  let quote: string | undefined;
+  let escaped = false;
+  let quoteAllowed = true;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote) {
+      if (quote === "'" && character === "'" && value[index + 1] === "'") {
+        index += 1;
+      } else if (quote === '"' && escaped) {
+        escaped = false;
+      } else if (quote === '"' && character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if ((character === '"' || character === "'") && quoteAllowed) {
+      quote = character;
+      quoteAllowed = false;
+      continue;
+    }
+    if (character === "[") {
+      depth += 1;
+      quoteAllowed = true;
+      continue;
+    }
+    if (character === "]") {
+      depth = Math.max(0, depth - 1);
+      quoteAllowed = false;
+      continue;
+    }
+    if (character === "," && depth > 0) {
+      quoteAllowed = true;
+      continue;
+    }
+    if (character === "#" && index > 0 && (value[index - 1] === " " || value[index - 1] === "\t")) return value.slice(0, index).trimEnd();
+    if (!/\s/u.test(character)) quoteAllowed = false;
+  }
+  return value.trimEnd();
 }
 
 function sanitizeLine(line: string): string {
@@ -579,7 +705,7 @@ function convertProseLine(line: string): MappedLineBuilder {
     builder.appendMapped("=".repeat(heading[1].length), 0, heading[1].length);
     builder.appendSource(heading[2], heading[1].length);
     builder.appendBuilder(
-      convertInline(line.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }),
+      convertInline(normalized.slice(heading[1].length + heading[2].length), heading[1].length + heading[2].length, { lineStart: true }),
     );
     return builder;
   }
@@ -591,7 +717,7 @@ function convertProseLine(line: string): MappedLineBuilder {
     builder.appendMapped("-", markerStart, 1);
     builder.appendSource(unordered[3], markerStart + 1);
     builder.appendBuilder(
-      convertInline(line.slice(markerStart + 1 + unordered[3].length), markerStart + 1 + unordered[3].length, { lineStart: true }),
+      convertInline(normalized.slice(markerStart + 1 + unordered[3].length), markerStart + 1 + unordered[3].length, { lineStart: true }),
     );
     return builder;
   }
@@ -602,13 +728,13 @@ function convertProseLine(line: string): MappedLineBuilder {
     builder.appendSource(ordered[1], 0);
     builder.appendSource(ordered[2], ordered[1].length);
     builder.appendSource(ordered[3], ordered[1].length + ordered[2].length);
-    builder.appendBuilder(convertInline(line.slice(contentStart), contentStart, { lineStart: true }));
+    builder.appendBuilder(convertInline(normalized.slice(contentStart), contentStart, { lineStart: true }));
     return builder;
   }
 
-  const indentationLength = leadingIndentLength(line);
-  appendNormalized(builder, line.slice(0, indentationLength), 0);
-  builder.appendBuilder(convertInline(line.slice(indentationLength), indentationLength, { lineStart: true }));
+  const indentationLength = leadingIndentLength(normalized);
+  appendNormalized(builder, normalized.slice(0, indentationLength), 0);
+  builder.appendBuilder(convertInline(normalized.slice(indentationLength), indentationLength, { lineStart: true }));
   return builder;
 }
 
@@ -762,35 +888,43 @@ function leadingIndentLength(text: string): number {
 }
 
 function findCodeRanges(text: string): CodeRange[] {
-  const ranges: CodeRange[] = [];
+  const runs: Array<{ start: number; width: number; escaped: boolean }> = [];
   let index = 0;
+  let backslashes = 0;
   while (index < text.length) {
-    if (text[index] !== "`" || isEscaped(text, index)) {
+    if (text[index] !== "`") {
+      if (text[index] === "\\") backslashes += 1;
+      else backslashes = 0;
       index += codePointWidth(text, index);
       continue;
     }
-    let width = 1;
-    while (text[index + width] === "`") width += 1;
     const start = index;
-    let close = index + width;
-    let end = -1;
-    while (close < text.length) {
-      if (text[close] !== "`") {
-        close += 1;
-        continue;
-      }
-      const runStart = close;
-      while (close < text.length && text[close] === "`") close += 1;
-      if (close - runStart === width) {
-        end = close;
-        break;
-      }
-    }
-    if (end >= 0) {
-      ranges.push({ start, end, width });
-      index = end;
-    } else {
-      index = start + width;
+    while (index < text.length && text[index] === "`") index += 1;
+    runs.push({ start, width: index - start, escaped: backslashes % 2 === 1 });
+    backslashes = 0;
+  }
+
+  const nextSameRun = new Array<number>(runs.length).fill(-1);
+  const nextByWidth = new Map<number, number>();
+  for (let run = runs.length - 1; run >= 0; run -= 1) {
+    const current = runs[run];
+    const openingWidth = current.escaped ? current.width - 1 : current.width;
+    nextSameRun[run] = openingWidth > 0 ? nextByWidth.get(openingWidth) ?? -1 : -1;
+    nextByWidth.set(current.width, current.start);
+  }
+
+  const ranges: CodeRange[] = [];
+  let consumedThrough = 0;
+  for (let run = 0; run < runs.length; run += 1) {
+    const current = runs[run];
+    if (current.start < consumedThrough) continue;
+    const openingStart = current.start + (current.escaped ? 1 : 0);
+    const openingWidth = current.width - (current.escaped ? 1 : 0);
+    if (openingWidth <= 0) continue;
+    const close = nextSameRun[run];
+    if (close >= 0) {
+      ranges.push({ start: openingStart, end: close + openingWidth, width: openingWidth });
+      consumedThrough = close + openingWidth;
     }
   }
   return ranges;
