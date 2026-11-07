@@ -149,7 +149,14 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
             builder.appendInserted(`#std.link(${quoteString(markdown.target)});`, sourceOffset + markdown.start);
           } else {
             builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
-            builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
+            builder.appendBuilder(
+              convertInline(
+                text.slice(markdown.labelStart, markdown.labelEnd),
+                sourceOffset + markdown.labelStart,
+                { lineStart: true, escapeMarkdownMarkers: true },
+                linkDepth + 1,
+              ),
+            );
             builder.appendInserted("];", sourceOffset + markdown.end);
           }
         } else {
@@ -157,10 +164,24 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
         }
       } else if (/^https?:\/\//iu.test(markdown.target)) {
         builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
-        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
+        builder.appendBuilder(
+          convertInline(
+            text.slice(markdown.labelStart, markdown.labelEnd),
+            sourceOffset + markdown.labelStart,
+            { lineStart: true, escapeMarkdownMarkers: true },
+            linkDepth + 1,
+          ),
+        );
         builder.appendInserted("];", sourceOffset + markdown.end);
       } else {
-        builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
+        builder.appendBuilder(
+          convertInline(
+            text.slice(markdown.labelStart, markdown.labelEnd),
+            sourceOffset + markdown.labelStart,
+            { lineStart: true, escapeMarkdownMarkers: true },
+            linkDepth + 1,
+          ),
+        );
       }
       index = markdown.end;
       continue;
@@ -168,7 +189,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const wikilink = wikilinkByStart.get(index);
     if (wikilink) {
-      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, {}, linkDepth));
+      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, { lineStart: true, escapeMarkdownMarkers: true }, linkDepth));
       index = wikilink.end;
       continue;
     }

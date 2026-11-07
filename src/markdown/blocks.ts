@@ -253,10 +253,7 @@ function renderQuoteBody(
         if (fence.kind === "other") builder.appendInserted(`${fence.indentation}${"`".repeat(fence.outputTicks)}`);
         fence = undefined;
       } else {
-        const rawText = fence.kind === "typ" && fence.closeLine < 0 && index === entries.length - 1
-          ? stripTrailingRawTypstComment(entry.text)
-          : entry.text;
-        builder.appendSource(rawText, entry.offset);
+        builder.appendSource(entry.text, entry.offset);
         if (fence.kind === "other" && fence.closeLine < 0 && index === entries.length - 1) {
           builder.appendInserted(` ${"`".repeat(fence.outputTicks)}`, entry.text.length);
         }
@@ -302,8 +299,7 @@ function renderQuoteBody(
 
     if (entry.text.startsWith("/typst")) {
       const builder = new MappedLineBuilder();
-      const rawText = index === entries.length - 1 ? stripTrailingRawTypstComment(entry.text.slice(6)) : entry.text.slice(6);
-      builder.appendSource(rawText, entry.offset + 6);
+      builder.appendSource(entry.text.slice(6), entry.offset + 6);
       lines.push(builder);
       index += 1;
       continue;
@@ -326,40 +322,6 @@ function renderQuoteBody(
     index += 1;
   }
   return lines;
-}
-
-function stripTrailingRawTypstComment(text: string): string {
-  let inString = false;
-  let blockCommentDepth = 0;
-  let blockCommentStart = -1;
-  for (let index = 0; index < text.length; index += 1) {
-    if (blockCommentDepth > 0) {
-      if (text.startsWith("/*", index)) {
-        blockCommentDepth += 1;
-        index += 1;
-      } else if (text.startsWith("*/", index)) {
-        blockCommentDepth -= 1;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (text[index] === "\\") index += 1;
-      else if (text[index] === '"') inString = false;
-      continue;
-    }
-    if (text[index] === '"') {
-      inString = true;
-      continue;
-    }
-    if (text.startsWith("//", index)) return text.slice(0, index);
-    if (text.startsWith("/*", index)) {
-      blockCommentDepth = 1;
-      blockCommentStart = index;
-      index += 1;
-    }
-  }
-  return blockCommentDepth > 0 && blockCommentStart >= 0 ? text.slice(0, blockCommentStart) : text;
 }
 
 function shiftTableOffsets(
