@@ -16,7 +16,7 @@ const KIT = {
 const BUILT_INS =
   "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 
-/** Counts the characters that Typst itself treats as line breaks. */
+/** Counts lines the way Typst does, splitting on every character it treats as a line break. */
 function typstLineCount(text: string): number {
   return text.split(/[\n\r\u000b\f\u0085\u2028\u2029]/u).length;
 }
@@ -79,6 +79,59 @@ test("C66: typst true in a note body does not select a source", () => {
   const conversion = convert(text, KIT);
   // #then
   assert.equal(conversion.source, false);
+});
+
+test("C67: only the bare typst key selects a source and typst-typst remains an argument", () => {
+  // #given
+  const propertyOnly = sourceNote(["typst-typst: true"]);
+  const sourceWithProperty = sourceNote(["typst: true", "typst-typst: true"]);
+  // #when
+  const conversions = [convert(propertyOnly, KIT), convert(sourceWithProperty, KIT)];
+  // #then
+  assert.deepEqual(
+    { propertyOnly: conversions[0].source, propertyLine: outputLines(conversions[1].typ)[2] },
+    { propertyOnly: false, propertyLine: "typst: true," },
+  );
+});
+
+test("C68: blank frontmatter lines do not end a continuation", () => {
+  // #given
+  const propertyContinuation = sourceNote(["typst: true", "typst-title: first", "", "  second"]);
+  const flagContinuation = sourceNote(["typst: true", "", "  continued"]);
+  // #when
+  const conversions = [convert(propertyContinuation, KIT), convert(flagContinuation, KIT)];
+  // #then
+  assert.deepEqual(
+    {
+      property: {
+        lines: outputLines(conversions[0].typ),
+        problems: conversions[0].problems,
+      },
+      flagSource: conversions[1].source,
+    },
+    {
+      property: {
+        lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", "", "", "", ")"],
+        problems: [{ line: 2, message: "Property title has a multi-line value", fatal: false }],
+      },
+      flagSource: false,
+    },
+  );
+});
+
+test("C69: a repeated property is skipped after its first value", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-x: first", "typst-x: second"]);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", 'x: "first",', "", ")"],
+      problems: [{ line: 3, message: "Property x is repeated", fatal: false }],
+    },
+  );
 });
 
 test("C3: Typst line count stays equal for a source with every line-break character", () => {
@@ -1104,19 +1157,74 @@ test("C64: built-in callout uses the standard-library block function", () => {
   );
 });
 
-test("C66: nested list columns map to their matching Markdown characters", () => {
+test("C71: nested list columns map through width-changing strong markup", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["- - *x* y"]);
+  const text = sourceNote(["typst: true"], ["- - **x** y", "- 1. **x**"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(
     {
-      typ: outputLines(conversion.typ)[3],
-      toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((column) => conversion.toTyp(3, column)),
-      toMd: [0, 1, 2, 3, 4, 5, 6, 7].map((column) => conversion.toMd(3, column)),
+      first: {
+        typ: outputLines(conversion.typ)[3],
+        toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((column) => conversion.toTyp(3, column)),
+        toMd: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((column) => conversion.toMd(3, column)),
+      },
+      ordered: {
+        typ: outputLines(conversion.typ)[4],
+        toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((column) => conversion.toTyp(4, column)),
+        toMd: [0, 1, 2, 3, 4, 5, 6, 7, 8].map((column) => conversion.toMd(4, column)),
+      },
     },
-    { typ: "- - _x_ y", toTyp: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], toMd: [0, 1, 2, 3, 4, 5, 6, 7] },
+    {
+      first: {
+        typ: "- - *x* y",
+        toTyp: [0, 1, 2, 3, 4, 4, 5, 6, 6, 7, 8, 9],
+        toMd: [0, 1, 2, 3, 4, 6, 7, 9, 10, 11],
+      },
+      ordered: {
+        typ: "- 1. *x*",
+        toTyp: [0, 1, 2, 3, 4, 5, 5, 6, 7, 7, 8],
+        toMd: [0, 1, 2, 3, 4, 5, 7, 8, 10],
+      },
+    },
+  );
+});
+
+test("C71: source-note maps preserve generated, outside, and past-end positions", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-title: Pilot"], ["Body"]);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.deepEqual(
+    {
+      outsideMd: [conversion.toMd(-1, 8), conversion.toMd(5, 8)],
+      outsideTyp: [conversion.toTyp(-1, 8), conversion.toTyp(5, 8)],
+      pastEnd: [conversion.toMd(4, 5), conversion.toTyp(4, 5)],
+      generated: [conversion.toMd(0, 10), conversion.toTyp(0, 3), conversion.toMd(2, 4), conversion.toTyp(2, 4), conversion.toMd(3, 0), conversion.toTyp(3, 0)],
+    },
+    {
+      outsideMd: [8, 8],
+      outsideTyp: [8, 8],
+      pastEnd: [5, 5],
+      generated: [0, 0, 0, 0, 0, 0],
+    },
+  );
+});
+
+test("C71: problems stay sorted by source line", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-9bad: x", "typst-template: missing"]);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.deepEqual(
+    conversion.problems.map(({ line, fatal }) => ({ line, fatal })),
+    [
+      { line: 2, fatal: false },
+      { line: 3, fatal: true },
+    ],
   );
 });
 
