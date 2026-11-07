@@ -136,7 +136,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     const image = imageByStart.get(index);
     if (image) {
       const dimensions = image.width === undefined ? "" : `, width: ${image.width}pt${image.height === undefined ? "" : `, height: ${image.height}pt`}`;
-      builder.appendInserted(`#std.image(${quoteString(image.path)}${dimensions})`, sourceOffset + image.start);
+      builder.appendInserted(`#std.image(${quoteString(image.path)}${dimensions});`, sourceOffset + image.start);
       index = image.end;
       continue;
     }
@@ -150,15 +150,15 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           } else {
             builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
             builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
-            builder.appendInserted("]", sourceOffset + markdown.end);
+            builder.appendInserted("];", sourceOffset + markdown.end);
           }
         } else {
-          builder.appendInserted(`#std.image(${quoteString(markdown.target)})`, sourceOffset + markdown.start);
+          builder.appendInserted(`#std.image(${quoteString(markdown.target)});`, sourceOffset + markdown.start);
         }
       } else if (/^https?:\/\//iu.test(markdown.target)) {
         builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
         builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
-        builder.appendInserted("]", sourceOffset + markdown.end);
+        builder.appendInserted("];", sourceOffset + markdown.end);
       } else {
         builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart, {}, linkDepth + 1));
       }
@@ -175,7 +175,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const linebreak = linebreakByStart.get(index);
     if (linebreak) {
-      builder.appendInserted("#std.linebreak()", sourceOffset + linebreak.start);
+      builder.appendInserted("#std.linebreak();", sourceOffset + linebreak.start);
       index = linebreak.end;
       continue;
     }
