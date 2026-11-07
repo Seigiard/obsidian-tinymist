@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
 import { convert } from "../src/markdown/convert";
-import { calloutFenceCompileSample, compileSample, constructCompileSample, quoteFenceCompileSample } from "./fixtures/markdown/notes";
+import {
+  calloutFenceCompileSample,
+  compileSample,
+  constructCompileSample,
+  quoteFenceCompileSample,
+  terminatorAndRawContainerCompileSample,
+} from "./fixtures/markdown/notes";
 
 const BIN =
   process.env.TINYMIST_BIN ??
@@ -101,6 +107,22 @@ test("Q2: a callout with an unclosed non-Typst fence compiles", { skip: !BIN && 
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-callout-fence-"));
   const output = join(directory, "sample.typ");
   const conversion = convert(calloutFenceCompileSample, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("R1/R2: terminated inline calls and final raw Typst container lines compile", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-terminator-raw-container-"));
+  const output = join(directory, "sample.typ");
+  const conversion = convert(terminatorAndRawContainerCompileSample, { templates: {}, defaultTemplate: "" });
   writeFileSync(output, conversion.typ);
   try {
     // #when

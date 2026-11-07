@@ -45,3 +45,18 @@ export const constructCompileSample = sourceNote(
 export const quoteFenceCompileSample = sourceNote(["typst: true"], ["> ```js", "> let x = 1;", "> ```"]);
 
 export const calloutFenceCompileSample = sourceNote(["typst: true"], ["> [!note] Code", "> ```js", "> let x = 1;", "", "after"]);
+
+export const terminatorAndRawContainerCompileSample = sourceNote(
+  ["typst: true"],
+  [
+    "| Label | Value |",
+    "| --- | --- |",
+    "| Total<br>(approx.) | 1 |",
+    "",
+    "> [!note] N",
+    "> /typst #figure(rect())[cap] // figure",
+    "",
+    "> Quote",
+    '> /typst #text["http://x"] // trailing',
+  ],
+);

@@ -26,7 +26,7 @@ test("M1/M7/M8/M10: vault-shaped tables use std.table with inline cells", () => 
     "",
     "#std.table(columns: 4, std.table.header([One], [Two], [Three], [Four]),",
     "",
-    "[left|right], [first#std.linebreak()second], [three], [four])",
+    "[left|right], [first#std.linebreak();second], [three], [four])",
   ]);
 });
 
@@ -84,7 +84,7 @@ test("M2/M9/M10: a callout lowercases its kind and converts its body as Markdown
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
     '#callout(kind: "info", title: [Источник])[',
-    'Конспект *статьи* #std.link("https://x.y/a")[ссылка]',
+    'Конспект *статьи* #std.link("https://x.y/a")[ссылка];',
     "- пункт",
     "= Заголовок",
     "",
@@ -145,7 +145,7 @@ test("M4/M8: wikilinks use their display text and Markdown links distinguish web
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
     "X Y X Y H Y X",
-    '#std.link("https://x.y/a")[text] text',
+    '#std.link("https://x.y/a")[text]; text',
   ]);
 });
 
@@ -161,10 +161,10 @@ test("M5/M8: image embeds and Markdown images use std.image with supplied dimens
   const conversion = convert(text, null);
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    '#std.image("a.png")',
-    '#std.image("image/Dungeon World - crystallization.jpg", width: 400pt)',
-    '#std.image("a.png", width: 300pt, height: 200pt)',
-    '#std.image("a.jpg")',
+    '#std.image("a.png");',
+    '#std.image("image/Dungeon World - crystallization.jpg", width: 400pt);',
+    '#std.image("a.png", width: 300pt, height: 200pt);',
+    '#std.image("a.jpg");',
   ]);
 });
 
@@ -210,7 +210,7 @@ test("M7/M8: unsupported constructs remain escaped text and report a non-fatal p
         "\\$\\$display\\$\\$",
         "\\[^1\\]",
         "\\[^1\\]: text",
-        "first#std.linebreak()second",
+        "first#std.linebreak();second",
       ],
       problems: [
         { line: 3, message: "Note embed has no Typst form", fatal: false },
@@ -302,7 +302,7 @@ test("N4: remote Markdown images become links and report non-fatal problems", ()
   assert.deepEqual(
     { lines: conversion.typ.split("\n").slice(3), problems: conversion.problems },
     {
-      lines: ['#std.link("https://x.y/a.png")[alt]', '#std.link("https://x.y/a.png");'],
+      lines: ['#std.link("https://x.y/a.png")[alt];', '#std.link("https://x.y/a.png");'],
       problems: [
         { line: 3, message: "Remote image has no Typst form", fatal: false },
         { line: 4, message: "Remote image has no Typst form", fatal: false },
@@ -317,7 +317,7 @@ test("N5: Markdown link and image titles are omitted from their targets", () => 
   // #when
   const conversion = convert(text, null);
   // #then
-  assert.deepEqual(conversion.typ.split("\n").slice(3), ['#std.link("https://x.y/a")[t]', '#std.image("a.png")']);
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ['#std.link("https://x.y/a")[t];', '#std.image("a.png");']);
 });
 
 test("N6: table cells and callout titles escape Markdown line-start markers", () => {
@@ -421,5 +421,45 @@ test("Q3: hostile nested labels, quotes, and emphasis remain bounded and line-sh
     { source: true, inputLines: 4, outputLines: 4, linkCalls: 0 },
     { source: true, inputLines: 4, outputLines: 4, linkCalls: 0 },
     { source: true, inputLines: 4, outputLines: 4, linkCalls: 32 },
+  ]);
+});
+
+test("R1: generated inline calls terminate before adjacent Typst postfix syntax", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "Total<br>(approx.)",
+    "[docs](https://x.com)(see)",
+    "![x](pic.png)(figure 1)",
+    "end<br>.hidden",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "Total#std.linebreak();(approx.)",
+    '#std.link("https://x.com")[docs];(see)',
+    '#std.image("pic.png");(figure 1)',
+    "end#std.linebreak();.hidden",
+  ]);
+});
+
+test("R2: final raw Typst container lines discard comments but keep URL strings", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "> [!note] N",
+    "> /typst #figure(rect())[cap] // figure",
+    "",
+    "> Quote",
+    '> /typst #text["http://x"] // trailing',
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    '#callout(kind: "note", title: [N])[',
+    " #figure(rect())[cap] ]",
+    "",
+    "#std.quote(block: true)[Quote",
+    ' #text["http://x"] ]',
   ]);
 });
