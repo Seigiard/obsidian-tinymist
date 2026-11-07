@@ -1,15 +1,20 @@
 import { iframeSrcAssignmentCount } from "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pathToUri, type LspDiagnostic } from "../src/lsp/client";
+import type { LspDiagnostic } from "../src/lsp/client";
 import { PreviewManager } from "../src/preview/previewManager";
 import { PreviewView } from "../src/preview/previewView";
 import type { Position, TypstSource } from "../src/sources";
 import { WorkspaceLeaf, testApp } from "./support/obsidian";
-import { virtualAddress } from "./support/virtualAddress";
+import { fileUri, vaultPath, virtualAddress } from "./support/virtualAddress";
 
-const A_ENTRY = virtualAddress("/vault", "Notes/A.md");
-const B_ENTRY = virtualAddress("/vault", "Notes/B.md");
+const VAULT_ROOT = vaultPath("/vault", ".");
+const A_FILE = "Notes/A.md";
+const B_FILE = "Notes/B.md";
+const A_PATH = vaultPath(VAULT_ROOT, A_FILE);
+const KIT_PATH = vaultPath(VAULT_ROOT, "_typst/kit.typ");
+const A_ENTRY = virtualAddress(VAULT_ROOT, A_FILE);
+const B_ENTRY = virtualAddress(VAULT_ROOT, B_FILE);
 
 interface Problem {
   line: number;
@@ -38,17 +43,17 @@ async function problemHarness(
   problems: Problem[],
   initialDiagnostics: Array<{ path: string; diagnostics: LspDiagnostic[] }> = [],
 ): Promise<ProblemHarness> {
-  const app = testApp("/vault");
+  const app = testApp(VAULT_ROOT);
   const reveals: Position[] = [];
   const opened: Array<{ path: string; line: number; character: number }> = [];
   const sourceListeners = new Map<string, Set<() => void>>();
   const diagnostics = new Map<string, LspDiagnostic[]>();
   const diagnosticListeners = new Set<(uri: string) => void>();
-  let sourceFile = "Notes/A.md";
+  let sourceFile = A_FILE;
   let sourceEntry = A_ENTRY;
   let previewPort = 4320;
   for (const initial of initialDiagnostics) {
-    diagnostics.set(pathToUri(initial.path), initial.diagnostics);
+    diagnostics.set(fileUri(initial.path), initial.diagnostics);
   }
   const source: ProblemSource = {
     get file(): string { return sourceFile; },
@@ -89,7 +94,7 @@ async function problemHarness(
     app,
     lsp,
     settings: { invertPreviewColors: "never" },
-    vaultBasePath: () => "/vault",
+    vaultBasePath: () => VAULT_ROOT,
     sources: {
       hold: async () => source,
       byDocument: (document: string) => document === source.document ? source : null,
@@ -109,7 +114,7 @@ async function problemHarness(
   };
   const manager = new PreviewManager(plugin as never);
   Object.assign(plugin, { preview: manager });
-  await manager.start("/vault/Notes/A.md");
+  await manager.start(A_PATH);
   const view = new PreviewView(new WorkspaceLeaf(app) as never, plugin as never);
   view.setUrl(manager.url!);
   return {
@@ -126,9 +131,9 @@ async function problemHarness(
     emitProblems: () => {
       for (const listener of sourceListeners.get("problems") ?? []) listener();
     },
-    setDiagnostics: (path, next) => diagnostics.set(pathToUri(path), next),
+    setDiagnostics: (path, next) => diagnostics.set(fileUri(path), next),
     emitDiagnostics: (path) => {
-      for (const listener of diagnosticListeners) listener(pathToUri(path));
+      for (const listener of diagnosticListeners) listener(fileUri(path));
     },
     close: async () => {
       await view.onClose();
@@ -144,7 +149,7 @@ test("the bound preview pane follows the replacement task URL after its Markdown
   const assignmentsBeforeMove = iframeSrcAssignmentCount(iframe);
 
   // #when
-  h.move("Notes/B.md", B_ENTRY);
+  h.move(B_FILE, B_ENTRY);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
@@ -194,7 +199,7 @@ test("the bound preview pane assigns src only when a change notification has a n
   // #when
   h.emitProblems();
   const assignmentsAfterProblems = iframeSrcAssignmentCount(iframe);
-  h.move("Notes/B.md", B_ENTRY);
+  h.move(B_FILE, B_ENTRY);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
@@ -224,7 +229,7 @@ test("the preview lists converter, translated note, and kit diagnostics and acti
     },
     message: "unknown variable",
   }]);
-  h.setDiagnostics("/vault/_typst/kit.typ", [{
+  h.setDiagnostics(KIT_PATH, [{
     range: {
       start: { line: 1, character: 4 },
       end: { line: 1, character: 5 },
@@ -234,7 +239,7 @@ test("the preview lists converter, translated note, and kit diagnostics and acti
 
   // #when
   h.emitDiagnostics(h.source.entry);
-  h.emitDiagnostics("/vault/_typst/kit.typ");
+  h.emitDiagnostics(KIT_PATH);
   const list = h.view.contentEl.querySelector<HTMLUListElement>("ul.tinymist-problems");
   const entries = [...(list?.querySelectorAll("li") ?? [])];
   for (const entry of entries) entry.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -259,7 +264,7 @@ test("the preview lists converter, translated note, and kit diagnostics and acti
           { line: 1, character: 0 },
           { line: 3, character: 10 },
         ],
-        opened: [{ path: "/vault/_typst/kit.typ", line: 1, character: 4 }],
+        opened: [{ path: KIT_PATH, line: 1, character: 4 }],
         countAfterStop: 0,
       },
     );

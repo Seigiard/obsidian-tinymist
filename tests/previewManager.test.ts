@@ -8,7 +8,7 @@ import TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { SourceRegistry, typAdapter, type TypstSource } from "../src/sources";
-import { virtualAddress } from "./support/virtualAddress";
+import { vaultPath, virtualAddress } from "./support/virtualAddress";
 
 function source(path: string, release: () => void, entryOffset = 0): TypstSource {
   return {
@@ -1617,13 +1617,18 @@ test("preview start, source rebind, and stop close each Markdown document before
 
 test("Markdown moved and ended events restart then stop the same held preview source", async () => {
   // #given
+  const vaultRoot = vaultPath("/vault", ".");
+  const aFile = "Notes/A.md";
+  const bFile = "Notes/B.md";
+  const aPath = vaultPath(vaultRoot, aFile);
+  const bPath = vaultPath(vaultRoot, bFile);
   const listeners = new Map<"moved" | "ended" | "problems", Set<() => void>>([
     ["moved", new Set()],
     ["ended", new Set()],
     ["problems", new Set()],
   ]);
-  let file = "Notes/A.md";
-  let entry = virtualAddress("/vault", "Notes/A.md");
+  let file = aFile;
+  let entry = virtualAddress(vaultRoot, aFile);
   let holds = 0;
   let releases = 0;
   let port = 4320;
@@ -1661,7 +1666,7 @@ test("Markdown moved and ended events restart then stop the same held preview so
       },
     },
     settings: { invertPreviewColors: "never" },
-    vaultBasePath: () => "/vault",
+    vaultBasePath: () => vaultRoot,
     sources: {
       hold: async () => {
         holds++;
@@ -1673,17 +1678,17 @@ test("Markdown moved and ended events restart then stop the same held preview so
     jumpToSource: () => {},
   } as unknown as TinymistPlugin;
   const manager = new PreviewManager(plugin);
-  await manager.start("/vault/Notes/A.md");
+  await manager.start(aPath);
 
   // #when
-  file = "Notes/B.md";
-  entry = virtualAddress("/vault", "Notes/B.md");
+  file = bFile;
+  entry = virtualAddress(vaultRoot, bFile);
   for (const listener of listeners.get("moved") ?? []) listener();
-  manager.onVaultRename("Notes/B.md", "Notes/A.md");
+  manager.onVaultRename(bFile, aFile);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   const afterMove = { filePath: manager.filePath, url: manager.url };
   for (const listener of listeners.get("ended") ?? []) listener();
-  manager.onVaultDelete("Notes/B.md");
+  manager.onVaultDelete(bFile);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
@@ -1694,12 +1699,12 @@ test("Markdown moved and ended events restart then stop the same held preview so
         holds: 1,
         releases: 1,
         calls: [
-          { command: "tinymist.doStartPreview", entry: virtualAddress("/vault", "Notes/A.md") },
+          { command: "tinymist.doStartPreview", entry: virtualAddress(vaultRoot, aFile) },
           { command: "tinymist.doKillPreview" },
-          { command: "tinymist.doStartPreview", entry: virtualAddress("/vault", "Notes/B.md") },
+          { command: "tinymist.doStartPreview", entry: virtualAddress(vaultRoot, bFile) },
           { command: "tinymist.doKillPreview" },
         ],
-        afterMove: { filePath: "/vault/Notes/B.md", url: "http://127.0.0.1:4322" },
+        afterMove: { filePath: bPath, url: "http://127.0.0.1:4322" },
         afterEnd: { filePath: null, url: null },
       },
     );
