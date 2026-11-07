@@ -118,7 +118,7 @@ test("Q2: a callout with an unclosed non-Typst fence compiles", { skip: !BIN && 
   }
 });
 
-test("R1/X1/X2: terminated inline calls, verbatim raw lines, and escaped labels compile", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+test("R1/X1/X2/Y1/Y3: terminated calls and escaped link or heading text compile", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-terminator-raw-container-"));
   const output = join(directory, "sample.typ");

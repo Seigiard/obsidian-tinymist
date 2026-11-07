@@ -134,7 +134,7 @@ test("M3/M10: plain blockquotes use std.quote and preserve a blank body line", (
   ]);
 });
 
-test("M4/M8: wikilinks use their display text and Markdown links distinguish web targets", () => {
+test("M4/M8/Y1: wikilinks and internal Markdown links use terminated content blocks", () => {
   // #given
   const text = sourceNote(["typst: true"], [
     "[[X]] [[X|Y]] [[X#H]] [[X#H|Y]] [[#H]] [[#H|Y]] [[X#^blk]]",
@@ -144,8 +144,8 @@ test("M4/M8: wikilinks use their display text and Markdown links distinguish web
   const conversion = convert(text, null);
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    "X Y X Y H Y X",
-    '#std.link("https://x.y/a")[text]; text',
+    "#[X]; #[Y]; #[X]; #[Y]; #[H]; #[Y]; #[X];",
+    '#std.link("https://x.y/a")[text]; #[text];',
   ]);
 });
 
@@ -468,7 +468,7 @@ test("X1: final raw Typst container lines pass through verbatim before their clo
   ]);
 });
 
-test("X2: wikilink displays and Markdown link labels escape line-start markers", () => {
+test("X2/Y1: wikilink displays and Markdown link labels escape line-start markers", () => {
   // #given
   const text = sourceNote(["typst: true"], [
     "[[- draft]] is a note title",
@@ -485,14 +485,89 @@ test("X2: wikilink displays and Markdown link labels escape line-start markers",
   const conversion = convert(text, null);
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    "\\- draft is a note title",
+    "#[\\- draft]; is a note title",
     "#std.table(columns: 2, std.table.header([Left], [Right]),",
     "",
-    "[\\- draft], [\\+ idea],",
+    "[#[\\- draft];], [#[\\+ idea];],",
     "[kept], [row])",
-    "1\\. Intro covers",
-    '#callout(kind: "note", title: [1\\. Intro])[]',
+    "#[1\\. Intro]; covers",
+    '#callout(kind: "note", title: [#[1\\. Intro];])[]',
     "",
     '#std.link("https://x.com")[\\- item];',
+  ]);
+});
+
+test("Y1: terminated internal-link blocks keep adjacent emphasis outside word text", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "**[[Note]]**s",
+    "See [[Note]]*draft*",
+    "_u_[[Note]]",
+    "*a*[x](n.md)",
+    "[[X|Y]]",
+    "[[- draft]] is a note title",
+    "| A | B |",
+    "| --- | --- |",
+    "| _em_[[Note]] | b |",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "*#[Note];*s",
+    "See #[Note];_draft_",
+    "_u_#[Note];",
+    "_a_#[x];",
+    "#[Y];",
+    "#[\\- draft]; is a note title",
+    "#std.table(columns: 2, std.table.header([A], [B]),",
+    "",
+    "[_em_#[Note];], [b])",
+  ]);
+});
+
+test("Y2: table problems inside a callout use their source lines", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "> [!note] T",
+    "> intro",
+    "> more",
+    "> | a | b |",
+    "> |---|---|",
+    "> | 1 | 2 | 3 |",
+    "> | $x$ | y |",
+    "> tail",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.problems, [
+    { line: 8, message: "Table row has 3 cells, the header has 2", fatal: false },
+    { line: 9, message: "LaTeX math has no Typst form", fatal: false },
+  ]);
+});
+
+test("Y3: table cells, callout titles, and web-link labels escape heading runs", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "| A |",
+    "| --- |",
+    "| == important == |",
+    "",
+    "> [!note] == x",
+    "",
+    "[== h](https://x.com)",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "#std.table(columns: 1, std.table.header([A]),",
+    "",
+    "[\\== important ==])",
+    "",
+    '#callout(kind: "note", title: [\\== x])[]',
+    "",
+    '#std.link("https://x.com")[\\== h];',
   ]);
 });
