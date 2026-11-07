@@ -139,3 +139,24 @@ test("C52: a converted fill-in blank line compiles with literal delimiters", { s
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("C78: parenthesized URLs compile with their stripped punctuation", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-parenthesized-url-"));
+  const output = join(directory, "sample.typ");
+  const source = "---\ntypst: true\n---\n(see https://example.com/a(b))\nhttps://x.y/a(b)*)";
+  const conversion = convert(source, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      { source: conversion.source, lines: conversion.typ.split("\n").slice(3) },
+      { source: true, lines: ['(see #std.link("https://example.com/a(b)");)', '#std.link("https://x.y/a(b)");\\*)'] },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

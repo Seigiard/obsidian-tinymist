@@ -211,6 +211,34 @@ test("C74: every later frontmatter name is repeated even after an invalid first 
   );
 });
 
+test("C80: the first false source flag keeps a note outside conversion", () => {
+  // #given
+  const text = sourceNote(["typst: false", "typst: true"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual({ source: conversion.source, typ: conversion.typ, problems: conversion.problems }, { source: false, typ: "", problems: [] });
+});
+
+test("C80: an empty first template keeps the default after a repeated template", () => {
+  // #given
+  const text = sourceNote(["typst: true", "typst-template:", "typst-template: b"]);
+  const templateKit = { templates: { b: "/b.typ" }, defaultTemplate: "b" };
+  // #when
+  const conversion = convert(text, templateKit);
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      lines: [`${BUILT_INS}#import "/b.typ": *; #show: template.with(`, "", "", "", ")"],
+      problems: [
+        { line: 2, message: "Property template has no value", fatal: false },
+        { line: 3, message: "Property template is repeated", fatal: false },
+      ],
+    },
+  );
+});
+
 test("C3: Typst line count stays equal for a source with every line-break character", () => {
   // #given
   const text = sourceNote(["typst: true"], ["first\u000bsecond\fthird\u0085fourth\u2028fifth\u2029sixth\rlast"]);
@@ -486,17 +514,49 @@ test("C15: a bare URL keeps its full target and leaves following prose unchanged
   assert.equal(outputLines(conversion.typ)[3], '*#std.link("https://example.com/a_b");*. Next sentence.');
 });
 
-test("C75: a bare URL strips only closing parentheses that exceed its opening parentheses", () => {
+test("C78: a bare URL has one call form and converts stripped punctuation as prose", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["(see https://example.com/a(b))", "(https://en.wikipedia.org/wiki/Foo_(bar))", "https://x.y/a)"]);
+  const text = sourceNote(
+    ["typst: true"],
+    [
+      "(see https://example.com/a(b))",
+      "(https://en.wikipedia.org/wiki/Foo_(bar)) next",
+      "https://x.y/a(b)*)",
+      "https://x.y/a(b)~) tail",
+    ],
+  );
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(outputLines(conversion.typ).slice(3), [
-    '(see #std.link("https://example.com/a(b)"));',
-    '(#std.link("https://en.wikipedia.org/wiki/Foo_(bar)"));',
-    '#std.link("https://x.y/a");)',
+    '(see #std.link("https://example.com/a(b)");)',
+    '(#std.link("https://en.wikipedia.org/wiki/Foo_(bar)");) next',
+    '#std.link("https://x.y/a(b)");\\*)',
+    '#std.link("https://x.y/a(b)");\\~) tail',
   ]);
+});
+
+test("C79: column-zero YAML sequences make an empty property multi-line", () => {
+  // #given
+  const tags = sourceNote(["typst: true", "typst-tags:", "- a", "- b"]);
+  const template = sourceNote(["typst: true", "typst-template:", "- a"]);
+  const templateKit = { templates: { a: "/a.typ", b: "/b.typ" }, defaultTemplate: "b" };
+  // #when
+  const conversions = [convert(tags, { templates: {}, defaultTemplate: "" }), convert(template, templateKit)];
+  // #then
+  assert.deepEqual(
+    conversions.map((conversion) => ({ lines: outputLines(conversion.typ), problems: conversion.problems })),
+    [
+      {
+        lines: [`${BUILT_INS}#show: template.with(`, "", "", "", "", ")"],
+        problems: [{ line: 2, message: "Property tags has a multi-line value", fatal: false }],
+      },
+      {
+        lines: [`${BUILT_INS}#import "/b.typ": *; #show: template.with(`, "", "", "", ")"],
+        problems: [{ line: 2, message: "Property template has a multi-line value", fatal: false }],
+      },
+    ],
+  );
 });
 
 test("C16: emphasis between CJK characters remains emphasis", () => {
@@ -762,7 +822,7 @@ test("C48: a Typst-only line break in a non-typ fence is a space without a probl
   );
 });
 
-function performanceResult(body: string): { error: string | undefined; status: number | null; withinLimit: boolean } {
+function performanceResult(body: string): { error: string | undefined; status: number | null; withinLimit: boolean; source: boolean; lineCount: boolean } {
   const source = `---\ntypst: true\n---\n${body}`;
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-performance-"));
   try {
@@ -774,60 +834,70 @@ function performanceResult(body: string): { error: string | undefined; status: n
       const { convert } = require(process.env.output);
       const source = readFileSync(0, "utf8");
       const started = performance.now();
-      convert(source, null);
-      process.stdout.write(JSON.stringify({ elapsed: performance.now() - started }));
+      const conversion = convert(source, null);
+      process.stdout.write(JSON.stringify({
+        elapsed: performance.now() - started,
+        source: conversion.source,
+        lineCount: conversion.typ.split("\\n").length === source.split("\\n").length,
+      }));
     `;
     const result = spawnSync(process.execPath, ["-e", runner], { cwd: process.cwd(), encoding: "utf8", input: source, timeout: 5_500, env: { ...process.env, output } });
     const elapsed = typeof result.stdout === "string" && result.stdout !== "" ? JSON.parse(result.stdout).elapsed as number : Number.POSITIVE_INFINITY;
-    return { error: result.error?.code, status: result.status, withinLimit: elapsed < 5_000 };
+    return {
+      error: result.error?.code,
+      status: result.status,
+      withinLimit: elapsed < 5_000,
+      source: result.status === 0 && JSON.parse(result.stdout).source === true,
+      lineCount: result.status === 0 && JSON.parse(result.stdout).lineCount === true,
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
-test("C30: one-backtick spans on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+test("C30/C80: one-backtick spans on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
   // #given
   const body = "`a` ".repeat(75_000);
   // #when
   const result = performanceResult(body);
   // #then
-  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true, source: true, lineCount: true });
 });
 
-test("C30: emphasis markers on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+test("C30/C80: emphasis markers on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
   // #given
   const body = "*x ".repeat(100_000);
   // #when
   const result = performanceResult(body);
   // #then
-  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true, source: true, lineCount: true });
 });
 
-test("C30: URLs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+test("C30/C80: URLs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
   // #given
   const body = "https://a.b ".repeat(25_000);
   // #when
   const result = performanceResult(body);
   // #then
-  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true, source: true, lineCount: true });
 });
 
-test("C30: prose backslashes on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+test("C30/C80: prose backslashes on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
   // #given
   const body = "\\ ".repeat(150_000);
   // #when
   const result = performanceResult(body);
   // #then
-  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true, source: true, lineCount: true });
 });
 
-test("C38: unmatched backtick runs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
+test("C38/C80: unmatched backtick runs on a 300,000-character line convert within five seconds", { timeout: 7_000 }, () => {
   // #given
   const body = "\\``a".repeat(75_000);
   // #when
   const result = performanceResult(body);
   // #then
-  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true });
+  assert.deepEqual(result, { error: undefined, status: 0, withinLimit: true, source: true, lineCount: true });
 });
 
 test("C39: non-Identifier fence words are dropped from raw blocks", () => {
