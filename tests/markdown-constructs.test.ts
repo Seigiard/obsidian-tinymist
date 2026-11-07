@@ -224,3 +224,129 @@ test("M7/M8: unsupported constructs remain escaped text and report a non-fatal p
     },
   );
 });
+
+test("N1: block comments hide every block form until their closing delimiter", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "%%",
+    "```js",
+    "secret()",
+    "```",
+    '/typst #text[SECRET]',
+    "| a | b |",
+    "|---|---|",
+    "| 1 | 2 |",
+    "> quoted",
+    "%% restored",
+    "after",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ["", "", "", "", "", "", "", "", "", " restored", "after"]);
+});
+
+test("N1: comment delimiters inside inline code remain literal text", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["`a %% b` c", "next"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ["`a %% b` c", "next"]);
+});
+
+test("N2: table rows trim trailing whitespace without adding a column", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["| a | b |  ", "|---|---|\t", "| 1 | 2 | ", "| x | y"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "#std.table(columns: 2, std.table.header([a], [b]),",
+    "",
+    "[1], [2],",
+    "[x], [y])",
+  ]);
+});
+
+test("N3: a callout body converts a table and keeps its list as markup", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["> [!example] Roll", "> | d6 | Result |", "> |---|---|", "> | 1 | Goblin |", "> - item"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    '#callout(kind: "example", title: [Roll])[',
+    "#std.table(columns: 2, std.table.header([d6], [Result]),",
+    "",
+    "[1], [Goblin])",
+    "- item]",
+  ]);
+});
+
+test("N3: a plain quote body passes a typ fence through and keeps its list as markup", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["> Quote", "> ```typ", "> #let answer = 42", "> ```", "> - item"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ["#std.quote(block: true)[Quote", "", "#let answer = 42", "", "- item]"]);
+});
+
+test("N4: remote Markdown images become links and report non-fatal problems", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["![alt](https://x.y/a.png)", "![](https://x.y/a.png)"]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(
+    { lines: conversion.typ.split("\n").slice(3), problems: conversion.problems },
+    {
+      lines: ['#std.link("https://x.y/a.png")[alt]', '#std.link("https://x.y/a.png");'],
+      problems: [
+        { line: 3, message: "Remote image has no Typst form", fatal: false },
+        { line: 4, message: "Remote image has no Typst form", fatal: false },
+      ],
+    },
+  );
+});
+
+test("N5: Markdown link and image titles are omitted from their targets", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ['[t](https://x.y/a "Title")', '![a](a.png "Title")']);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ['#std.link("https://x.y/a")[t]', '#std.image("a.png")']);
+});
+
+test("N6: table cells and callout titles escape Markdown line-start markers", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "| A | B | C | D |",
+    "|---|---|---|---|",
+    "| - one | + two | 1. three | = four |",
+    "> [!note] - item",
+    "",
+    "> [!note] + item",
+    "",
+    "> [!note] 1. item",
+    "",
+    "> [!note] = heading",
+  ]);
+  // #when
+  const conversion = convert(text, null);
+  // #then
+  assert.deepEqual(conversion.typ.split("\n").slice(3), [
+    "#std.table(columns: 4, std.table.header([A], [B], [C], [D]),",
+    "",
+    "[\\- one], [\\+ two], [1\\. three], [\\= four])",
+    '#callout(kind: "note", title: [\\- item])[]',
+    "",
+    '#callout(kind: "note", title: [\\+ item])[]',
+    "",
+    '#callout(kind: "note", title: [1\\. item])[]',
+    "",
+    '#callout(kind: "note", title: [\\= heading])[]',
+  ]);
+});

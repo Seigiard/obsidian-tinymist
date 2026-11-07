@@ -61,7 +61,7 @@ test("C9: converted Markdown sample compiles with tinymist", { skip: !BIN && "ti
   }
 });
 
-test("M1–M10: a note with every new Markdown construct compiles with tinymist", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+test("M1–M10/N3/N4: a note with every Markdown construct compiles with tinymist", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-constructs-"));
   const output = join(directory, "sample.typ");
