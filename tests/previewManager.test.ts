@@ -854,3 +854,383 @@ test("cursor sync uses the caller source mapping and falls back to caller coordi
     manager.dispose();
   }
 });
+
+test("a failed newer start resets the client after a superseded task is killed", async () => {
+  // #given
+  const firstStart = deferred<{ staticServerPort: number }>();
+  const firstCommandReached = deferred<void>();
+  const calls: Array<Record<string, string | undefined>> = [];
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: "/vault/main.typ",
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
+      pinMain: (main: string | null) => calls.push({ method: "pinMain", main: main ?? undefined }),
+      executeCommand: async (command: string, args: unknown[]) => {
+        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        calls.push({ command, taskId: typeof taskId === "string" ? taskId : undefined });
+        if (command === "tinymist.doStartPreview") {
+          firstCommandReached.resolve();
+          return await firstStart.promise;
+        }
+        return {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => (path === "b.typ" ? null : source(path, () => {})),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const originalRandom = Math.random;
+  Math.random = () => 0.123456789;
+
+  try {
+    const first = manager.start("/vault/a.typ");
+    await firstCommandReached.promise;
+
+    // #when
+    const second = manager.start("/vault/b.typ");
+    firstStart.resolve({ staticServerPort: 4321 });
+    const [firstResult, secondResult] = await Promise.all([
+      first,
+      second.then(
+        () => "resolved",
+        (error: Error) => error.message,
+      ),
+    ]);
+
+    // #then
+    assert.deepEqual(
+      { firstResult, secondResult, calls },
+      {
+        firstResult: null,
+        secondResult: "preview source is unavailable",
+        calls: [
+          { method: "setPreviewSource", input: "/input/a.typ" },
+          { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: undefined },
+          { method: "pinMain", main: "/vault/main.typ" },
+        ],
+      },
+    );
+  } finally {
+    Math.random = originalRandom;
+    manager.dispose();
+  }
+});
+
+test("stopping a newer preview waits for every superseded kill before resetting the client", async () => {
+  // #given
+  const firstStart = deferred<{ staticServerPort: number }>();
+  const firstCommandReached = deferred<void>();
+  const firstKillReached = deferred<void>();
+  const firstKill = deferred<Record<string, never>>();
+  const secondKillReached = deferred<void>();
+  const secondKill = deferred<Record<string, never>>();
+  const calls: Array<Record<string, string | undefined>> = [];
+  let starts = 0;
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: "/vault/main.typ",
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
+      pinMain: (main: string | null) => calls.push({ method: "pinMain", main: main ?? undefined }),
+      executeCommand: async (command: string, args: unknown[]) => {
+        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        const recordedTaskId = typeof taskId === "string" ? taskId : undefined;
+        calls.push({ command, taskId: recordedTaskId });
+        if (command === "tinymist.doStartPreview") {
+          starts++;
+          if (starts === 1) {
+            firstCommandReached.resolve();
+            return await firstStart.promise;
+          }
+          return { staticServerPort: 4322 };
+        }
+        if (recordedTaskId === "4fzzzxj") {
+          firstKillReached.resolve();
+          return await firstKill.promise;
+        }
+        secondKillReached.resolve();
+        return await secondKill.promise;
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => source(path, () => {}),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const originalRandom = Math.random;
+  const taskRandoms = [0.123456789, 0.234567891];
+  Math.random = () => taskRandoms.shift() ?? originalRandom();
+
+  try {
+    const first = manager.start("/vault/a.typ");
+    await firstCommandReached.promise;
+    const secondResult = await manager.start("/vault/b.typ");
+    const stopped = manager.stop();
+    await secondKillReached.promise;
+    firstStart.resolve({ staticServerPort: 4321 });
+    await firstKillReached.promise;
+
+    // #when
+    secondKill.resolve({});
+    await stopped;
+    const callsAfterSecondKill = [...calls];
+    firstKill.resolve({});
+    const firstResult = await first;
+
+    // #then
+    assert.deepEqual(
+      { firstResult, secondResult, callsAfterSecondKill, calls },
+      {
+        firstResult: null,
+        secondResult: "http://127.0.0.1:4322",
+        callsAfterSecondKill: [
+          { method: "setPreviewSource", input: "/input/a.typ" },
+          { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: "/input/b.typ" },
+          { command: "tinymist.doStartPreview", taskId: "8fzzzdp" },
+          { command: "tinymist.doKillPreview", taskId: "8fzzzdp" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+        ],
+        calls: [
+          { method: "setPreviewSource", input: "/input/a.typ" },
+          { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: "/input/b.typ" },
+          { command: "tinymist.doStartPreview", taskId: "8fzzzdp" },
+          { command: "tinymist.doKillPreview", taskId: "8fzzzdp" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: undefined },
+          { method: "pinMain", main: "/vault/main.typ" },
+        ],
+      },
+    );
+  } finally {
+    Math.random = originalRandom;
+    manager.dispose();
+  }
+});
+
+test("a second stop preserves the pin due after a pending preview start fails", async () => {
+  // #given
+  const firstStart = deferred<{ staticServerPort: number }>();
+  const secondStart = deferred<{ staticServerPort: number }>();
+  const firstCommandReached = deferred<void>();
+  const secondCommandReached = deferred<void>();
+  const calls: Array<Record<string, string | undefined>> = [];
+  let starts = 0;
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: "/vault/main.typ",
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
+      pinMain: (main: string | null) => calls.push({ method: "pinMain", main: main ?? undefined }),
+      executeCommand: async (command: string, args: unknown[]) => {
+        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        calls.push({ command, taskId: typeof taskId === "string" ? taskId : undefined });
+        if (command === "tinymist.doStartPreview") {
+          starts++;
+          if (starts === 1) {
+            firstCommandReached.resolve();
+            return await firstStart.promise;
+          }
+          secondCommandReached.resolve();
+          return await secondStart.promise;
+        }
+        return {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => source(path, () => {}),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const originalRandom = Math.random;
+  const taskRandoms = [0.123456789, 0.234567891];
+  Math.random = () => taskRandoms.shift() ?? originalRandom();
+
+  try {
+    const first = manager.start("/vault/a.typ");
+    await firstCommandReached.promise;
+    const second = manager.start("/vault/b.typ");
+    await secondCommandReached.promise;
+    await manager.stop();
+    firstStart.resolve({ staticServerPort: 4321 });
+    const firstResult = await first;
+    await manager.stop();
+
+    // #when
+    secondStart.reject(new Error("preview start failed"));
+    const secondResult = await second;
+
+    // #then
+    assert.deepEqual(
+      { firstResult, secondResult, calls },
+      {
+        firstResult: null,
+        secondResult: null,
+        calls: [
+          { method: "setPreviewSource", input: "/input/a.typ" },
+          { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: "/input/b.typ" },
+          { command: "tinymist.doStartPreview", taskId: "8fzzzdp" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: undefined },
+          { method: "pinMain", main: "/vault/main.typ" },
+        ],
+      },
+    );
+  } finally {
+    Math.random = originalRandom;
+    manager.dispose();
+  }
+});
+
+test("a preview command without a port kills its task before resetting the client", async () => {
+  // #given
+  const calls: Array<Record<string, string | undefined>> = [];
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: "/vault/main.typ",
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
+      pinMain: (main: string | null) => calls.push({ method: "pinMain", main: main ?? undefined }),
+      executeCommand: async (command: string, args: unknown[]) => {
+        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        calls.push({ command, taskId: typeof taskId === "string" ? taskId : undefined });
+        return {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => source(path, () => {}),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const originalRandom = Math.random;
+  Math.random = () => 0.123456789;
+
+  try {
+    // #when
+    const result = await manager.start("/vault/a.typ").then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+
+    // #then
+    assert.deepEqual(
+      { result, calls },
+      {
+        result: "preview did not report a server port",
+        calls: [
+          { method: "setPreviewSource", input: "/input/a.typ" },
+          { command: "tinymist.doStartPreview", taskId: "4fzzzxj" },
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: undefined },
+          { method: "pinMain", main: "/vault/main.typ" },
+        ],
+      },
+    );
+  } finally {
+    Math.random = originalRandom;
+    manager.dispose();
+  }
+});
+
+test("a late kill reply does not reset a newer preview client input", async () => {
+  // #given
+  const firstKill = deferred<Record<string, never>>();
+  const firstKillReached = deferred<void>();
+  const calls: Array<Record<string, string | undefined>> = [];
+  let starts = 0;
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: "/vault/main.typ",
+      onNotification: () => {},
+      setPreviewSource: (input?: string) => calls.push({ method: "setPreviewSource", input }),
+      pinMain: (main: string | null) => calls.push({ method: "pinMain", main: main ?? undefined }),
+      executeCommand: async (command: string, args: unknown[]) => {
+        const taskId = command === "tinymist.doStartPreview" ? (args[0] as string[])[1] : args[0];
+        const recordedTaskId = typeof taskId === "string" ? taskId : undefined;
+        calls.push({ command, taskId: recordedTaskId });
+        if (command === "tinymist.doStartPreview") {
+          starts++;
+          return { staticServerPort: 4320 + starts };
+        }
+        if (recordedTaskId === "4fzzzxj") {
+          firstKillReached.resolve();
+          return await firstKill.promise;
+        }
+        return {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async (path: string) => source(path, () => {}),
+      byDocument: () => null,
+      mayBeSource: (path: string) => path.endsWith(".typ"),
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+  const originalRandom = Math.random;
+  const taskRandoms = [0.123456789, 0.234567891];
+  Math.random = () => taskRandoms.shift() ?? originalRandom();
+
+  try {
+    await manager.start("/vault/a.typ");
+    calls.length = 0;
+    const second = manager.start("/vault/b.typ");
+    await firstKillReached.promise;
+
+    // #when
+    const thirdResult = await manager.start("/vault/c.typ");
+    firstKill.resolve({});
+    const secondResult = await second;
+
+    // #then
+    assert.deepEqual(
+      { secondResult, thirdResult, calls },
+      {
+        secondResult: null,
+        thirdResult: "http://127.0.0.1:4322",
+        calls: [
+          { command: "tinymist.doKillPreview", taskId: "4fzzzxj" },
+          { method: "setPreviewSource", input: "/input/c.typ" },
+          { command: "tinymist.doStartPreview", taskId: "8fzzzdp" },
+        ],
+      },
+    );
+  } finally {
+    Math.random = originalRandom;
+    await manager.stop();
+    manager.dispose();
+  }
+});

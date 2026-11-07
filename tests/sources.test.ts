@@ -3,56 +3,14 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-
-interface Position {
-  line: number;
-  character: number;
-}
-
-interface TypstSource {
-  file: string;
-  entry: string;
-  document: string;
-  inputs: string | undefined;
-  pinnable: boolean;
-  pdf: string;
-  open(client: unknown): { close(): void };
-  toSource(position: Position): Position;
-  toEntry(position: Position): Position;
-  reveal(position: Position): Promise<void>;
-  describe(error: unknown): string;
-  on(event: "moved" | "ended" | "problems", listener: () => void): () => void;
-  release(): void;
-}
-
-interface SourceAdapter {
-  mayBe(vaultPath: string): boolean;
-  create(vaultPath: string, release: () => void): Promise<TypstSource | null>;
-}
-
-interface SourceRegistry {
-  hold(vaultPath: string): Promise<TypstSource | null>;
-  release?(source: TypstSource): void;
-  byDocument(address: string): TypstSource | null;
-  mayBeSource(vaultPath: string): boolean;
-}
-
-interface SourcesModule {
-  SourceRegistry: new (adapters: SourceAdapter[]) => SourceRegistry;
-  pdfDestination(vaultPath: string): string;
-  typAdapter(options: {
-    root(): string | null;
-    reveal(document: string, position: Position): Promise<void>;
-  }): SourceAdapter;
-}
-
-function sources(): SourcesModule {
-  try {
-    return require("../src/sources") as SourcesModule;
-  } catch {
-    throw new Error("src/sources is not implemented");
-  }
-}
+import {
+  SourceRegistry,
+  pdfDestination,
+  typAdapter,
+  type Position,
+  type SourceAdapter,
+  type TypstSource,
+} from "../src/sources";
 
 function source(path: string, release: () => void): TypstSource {
   return {
@@ -74,7 +32,6 @@ function source(path: string, release: () => void): TypstSource {
 
 test("pdfDestination replaces only the final extension of the final path segment", () => {
   // #given
-  const { pdfDestination } = sources();
   const vaultPaths = ["a/b.typ", "a/Note.md", "a/b.md.typ", "a.dir/noext", "A.TYP"];
 
   // #when
@@ -86,7 +43,6 @@ test("pdfDestination replaces only the final extension of the final path segment
 
 test("SourceRegistry shares a pending source until every holder releases it", async () => {
   // #given
-  const { SourceRegistry } = sources();
   let finishCreate!: () => void;
   const creation = new Promise<void>((resolve) => {
     finishCreate = resolve;
@@ -140,7 +96,6 @@ test("SourceRegistry shares a pending source until every holder releases it", as
 
 test("SourceRegistry queries adapters in order and mayBeSource does not create a source", async () => {
   // #given
-  const { SourceRegistry } = sources();
   const calls: string[] = [];
   const adapters: SourceAdapter[] = [
     {
@@ -181,7 +136,6 @@ test("SourceRegistry queries adapters in order and mayBeSource does not create a
 
 test("SourceRegistry asks a false-mayBe adapter and shares its held source", async () => {
   // #given
-  const { SourceRegistry } = sources();
   let creates = 0;
   const adapter: SourceAdapter = {
     mayBe: () => false,
@@ -205,7 +159,6 @@ test("SourceRegistry asks a false-mayBe adapter and shares its held source", asy
 
 test("SourceRegistry ignores a release after the held source is evicted", async () => {
   // #given
-  const { SourceRegistry } = sources();
   let creates = 0;
   const adapter: SourceAdapter = {
     mayBe: () => true,
@@ -234,7 +187,6 @@ test("SourceRegistry ignores a release after the held source is evicted", async 
 
 test("the typ adapter follows a wrapper created after the source is held", async () => {
   // #given
-  const { typAdapter } = sources();
   const root = mkdtempSync(join(tmpdir(), "typst-source-"));
   const position: Position = { line: 4, character: 7 };
   const reveals: Array<{ document: string; position: Position }> = [];
@@ -300,10 +252,10 @@ test("the typ adapter follows a wrapper created after the source is held", async
         document: join(root, "notes", "chapter.typ"),
         pdf: "notes/chapter.pdf",
         pinnable: true,
-        toSource: position,
-        toEntry: position,
+        toSource: { line: 4, character: 7 },
+        toEntry: { line: 4, character: 7 },
         description: "Error: broken",
-        reveals: [{ document: join(root, "notes", "chapter.typ"), position }],
+        reveals: [{ document: join(root, "notes", "chapter.typ"), position: { line: 4, character: 7 } }],
         listenerCalls: 0,
         releases: 1,
         unavailable: null,
@@ -313,4 +265,18 @@ test("the typ adapter follows a wrapper created after the source is held", async
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the typ adapter recognizes upper-case Typst extensions", async () => {
+  // #given
+  const adapter = typAdapter({ root: () => "/vault", reveal: async () => {} });
+
+  // #when
+  const upperCaseSource = await adapter.create("notes/a.TYP", () => {});
+
+  // #then
+  assert.deepEqual(
+    { mayBe: adapter.mayBe("Chapter.TYP"), created: upperCaseSource !== null },
+    { mayBe: true, created: true },
+  );
 });

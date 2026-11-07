@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AutomaticPdfController, type AutomaticPdfExportRequest } from "../src/automatic-pdf";
-import type { TypstSource } from "../src/sources";
-import { TestFileManager, TestVault } from "./support/obsidian";
+import { SourceRegistry, typAdapter, type TypstSource } from "../src/sources";
+import { TFile, TestFileManager, TestVault } from "./support/obsidian";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -195,5 +195,41 @@ test("an automatic-PDF export error uses the source description in its notice", 
     );
   } finally {
     h.controller.dispose();
+  }
+});
+
+test("renaming an automatic-PDF source to an upper-case Typst extension keeps its entry", async () => {
+  // #given
+  const vault = new TestVault("/vault");
+  let storedPaths: string[] = [];
+  const controller = new AutomaticPdfController({
+    vault,
+    fileManager: new TestFileManager(vault),
+    sources: new SourceRegistry([typAdapter({ root: () => "/vault", reveal: async () => {} })]),
+    root: () => "/vault",
+    onLayoutReady: () => {},
+    registerEvent: () => {},
+    createExporter: () => ({ exportPdf: async () => new Uint8Array(), stop: () => {} }),
+    confirmReplace: async () => true,
+    persist: async (state) => {
+      storedPaths = Object.keys(state.entries);
+    },
+    notice: () => {},
+    storedState: () => undefined,
+  });
+  await controller.setAutomaticPdf("a.typ", false);
+  controller.start();
+
+  // #when
+  await vault.emit("rename", new TFile("a.TYP"), "a.typ");
+
+  // #then
+  try {
+    assert.deepEqual(
+      { extension: new TFile("a.TYP").extension, storedPaths },
+      { extension: "typ", storedPaths: ["a.TYP"] },
+    );
+  } finally {
+    controller.dispose();
   }
 });
