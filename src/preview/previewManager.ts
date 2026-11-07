@@ -28,8 +28,8 @@ export class PreviewManager {
   private source: TypstSource | null = null;
   /** Every operation that replaces or ends a preview advances this value. */
   private generation = 0;
-  private previewSourceSet = false;
-  private resetAfterPending: { generation: number; pinMain: boolean } | null = null;
+  private inputSet = false;
+  private mainTaken = false;
   private readonly pendingStarts = new Set<Promise<string | null>>();
   private handlersRegistered = false;
   private disposed = false;
@@ -59,14 +59,7 @@ export class PreviewManager {
     lsp.onNotification("tinymist/preview/dispose", (params) => {
       const { taskId } = (params as { taskId?: string }) ?? {};
       if (taskId && taskId === this.taskId) {
-        this.generation++;
-        this.source?.release();
-        this.source = null;
-        this.taskId = null;
-        this.taskFilePath = null;
-        this.url = null;
-        this.filePath = null;
-        this.notifyChange();
+        this.endTask();
       }
     });
     lsp.onNotification("tinymist/preview/scrollSource", (params) => {
@@ -77,15 +70,8 @@ export class PreviewManager {
 
   /** Called by the plugin after a language-server (re)start. */
   onLspRestart(): void {
-    this.generation++;
-    this.source?.release();
-    this.source = null;
+    this.endTask();
     this.handlersRegistered = false;
-    this.taskId = null;
-    this.taskFilePath = null;
-    this.url = null;
-    this.filePath = null;
-    this.notifyChange();
   }
 
   onVaultRename(newPath: string, oldPath: string): void {
@@ -121,14 +107,7 @@ export class PreviewManager {
 
   dispose(): void {
     this.disposed = true;
-    this.generation++;
-    this.source?.release();
-    this.source = null;
-    this.taskId = null;
-    this.taskFilePath = null;
-    this.url = null;
-    this.filePath = null;
-    this.notifyChange();
+    this.endTask();
     this.changeListeners.clear();
   }
 
@@ -148,16 +127,11 @@ export class PreviewManager {
     const generation = ++this.generation;
     const started = this.startPreview(filePath, generation, lsp);
     this.pendingStarts.add(started);
-    void started.then(
-      () => {
-        this.pendingStarts.delete(started);
-        this.completePendingReset();
-      },
-      () => {
-        this.pendingStarts.delete(started);
-        this.completePendingReset();
-      },
-    );
+    const settled = (): void => {
+      this.pendingStarts.delete(started);
+      this.settleClient();
+    };
+    void started.then(settled, settled);
     return started;
   }
 
@@ -203,7 +177,7 @@ export class PreviewManager {
       args.push(`--invert-colors=${this.plugin.settings.invertPreviewColors}`);
     }
     lsp.setPreviewSource(source.inputs);
-    this.previewSourceSet = true;
+    this.inputSet = true;
     args.push("--page-title", basename(filePath), source.entry);
 
     let result: PreviewResult;
@@ -218,24 +192,16 @@ export class PreviewManager {
       if (generation !== this.generation) {
         return null;
       }
-      this.clearPreviewSource();
       throw error;
     }
-    if (generation !== this.generation) {
-      await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
-      source.release();
-      this.requestPendingReset(true);
-      return null;
-    }
+    this.mainTaken = true;
     const port = result?.staticServerPort;
-    if (!port) {
+    if (generation !== this.generation || !port) {
       await lsp.executeCommand("tinymist.doKillPreview", [taskId], 5000).catch(() => {});
       source.release();
       if (generation !== this.generation) {
-        this.requestPendingReset(true);
         return null;
       }
-      this.clearPreviewSource();
       throw new Error("preview did not report a server port");
     }
 
@@ -269,15 +235,10 @@ export class PreviewManager {
   }
 
   async stop(): Promise<void> {
-    const generation = ++this.generation;
+    this.generation++;
     const stopping = this.stopCurrent();
-    if (stopping) {
-      await stopping;
-      return;
-    }
-    if (!this.previewSourceSet) return;
-    this.resetAfterPending = { generation, pinMain: false };
-    this.completePendingReset();
+    if (stopping) await stopping;
+    this.settleClient();
   }
 
   private stopCurrent(): Promise<void> | null {
@@ -295,12 +256,23 @@ export class PreviewManager {
         .executeCommand("tinymist.doKillPreview", [taskId], 5000)
         .catch(() => {})
         .then(() => {
-          this.clearPreviewSource(true);
           source?.release();
+          this.settleClient();
         });
     }
     source?.release();
     return null;
+  }
+
+  private endTask(): void {
+    this.generation++;
+    this.source?.release();
+    this.source = null;
+    this.taskId = null;
+    this.taskFilePath = null;
+    this.url = null;
+    this.filePath = null;
+    this.notifyChange();
   }
 
   private async rebindSource(
@@ -334,23 +306,14 @@ export class PreviewManager {
     return path.split(sep).join("/");
   }
 
-  private requestPendingReset(pinMain: boolean): void {
-    const reset = this.resetAfterPending;
-    if (reset && reset.generation === this.generation && pinMain) reset.pinMain = true;
-  }
-
-  private completePendingReset(): void {
-    const reset = this.resetAfterPending;
-    if (!reset || this.pendingStarts.size || reset.generation !== this.generation || this.taskId) return;
-    this.resetAfterPending = null;
-    this.clearPreviewSource(reset.pinMain);
-  }
-
-  private clearPreviewSource(pinMain = false): void {
+  private settleClient(): void {
+    if (this.pendingStarts.size || this.taskId !== null || this.disposed) return;
     const lsp = this.plugin.lsp;
-    this.previewSourceSet = false;
     if (!lsp || lsp.status !== "running") return;
-    lsp.setPreviewSource();
-    if (pinMain) lsp.pinMain(lsp.mainFile);
+    if (this.inputSet) lsp.setPreviewSource();
+    // A started preview took over tinymist's main; hand it back to the editor.
+    if (this.mainTaken) lsp.pinMain(lsp.mainFile);
+    this.inputSet = false;
+    this.mainTaken = false;
   }
 }

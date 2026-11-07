@@ -13,7 +13,7 @@ export interface Position {
  */
 export interface TypstSource {
   readonly file: string;
-  /** Address passed to preview and PDF jobs; may be a generated wrapper and read live. */
+  /** Address passed to preview and PDF jobs; may be the project's `.tinymist-preview.typ` wrapper. */
   readonly entry: string;
   /** Address of the source file's text, used for cursor sync and source jumps. */
   readonly document: string;
@@ -140,7 +140,7 @@ interface TypAdapterOptions {
 
 /** Adapts a saved `.typ` file without opening a second LSP document. */
 export function typAdapter(options: TypAdapterOptions): SourceAdapter {
-  const mayBe = (vaultPath: string): boolean => vaultPath.endsWith(".typ");
+  const mayBe = (vaultPath: string): boolean => /\.typ$/i.test(vaultPath);
   return {
     mayBe,
     create: async (vaultPath, release) => {
