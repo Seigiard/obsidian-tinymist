@@ -2,7 +2,7 @@ import { Text } from "@codemirror/state";
 import { existsSync, readFileSync, statSync } from "fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { FRAGMENT_MARK } from "../lsp/fragmentRenderer";
-import { bookMain } from "../preview/previewEntry";
+import { typBookMain } from "../sources";
 import type { HoverTarget } from "./shared/renderHover";
 import { typstMathSpans } from "./typstEditor";
 
@@ -418,7 +418,7 @@ export function projectStatements(filePath: string, root: string, templates = fa
       .filter((s) => s.kind !== "include")
       .map((s) => ({ text: rootAbsolute(s, dirname(override), root), file: override, line: lineAt(s.from) }));
   }
-  const main = bookMain(filePath, root);
+  const main = typBookMain(filePath, root);
   if (!main) return [];
   const dir = dirname(main);
   const source = resolve(filePath);

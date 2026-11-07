@@ -1,5 +1,4 @@
 import { createHash } from "crypto";
-import { join } from "path";
 import {
   EventRef,
   FileManager,
@@ -9,7 +8,8 @@ import {
   Vault,
 } from "obsidian";
 import { LspClient, LspConfiguration } from "./lsp/client";
-import { previewEntry } from "./preview/previewEntry";
+import { pdfDestination } from "./sources";
+import type { SourceRegistry, TypstSource } from "./sources";
 
 export type AutomaticPdfStatus =
   | "building"
@@ -67,6 +67,7 @@ export interface AutomaticPdfStoredState {
 export interface AutomaticPdfHost {
   vault: Vault;
   fileManager: FileManager;
+  sources: Pick<SourceRegistry, "hold" | "mayBeSource">;
   root(): string | null;
   onLayoutReady(callback: () => void): void;
   registerEvent(event: EventRef): void;
@@ -144,14 +145,6 @@ function normalizeStoredState(value: unknown): AutomaticPdfStoredState {
   return { entries };
 }
 
-function pdfPath(sourcePath: string): string {
-  return sourcePath.replace(/\.typ$/i, ".pdf");
-}
-
-function isTypstFile(file: TAbstractFile): file is TFile {
-  return file instanceof TFile && file.extension === "typ";
-}
-
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer as ArrayBuffer;
 }
@@ -174,7 +167,7 @@ export class AutomaticPdfController {
   constructor(private readonly host: AutomaticPdfHost) {
     const stored = normalizeStoredState(host.storedState());
     for (const [path, value] of Object.entries(stored.entries)) {
-      const destinationPath = value.destinationPath ?? pdfPath(path);
+      const destinationPath = value.destinationPath ?? pdfDestination(path);
       this.entries.set(path, {
         ...value,
         destinationPath,
@@ -238,7 +231,7 @@ export class AutomaticPdfController {
   }
 
   async setAutomaticPdf(sourcePath: string, enabled: boolean): Promise<void> {
-    if (this.disposed || !sourcePath.endsWith(".typ")) return;
+    if (this.disposed || !this.host.sources.mayBeSource(sourcePath)) return;
     const entry = this.entry(sourcePath);
     this.revokeAuthorization(entry);
     entry.enabled = enabled;
@@ -247,7 +240,7 @@ export class AutomaticPdfController {
       this.dropPending(sourcePath);
       entry.declinedPath = undefined;
       entry.declinedHash = undefined;
-      entry.status = this.destinationExists(entry.destinationPath ?? pdfPath(sourcePath))
+      entry.status = this.destinationExists(entry.destinationPath ?? pdfDestination(sourcePath))
         ? "current"
         : "missing";
       await this.persist();
@@ -266,7 +259,7 @@ export class AutomaticPdfController {
     options: { interactive?: boolean } = {},
   ): Promise<AutomaticPdfReceipt> {
     const interactive = options.interactive !== false;
-    if (this.disposed || !sourcePath.endsWith(".typ")) {
+    if (this.disposed || !this.host.sources.mayBeSource(sourcePath)) {
       return this.receiptWithoutJob(sourcePath, "cancelled");
     }
     if (
@@ -285,7 +278,7 @@ export class AutomaticPdfController {
     if (!entry) {
       entry = {
         enabled: false,
-        destinationPath: pdfPath(sourcePath),
+        destinationPath: pdfDestination(sourcePath),
         status: "missing",
         generation: 0,
         errorNotified: false,
@@ -305,7 +298,7 @@ export class AutomaticPdfController {
   }
 
   private async onModify(file: TAbstractFile): Promise<void> {
-    if (!isTypstFile(file)) return;
+    if (!(file instanceof TFile)) return;
     const entry = this.entries.get(file.path);
     if (!entry?.enabled || this.disposed) return;
     void this.enqueue(file.path, false);
@@ -336,7 +329,7 @@ export class AutomaticPdfController {
       await this.renameFolder(oldPath, file.path);
       return;
     }
-    if (!isTypstFile(file)) {
+    if (!this.host.sources.mayBeSource(file.path)) {
       const entry = this.entries.get(oldPath);
       if (!entry) return;
       entry.generation++;
@@ -367,13 +360,13 @@ export class AutomaticPdfController {
       this.dropPending(oldSourcePath);
       entry.generation++;
       this.revokeAuthorization(entry);
-      const oldPdf = pdfPath(oldSourcePath);
+      const oldPdf = pdfDestination(oldSourcePath);
       entry.pendingMove =
         entry.ownedHash !== undefined &&
         (entry.ownedPath === oldPdf || entry.pendingMove?.destinationPath === oldPdf)
-          ? { destinationPath: pdfPath(newSourcePath), hash: entry.ownedHash }
+          ? { destinationPath: pdfDestination(newSourcePath), hash: entry.ownedHash }
           : undefined;
-      entry.destinationPath = pdfPath(newSourcePath);
+      entry.destinationPath = pdfDestination(newSourcePath);
       this.entries.set(newSourcePath, entry);
       operations.push({ entry, oldSourcePath, newSourcePath, generation: entry.generation });
     }
@@ -420,7 +413,7 @@ export class AutomaticPdfController {
       entry.generation++;
       this.revokeAuthorization(entry);
       entry.pendingMove = undefined;
-      entry.destinationPath = pdfPath(newPath);
+      entry.destinationPath = pdfDestination(newPath);
       this.entries.set(newPath, entry);
       const generation = entry.generation;
       const shouldBuild = await this.reconcileMovedPdf(entry, oldPath, newPath, true, generation);
@@ -439,8 +432,8 @@ export class AutomaticPdfController {
     notifyMoveFailure: boolean,
     generation: number,
   ): Promise<boolean> {
-    const oldDestinationPath = pdfPath(oldSourcePath);
-    const newDestinationPath = pdfPath(newSourcePath);
+    const oldDestinationPath = pdfDestination(oldSourcePath);
+    const newDestinationPath = pdfDestination(newSourcePath);
     if (!this.isLineageCurrent(entry, newSourcePath, generation)) return false;
     // Obsidian can dispatch the rename before its descendant index catches up
     // with the already-moved bytes. Let that synchronous dispatch settle before
@@ -606,6 +599,34 @@ export class AutomaticPdfController {
       this.markNotCurrent(job, entry);
       return;
     }
+    let source: TypstSource | null = null;
+    try {
+      source = await this.host.sources.hold(job.sourcePath);
+    } catch {
+      source = null;
+    }
+    if (!this.isCurrent(job, entry)) {
+      source?.release();
+      this.markNotCurrent(job, entry);
+      return;
+    }
+    if (!source) {
+      this.markFailure(entry, "The source file is not available.");
+      job.outcome = "failed";
+      return;
+    }
+    try {
+      await this.buildHeld(job, entry, source);
+    } finally {
+      source.release();
+    }
+  }
+
+  private async buildHeld(
+    job: PendingJob,
+    entry: Entry,
+    source: TypstSource,
+  ): Promise<void> {
     const root = this.host.root();
     if (!root || !this.sourceExists(job.sourcePath)) {
       this.markFailure(entry, "The source file is not available.");
@@ -613,8 +634,16 @@ export class AutomaticPdfController {
       return;
     }
 
-    const destinationPath = pdfPath(job.sourcePath);
+    const destinationPath = source.pdf;
     entry.destinationPath = destinationPath;
+    if (
+      !destinationPath.toLowerCase().endsWith(".pdf") ||
+      destinationPath === source.file
+    ) {
+      this.markFailure(entry, `Invalid PDF destination for ${source.file}.`);
+      job.outcome = "failed";
+      return;
+    }
     const initial = await this.readDestination(destinationPath);
     if (initial.error) {
       this.markFailure(entry, `Could not read ${destinationPath}: ${String(initial.error)}`);
@@ -634,18 +663,17 @@ export class AutomaticPdfController {
 
     let bytes: Uint8Array;
     try {
-      const selected = previewEntry(join(root, job.sourcePath), root);
       bytes = await this.getExporter().exportPdf({
-        entryPath: selected.filePath,
+        entryPath: source.entry,
         root,
-        sourceInput: selected.sourceInput,
+        sourceInput: source.inputs,
       });
     } catch (error) {
       if (!this.isCurrent(job, entry)) {
         this.markNotCurrent(job, entry);
         return;
       }
-      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${String(error)}`);
+      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${source.describe(error)}`);
       job.outcome = "failed";
       return;
     }
@@ -923,7 +951,7 @@ export class AutomaticPdfController {
     return {
       outcome: job.outcome ?? "cancelled",
       generation: job.generation,
-      pdfPath: entry?.destinationPath ?? pdfPath(job.sourcePath),
+      pdfPath: entry?.destinationPath ?? pdfDestination(job.sourcePath),
       status: entry?.status ?? "missing",
     };
   }
@@ -936,7 +964,7 @@ export class AutomaticPdfController {
     return {
       outcome,
       generation: entry?.generation ?? 0,
-      pdfPath: entry?.destinationPath ?? pdfPath(sourcePath),
+      pdfPath: entry?.destinationPath ?? pdfDestination(sourcePath),
       status: entry?.status ?? "missing",
     };
   }
