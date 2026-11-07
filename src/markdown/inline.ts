@@ -27,6 +27,7 @@ interface UrlRange {
 
 interface InlineOptions {
   lineStart?: boolean;
+  escapeMarkdownMarkers?: boolean;
 }
 
 interface MarkdownLinkRange {
@@ -66,11 +67,17 @@ interface Delimiter {
   close: boolean;
 }
 
-export function convertInlineText(text: string, sourceOffset = 0, reportProblem?: ProblemReporter, state?: InlineState): MappedLineBuilder {
+export function convertInlineText(
+  text: string,
+  sourceOffset = 0,
+  reportProblem?: ProblemReporter,
+  state?: InlineState,
+  options: InlineOptions = {},
+): MappedLineBuilder {
   const inlineState = state ?? { commentOpen: false };
   const prepared = stripComments(text, inlineState);
   reportUnsupportedConstructs(prepared, reportProblem);
-  return convertInline(prepared, sourceOffset);
+  return convertInline(prepared, sourceOffset, options);
 }
 
 export function convertProseLine(line: string, reportProblem?: ProblemReporter, sourceOffset = 0, state?: InlineState): MappedLineBuilder {
@@ -135,7 +142,17 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     const markdown = markdownByStart.get(index);
     if (markdown) {
       if (markdown.image) {
-        builder.appendInserted(`#std.image(${quoteString(markdown.target)})`, sourceOffset + markdown.start);
+        if (/^https?:\/\//iu.test(markdown.target)) {
+          if (markdown.labelStart === markdown.labelEnd) {
+            builder.appendInserted(`#std.link(${quoteString(markdown.target)});`, sourceOffset + markdown.start);
+          } else {
+            builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
+            builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
+            builder.appendInserted("]", sourceOffset + markdown.end);
+          }
+        } else {
+          builder.appendInserted(`#std.image(${quoteString(markdown.target)})`, sourceOffset + markdown.start);
+        }
       } else if (/^https?:\/\//iu.test(markdown.target)) {
         builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
         builder.appendBuilder(convertInline(text.slice(markdown.labelStart, markdown.labelEnd), sourceOffset + markdown.labelStart));
@@ -205,6 +222,11 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     }
 
     if (options.lineStart && index === 0) {
+      if (options.escapeMarkdownMarkers && (character === "-" || character === "+") && isWhitespace(text[index + width])) {
+        builder.appendEscaped(character, sourceOffset + index);
+        index += width;
+        continue;
+      }
       if (character === "-" && isNonMarkdownWhitespace(text[index + width])) {
         builder.appendEscaped(character, sourceOffset + index);
         index += width;
@@ -213,14 +235,18 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
       if (character >= "0" && character <= "9") {
         let digitEnd = index;
         while (digitEnd < text.length && text[digitEnd] >= "0" && text[digitEnd] <= "9") digitEnd += 1;
-        if (text[digitEnd] === "." && isNonMarkdownWhitespace(text[digitEnd + 1])) {
+        const whitespace = options.escapeMarkdownMarkers ? isWhitespace(text[digitEnd + 1]) : isNonMarkdownWhitespace(text[digitEnd + 1]);
+        if (text[digitEnd] === "." && whitespace) {
           builder.appendSource(text.slice(index, digitEnd), sourceOffset + index);
           builder.appendEscaped(".", sourceOffset + digitEnd);
           index = digitEnd + 1;
           continue;
         }
       }
-      if (character === "=" || (character === "+" && (!text[index + width] || /\s/u.test(text[index + width])))) {
+      if (
+        (character === "=" && (!options.escapeMarkdownMarkers || isWhitespace(text[index + width]))) ||
+        (character === "+" && (!text[index + width] || /\s/u.test(text[index + width])))
+      ) {
         builder.appendEscaped(character, sourceOffset + index);
         index += width;
         continue;
@@ -327,6 +353,10 @@ function leadingIndentLength(text: string): number {
 
 function isNonMarkdownWhitespace(character: string | undefined): boolean {
   return character !== undefined && /\s/u.test(character) && character !== " " && character !== "\t";
+}
+
+function isWhitespace(character: string | undefined): boolean {
+  return character !== undefined && /\s/u.test(character);
 }
 
 function findCodeRanges(text: string): CodeRange[] {
@@ -557,17 +587,18 @@ function isMarkdownEscapeTarget(character: string): boolean {
 
 function stripComments(text: string, state: InlineState): string {
   if (!state.commentOpen && !text.includes("%%")) return text;
+  const codeRanges = findCodeRanges(text);
   let result = "";
   let index = 0;
   while (index < text.length) {
     if (state.commentOpen) {
-      const close = text.indexOf("%%", index);
+      const close = findCommentDelimiter(text, index, codeRanges);
       if (close < 0) return result;
       state.commentOpen = false;
       index = close + 2;
       continue;
     }
-    const open = text.indexOf("%%", index);
+    const open = findCommentDelimiter(text, index, codeRanges);
     if (open < 0) {
       result += text.slice(index);
       return result;
@@ -579,15 +610,26 @@ function stripComments(text: string, state: InlineState): string {
   return result;
 }
 
+function findCommentDelimiter(text: string, from: number, codeRanges: readonly CodeRange[]): number {
+  let index = text.indexOf("%%", from);
+  while (index >= 0 && isInsideRange(index, codeRanges)) index = text.indexOf("%%", index + 2);
+  return index;
+}
+
 function reportUnsupportedConstructs(text: string, reportProblem?: ProblemReporter): void {
   if (!reportProblem) return;
-  if (!text.includes("![[") && !text.includes("<") && !text.includes("$") && !text.includes("[^")) return;
+  if (!text.includes("![[") && !text.includes("![") && !text.includes("<") && !text.includes("$") && !text.includes("[^")) return;
 
   const codeRanges = findCodeRanges(text);
   if (hasUnsupportedEmbed(text, codeRanges)) reportProblem("Note embed has no Typst form");
+  if (hasRemoteImage(text, codeRanges)) reportProblem("Remote image has no Typst form");
   if (hasUnsupportedHtml(text, codeRanges)) reportProblem("HTML has no Typst form");
   if (hasLatexMath(text, codeRanges)) reportProblem("LaTeX math has no Typst form");
   if (hasFootnote(text, codeRanges)) reportProblem("Footnote has no Typst form");
+}
+
+function hasRemoteImage(text: string, codeRanges: readonly CodeRange[]): boolean {
+  return findMarkdownLinks(text, codeRanges).some((range) => range.image && /^https?:\/\//iu.test(range.target));
 }
 
 function hasUnsupportedEmbed(text: string, codeRanges: readonly CodeRange[]): boolean {
@@ -667,7 +709,7 @@ function findMarkdownLinks(text: string, codeRanges: readonly CodeRange[]): Mark
       end: closeParen + 1,
       labelStart: bracket + 1,
       labelEnd: closeBracket,
-      target: text.slice(closeBracket + 2, closeParen),
+      target: parseMarkdownDestination(text.slice(closeBracket + 2, closeParen)),
       image,
     });
     index = closeParen + 1;
@@ -731,6 +773,7 @@ function findImageRanges(text: string, codeRanges: readonly CodeRange[]): ImageR
 
   for (const range of findMarkdownLinks(text, codeRanges)) {
     if (!range.image) continue;
+    if (/^https?:\/\//iu.test(range.target)) continue;
     ranges.push({ start: range.start, end: range.end, path: range.target });
   }
   return ranges;
@@ -751,6 +794,16 @@ function findLinebreaks(text: string, codeRanges: readonly CodeRange[]): Linebre
 
 function isImagePath(path: string): boolean {
   return /\.(?:png|jpe?g|gif|webp|svg)$/iu.test(path.split("#", 1)[0]);
+}
+
+function parseMarkdownDestination(raw: string): string {
+  const value = raw.trim();
+  if (value.startsWith("<")) {
+    const close = value.indexOf(">");
+    if (close >= 0) return value.slice(1, close);
+  }
+  const match = /^(\S+)/u.exec(value);
+  return match?.[1] ?? "";
 }
 
 function parseDimensions(value: string): { width?: number; height?: number } {
