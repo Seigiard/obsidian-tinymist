@@ -8,6 +8,7 @@ import TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { SourceRegistry, typAdapter, type TypstSource } from "../src/sources";
+import { virtualAddress } from "./support/virtualAddress";
 
 function source(path: string, release: () => void, entryOffset = 0): TypstSource {
   return {
@@ -1622,7 +1623,7 @@ test("Markdown moved and ended events restart then stop the same held preview so
     ["problems", new Set()],
   ]);
   let file = "Notes/A.md";
-  let entry = "/vault/Notes/A.md.typ";
+  let entry = virtualAddress("/vault", "Notes/A.md");
   let holds = 0;
   let releases = 0;
   let port = 4320;
@@ -1676,7 +1677,7 @@ test("Markdown moved and ended events restart then stop the same held preview so
 
   // #when
   file = "Notes/B.md";
-  entry = "/vault/Notes/B.md.typ";
+  entry = virtualAddress("/vault", "Notes/B.md");
   for (const listener of listeners.get("moved") ?? []) listener();
   manager.onVaultRename("Notes/B.md", "Notes/A.md");
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -1693,9 +1694,9 @@ test("Markdown moved and ended events restart then stop the same held preview so
         holds: 1,
         releases: 1,
         calls: [
-          { command: "tinymist.doStartPreview", entry: "/vault/Notes/A.md.typ" },
+          { command: "tinymist.doStartPreview", entry: virtualAddress("/vault", "Notes/A.md") },
           { command: "tinymist.doKillPreview" },
-          { command: "tinymist.doStartPreview", entry: "/vault/Notes/B.md.typ" },
+          { command: "tinymist.doStartPreview", entry: virtualAddress("/vault", "Notes/B.md") },
           { command: "tinymist.doKillPreview" },
         ],
         afterMove: { filePath: "/vault/Notes/B.md", url: "http://127.0.0.1:4322" },
@@ -1754,7 +1755,7 @@ test("startLsp restart reopens an active Markdown preview on the new client", as
     mayBe: (path: string) => path.endsWith(".md"),
     create: async (path: string, release: () => void) => {
       creates++;
-      const entry = `/vault/${path}.typ`;
+      const entry = virtualAddress("/vault", path);
       return {
         file: path,
         entry,
@@ -1810,13 +1811,13 @@ test("startLsp restart reopens an active Markdown preview on the new client", as
       { documents, previewStarts, creates, active: { filePath: manager.filePath, url: manager.url } },
       {
         documents: [
-          { client: 1, method: "didOpen", path: "/vault/Notes/A.md.typ" },
-          { client: 1, method: "didClose", path: "/vault/Notes/A.md.typ" },
-          { client: 2, method: "didOpen", path: "/vault/Notes/A.md.typ" },
+          { client: 1, method: "didOpen", path: virtualAddress("/vault", "Notes/A.md") },
+          { client: 1, method: "didClose", path: virtualAddress("/vault", "Notes/A.md") },
+          { client: 2, method: "didOpen", path: virtualAddress("/vault", "Notes/A.md") },
         ],
         previewStarts: [
-          { client: 1, entry: "/vault/Notes/A.md.typ" },
-          { client: 2, entry: "/vault/Notes/A.md.typ" },
+          { client: 1, entry: virtualAddress("/vault", "Notes/A.md") },
+          { client: 2, entry: virtualAddress("/vault", "Notes/A.md") },
         ],
         creates: 2,
         active: { filePath: "/vault/Notes/A.md", url: "http://127.0.0.1:4322" },
@@ -1841,7 +1842,7 @@ test("a preview start failure is described by its held source", async () => {
       setPreviewSource: () => {},
       pinMain: () => {},
       executeCommand: async () => {
-        throw new Error("/vault/Notes/A.md.typ:3:5: unknown variable");
+        throw new Error(`${virtualAddress("/vault", "Notes/A.md")}:3:5: unknown variable`);
       },
     },
     settings: { invertPreviewColors: "never" },

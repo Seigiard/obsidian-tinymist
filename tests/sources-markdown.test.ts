@@ -4,11 +4,15 @@ import type { KitView } from "../src/markdown/convert";
 import type TinymistPlugin from "../src/main";
 import { PreviewManager } from "../src/preview/previewManager";
 import { SourceRegistry, type Position, type SourceAdapter, type TypstSource } from "../src/sources";
+import { virtualAddress } from "./support/virtualAddress";
 
 const BUILT_INS =
   "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 const SOURCE_TEXT = "---\ntypst: true\n---\n**жирный** текст";
 const SOURCE_TYP = `${BUILT_INS}#show: template.with(\n\n)\n*жирный* текст`;
+const ARLIDUS_ENTRY = virtualAddress("/v", "Notes/Арлидус.md");
+const A_ENTRY = virtualAddress("/v", "Notes/A.md");
+const ARCHIVE_B_ENTRY = virtualAddress("/v", "Archive/B.md");
 
 interface MarkdownSourceHost {
   root(): string | null;
@@ -176,8 +180,8 @@ test("source creation prefers normalized editor text and falls back to the vault
     assert.deepEqual(
       { editorCalls: firstClient.calls, vaultCalls: secondClient.calls, editorReads: editor.readFiles, vaultReads: vault.readFiles },
       {
-        editorCalls: [{ method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP }],
-        vaultCalls: [{ method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP }],
+        editorCalls: [{ method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP }],
+        vaultCalls: [{ method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP }],
         editorReads: [],
         vaultReads: ["Notes/Арлидус.md"],
       },
@@ -221,8 +225,8 @@ test("a Markdown source exposes literal virtual addresses and PDF destination", 
     },
     {
       file: "Notes/Арлидус.md",
-      entry: "/v/Notes/Арлидус.md.typ",
-      document: "/v/Notes/Арлидус.md.typ",
+      entry: ARLIDUS_ENTRY,
+      document: ARLIDUS_ENTRY,
       inputs: undefined,
       pinnable: false,
       exportable: false,
@@ -255,14 +259,14 @@ test("open clients receive independent document updates and closing one stops it
       { first: first.calls, second: second.calls, events },
       {
         first: [
-          { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
-          { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
-          { method: "didClose", path: "/v/Notes/Арлидус.md.typ" },
+          { method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP },
+          { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+          { method: "didClose", path: ARLIDUS_ENTRY },
         ],
         second: [
-          { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
-          { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
-          { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 2` },
+          { method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP },
+          { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+          { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 2` },
         ],
         events: ["problems", "problems", "problems"],
       },
@@ -288,10 +292,10 @@ test("repeated opens on one client share one document until the final handle clo
 
   // #then
   assert.deepEqual(client.calls, [
-    { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
-    { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
-    { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 2` },
-    { method: "didClose", path: "/v/Notes/Арлидус.md.typ" },
+    { method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP },
+    { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+    { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 2` },
+    { method: "didClose", path: ARLIDUS_ENTRY },
   ]);
 });
 
@@ -317,9 +321,9 @@ test("a shared Markdown source stays live until the registry's final holder rele
   // #when
   first.release();
   fixture.emitEditorChange("Notes/Арлидус.md", "---\ntypst: true\n---\n/typst#let x = 1");
-  const heldAfterOne = registry.byDocument("/v/Notes/Арлидус.md.typ") === second;
+  const heldAfterOne = registry.byDocument(ARLIDUS_ENTRY) === second;
   second.release();
-  const heldAfterLast = registry.byDocument("/v/Notes/Арлидус.md.typ");
+  const heldAfterLast = registry.byDocument(ARLIDUS_ENTRY);
   const third = await registry.hold("Notes/Арлидус.md");
   assert.ok(third, "expected a fresh source after the final release");
 
@@ -329,9 +333,9 @@ test("a shared Markdown source stays live until the registry's final holder rele
       { calls: client.calls, heldAfterOne, heldAfterLast, recreated: third !== first, creates },
       {
         calls: [
-          { method: "didOpen", path: "/v/Notes/Арлидус.md.typ", text: SOURCE_TYP },
-          { method: "didChange", path: "/v/Notes/Арлидус.md.typ", text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
-          { method: "didClose", path: "/v/Notes/Арлидус.md.typ" },
+          { method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP },
+          { method: "didChange", path: ARLIDUS_ENTRY, text: `${BUILT_INS}#show: template.with(\n\n)\n#let x = 1` },
+          { method: "didClose", path: ARLIDUS_ENTRY },
         ],
         heldAfterOne: true,
         heldAfterLast: null,
@@ -368,7 +372,7 @@ test("reveal delegates the Markdown path and describe removes every virtual addr
   // #when
   await source.reveal({ line: 2, character: 7 });
   const description = source.describe(
-    new Error("/v/Notes/A.md.typ:3:5: /v/Notes/A.md.typ has an unknown variable"),
+    new Error(`${A_ENTRY}:3:5: ${A_ENTRY} has an unknown variable`),
   );
   const stringDescription = source.describe("plain failure");
 
@@ -407,10 +411,10 @@ test("rename and delete move every open client without an adapter-owned restart 
   // #then
   try {
     const lifecycleCalls: ClientCall[] = [
-      { method: "didOpen", path: "/v/Notes/A.md.typ", text: SOURCE_TYP },
-      { method: "didClose", path: "/v/Notes/A.md.typ" },
-      { method: "didOpen", path: "/v/Archive/B.md.typ", text: SOURCE_TYP },
-      { method: "didClose", path: "/v/Archive/B.md.typ" },
+      { method: "didOpen", path: A_ENTRY, text: SOURCE_TYP },
+      { method: "didClose", path: A_ENTRY },
+      { method: "didOpen", path: ARCHIVE_B_ENTRY, text: SOURCE_TYP },
+      { method: "didClose", path: ARCHIVE_B_ENTRY },
     ];
     assert.deepEqual(
       {
@@ -427,8 +431,8 @@ test("rename and delete move every open client without an adapter-owned restart 
         events: ["moved", "ended"],
         addresses: {
           file: "Archive/B.md",
-          entry: "/v/Archive/B.md.typ",
-          document: "/v/Archive/B.md.typ",
+          entry: ARCHIVE_B_ENTRY,
+          document: ARCHIVE_B_ENTRY,
           pdf: "Archive/B.pdf",
         },
         releases: 1,
@@ -460,9 +464,9 @@ test("renaming a Markdown source onto an occupied virtual address ends its open 
     assert.deepEqual(
       { calls: client.calls, events, entry: source.entry },
       {
-        calls: [{ method: "didClose", path: "/v/Notes/A.md.typ" }],
+        calls: [{ method: "didClose", path: A_ENTRY }],
         events: ["ended"],
-        entry: "/v/Notes/A.md.typ",
+        entry: A_ENTRY,
       },
     );
   } finally {

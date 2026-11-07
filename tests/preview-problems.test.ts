@@ -6,6 +6,10 @@ import { PreviewManager } from "../src/preview/previewManager";
 import { PreviewView } from "../src/preview/previewView";
 import type { Position, TypstSource } from "../src/sources";
 import { WorkspaceLeaf, testApp } from "./support/obsidian";
+import { virtualAddress } from "./support/virtualAddress";
+
+const A_ENTRY = virtualAddress("/vault", "Notes/A.md");
+const B_ENTRY = virtualAddress("/vault", "Notes/B.md");
 
 interface Problem {
   line: number;
@@ -41,7 +45,7 @@ async function problemHarness(
   const diagnostics = new Map<string, LspDiagnostic[]>();
   const diagnosticListeners = new Set<(uri: string) => void>();
   let sourceFile = "Notes/A.md";
-  let sourceEntry = "/vault/Notes/A.md.typ";
+  let sourceEntry = A_ENTRY;
   let previewPort = 4320;
   for (const initial of initialDiagnostics) {
     diagnostics.set(pathToUri(initial.path), initial.diagnostics);
@@ -140,7 +144,7 @@ test("the bound preview pane follows the replacement task URL after its Markdown
   const assignmentsBeforeMove = iframeSrcAssignmentCount(iframe);
 
   // #when
-  h.move("Notes/B.md", "/vault/Notes/B.md.typ");
+  h.move("Notes/B.md", B_ENTRY);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
@@ -190,7 +194,7 @@ test("the bound preview pane assigns src only when a change notification has a n
   // #when
   h.emitProblems();
   const assignmentsAfterProblems = iframeSrcAssignmentCount(iframe);
-  h.move("Notes/B.md", "/vault/Notes/B.md.typ");
+  h.move("Notes/B.md", B_ENTRY);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   // #then
@@ -285,7 +289,7 @@ test("the preview problems list exists hidden when there are no problems", async
 test("the preview lists diagnostics that the client stored before the view was bound", async () => {
   // #given
   const h = await problemHarness([], [{
-    path: "/vault/Notes/A.md.typ",
+    path: A_ENTRY,
     diagnostics: [{
       range: {
         start: { line: 3, character: 8 },

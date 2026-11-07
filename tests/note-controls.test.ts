@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { Notice } from "obsidian";
 import TinymistPlugin from "../src/main";
 import { MarkdownView, TFile, testApp, type TestApp } from "./support/obsidian";
+import { virtualAddress } from "./support/virtualAddress";
 
 interface CommandRecord {
   id: string;
@@ -194,7 +195,7 @@ test("a Markdown preview start failure notice uses the described note path", asy
     didChange: () => {},
     didClose: () => {},
     executeCommand: async () => {
-      throw new Error("/vault/Notes/A.md.typ:3:5: unknown variable");
+      throw new Error(`${virtualAddress("/vault", "Notes/A.md")}:3:5: unknown variable`);
     },
     stop: () => {},
   } as never;
