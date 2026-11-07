@@ -27,6 +27,8 @@ export class PreviewView extends ItemView {
     this.problemsEl = this.contentEl.createEl("ul", { cls: "tinymist-problems" });
     this.mountPdfControl();
     this.removePreviewListener = this.plugin.preview.onChange(() => {
+      const url = this.plugin.preview.url;
+      if (url && this.iframe?.src !== url) this.setUrl(url);
       this.pdfRequest++;
       this.syncPdfControl();
       this.syncProblems();
