@@ -686,14 +686,52 @@ test("C39: non-Identifier fence words are dropped from raw blocks", () => {
 
 test("C41: YAML quotes decode before Typst string escaping", () => {
   // #given
-  const text = sourceNote(["typst: true", "typst-quote: ''", "typst-path: 'C:\\'", "typst-paths: ['a\\', 'b']", "typst-possessive: 'it''s'", 'typst-title: "He said: \\"hi\\""', 'typst-tab: "tab\\there"']);
+  const text = sourceNote([
+    "typst: true",
+    "typst-quote: ''",
+    "typst-path: 'C:\\'",
+    "typst-paths: ['a\\', 'b']",
+    "typst-possessive: 'it''s'",
+    'typst-title: "He said: \\"hi\\""',
+    'typst-backslash: "\\\\"',
+    'typst-apostrophe: "\\\'"',
+    'typst-slash: "\\/"',
+    'typst-newline: "\\n"',
+    'typst-tab: "\\t"',
+    'typst-carriage: "\\r"',
+    'typst-nul: "\\0"',
+    'typst-space: "\\ "',
+    'typst-hex: "\\x41"',
+    'typst-unicode: "\\u03bb"',
+    'typst-codepoint: "\\U0001f642"',
+  ]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
   assert.deepEqual(
     { lines: outputLines(conversion.typ), problems: conversion.problems },
     {
-      lines: [`${BUILT_INS}#show: template.with(`, "", 'quote: "",', 'path: "C:\\\\",', 'paths: ("a\\\\", "b",),', 'possessive: "it\'s",', 'title: "He said: \\"hi\\"",', 'tab: "tab\\there",', ")"],
+      lines: [
+        `${BUILT_INS}#show: template.with(`,
+        "",
+        'quote: "",',
+        'path: "C:\\\\",',
+        'paths: ("a\\\\", "b",),',
+        'possessive: "it\'s",',
+        'title: "He said: \\"hi\\"",',
+        'backslash: "\\\\",',
+        'apostrophe: "\'",',
+        'slash: "/",',
+        'newline: "\\n",',
+        'tab: "\\t",',
+        'carriage: "\\r",',
+        'nul: "\\u{0}",',
+        'space: " ",',
+        'hex: "A",',
+        'unicode: "λ",',
+        'codepoint: "🙂",',
+        ")",
+      ],
       problems: [],
     },
   );
@@ -716,7 +754,7 @@ test("C42: flow arrays reject text after a closing quote", () => {
 
 test("C43: YAML comments end unquoted values without changing quoted hashes", () => {
   // #given
-  const text = sourceNote(["typst: true # on", "typst-template: reference # default", "typst-pages: 5 # two sheets", "typst-a: [1, 2] # c", 'typst-title: "a # b"']);
+  const text = sourceNote(["typst: true # on", "typst-template: reference # default", "typst-pages: 5 # two sheets", "typst-a: [1, 2] # c", 'typst-title: "a # b"', "typst-id: a#b"]);
   // #when
   const conversion = convert(text, KIT);
   // #then
@@ -724,7 +762,7 @@ test("C43: YAML comments end unquoted values without changing quoted hashes", ()
     { source: conversion.source, lines: outputLines(conversion.typ), problems: conversion.problems },
     {
       source: true,
-      lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", "", "pages: 5,", "a: (1, 2,),", 'title: "a # b",', ")"],
+      lines: [`${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`, "", "", "pages: 5,", "a: (1, 2,),", 'title: "a # b",', 'id: "a#b",', ")"],
       problems: [],
     },
   );
@@ -813,4 +851,145 @@ test("C37: malformed bracketed flow arrays leave their properties empty and repo
       ],
     },
   );
+});
+
+test("C49: decoded YAML line-break escapes become Typst string escapes", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-line: "a\\u2028b"', 'typst-nul: "a\\0b"', 'typst-nel: "a\\x85b"', 'typst-list: ["a\\x0bb"]']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ), [
+    `${BUILT_INS}#show: template.with(`,
+    "",
+    'line: "a\\u{2028}b",',
+    'nul: "a\\u{0}b",',
+    'nel: "a\\u{85}b",',
+    'list: ("a\\u{b}b",),',
+    ")",
+  ]);
+});
+
+test("C49: decoded YAML escapes preserve the Markdown line count", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-line: "a\\u2028b"', 'typst-nel: "a\\x85b"']);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.equal(typstLineCount(conversion.typ), text.split("\n").length);
+});
+
+test("C50: nested flow arrays preserve quoted items", () => {
+  // #given
+  const text = sourceNote([
+    "typst: true",
+    'typst-a: [["a", "b"], ["c"]]',
+    'typst-b: ["a", ["b", "c"]]',
+    "typst-c: [['a', 'b'], c]",
+    "typst-d: [[a, ']'], d]",
+    'typst-e: [[a, "b]", c], d]',
+  ]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ), [
+    `${BUILT_INS}#show: template.with(`,
+    "",
+    'a: (("a", "b",), ("c",),),',
+    'b: ("a", ("b", "c",),),',
+    'c: (("a", "b",), "c",),',
+    'd: (("a", "]",), "d",),',
+    'e: (("a", "b]", "c",), "d",),',
+    ")",
+  ]);
+});
+
+test("C51: hashes in flow arrays remain data while comment-only values are empty", () => {
+  // #given
+  const text = sourceNote([
+    "typst: true",
+    "typst-template: # none",
+    "typst-tags: [issue #1, issue #2]",
+    "typst-a: [a, #b]",
+    "typst-b: [a #b, c]",
+    "typst-x: # comment",
+    "typst-pages: # use default",
+    "typst-color: #ff0000",
+    'typst-title: "a # b"',
+    "typst-id: a#b",
+  ]);
+  // #when
+  const conversion = convert(text, KIT);
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      lines: [
+        `${BUILT_INS}#import "/_typst/md/reference.typ": *; #show: template.with(`,
+        "",
+        "",
+        'tags: ("issue #1", "issue #2",),',
+        'a: ("a", "#b",),',
+        'b: ("a #b", "c",),',
+        "",
+        "",
+        "",
+        'title: "a # b",',
+        'id: "a#b",',
+        ")",
+      ],
+      problems: [
+        { line: 6, message: "Property x has no value", fatal: false },
+        { line: 7, message: "Property pages has no value", fatal: false },
+        { line: 8, message: "Property color has no value", fatal: false },
+      ],
+    },
+  );
+});
+
+test("C52: delimiter runs wider than strong or emphasis stay literal", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["Name: ____ Date: ____", "Name: ______", "a ****** b", "***x***", "**a** *b*"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["Name: \\_\\_\\_\\_ Date: \\_\\_\\_\\_", "Name: \\_\\_\\_\\_\\_\\_", "a \\*\\*\\*\\*\\*\\* b", "\\*\\*\\*x\\*\\*\\*", "*a* _b_"]);
+});
+
+test("C53: nested list item text receives prose line-start escaping", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["- - = x", "- - + x", "- 1. = x", "- # h", "- - x"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["- - \\= x", "- - \\+ x", "- 1. \\= x", "- \\# h", "- - x"]);
+});
+
+test("C54: malformed top-level quoted scalars are skipped with their own message", () => {
+  // #given
+  const text = sourceNote(["typst: true", 'typst-a: "', "typst-a: '", 'typst-a: "a" junk "b"', "typst-a: 'a' b"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(
+    { lines: outputLines(conversion.typ), problems: conversion.problems },
+    {
+      lines: [`${BUILT_INS}#show: template.with(`, "", "", "", "", "", ")"],
+      problems: [
+        { line: 2, message: "Property a has a malformed value", fatal: false },
+        { line: 3, message: "Property a has a malformed value", fatal: false },
+        { line: 4, message: "Property a has a malformed value", fatal: false },
+        { line: 5, message: "Property a has a malformed value", fatal: false },
+      ],
+    },
+  );
+});
+
+test("C56: an unclosed fence on its opening line appends a separated closing delimiter", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["```js"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ), [`${BUILT_INS}#show: template.with(`, "", ")", "```js ```"]);
 });
