@@ -657,9 +657,17 @@ export class AutomaticPdfController {
       job.outcome = "failed";
       return;
     }
+    try {
+      await source.refresh?.();
+    } catch (error) {
+      this.markFailure(entry, `Could not read ${job.sourcePath}: ${String(error)}`);
+      job.outcome = "failed";
+      return;
+    }
     const fatal = source.problems?.find((problem) => problem.fatal);
     if (fatal) {
       entry.status = "error";
+      if (job.manual) entry.errorNotified = false;
       this.notifyError(
         entry,
         `PDF export failed for ${job.sourcePath}: ${fatal.message} (line ${fatal.line + 1})`,
@@ -1072,8 +1080,9 @@ export class NativeAutomaticPdfExporter implements AutomaticPdfExporter {
     const run = this.serial.then(async () => {
       if (this.stopped) throw new Error("automatic PDF exporter stopped");
       // Tinymist keeps a project snapshot in the LSP worker. A fresh isolated
-      // client for each export observes the saved entry and imported bytes and
-      // cannot poison the next export after a failed compile.
+      // client for each export observes the saved entry for .typ sources or the
+      // document supplied through open for Markdown sources, plus imported bytes,
+      // and cannot poison the next export after a failed compile.
       const client = new LspClient(this.binaryPath, this.rootPath, () => {}, this.configuration);
       this.client = client;
       let openHandle: { close(): void } | undefined;

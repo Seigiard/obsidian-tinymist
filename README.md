@@ -164,7 +164,8 @@ installed program that the plugin starts for language intelligence and preview.
 
 This release has no mobile support, dedicated find-references UI, outline panel,
 or general PDF/SVG/PNG export commands. Automatic PDF export is an opt-in
-same-stem build for saved `.typ` files; it does not watch all imported
+same-stem build for saved `.typ` files and for Markdown notes with `typst: true`;
+the PDF is written beside the source note. It does not watch all imported
 dependencies. Builds are serialized and use an isolated Tinymist export process
 so each build reads current saved source and dependency bytes. Use **Rebuild PDF**
 after dependency-only changes. AI completion is optional and depends on the
