@@ -53,13 +53,9 @@ export async function readManifest(
   activeClients.add(client);
   try {
     await client.start();
-    const result = await client.executeCommand(
-      "tinymist.exportQuery",
-      [
-        manifestAbsPath,
-        { format: "json", selector: "<manifest>", field: "value", one: true },
-        { write: false },
-      ],
+    const result = await client.exportQuery(
+      manifestAbsPath,
+      { format: "json", selector: "<manifest>", field: "value", one: true },
       timeoutMs,
     );
     if (typeof result === "string") return JSON.parse(result);

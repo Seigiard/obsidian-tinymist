@@ -44,12 +44,16 @@ export const DEFAULT_SETTINGS: TinymistSettings = {
 };
 
 export class TinymistSettingTab extends PluginSettingTab {
+  private unsubscribeKitStatus: (() => void) | null = null;
+
   constructor(app: App, private plugin: TinymistPlugin) {
     super(app, plugin);
   }
 
   display(): void {
     const { containerEl } = this;
+    this.unsubscribeKitStatus?.();
+    this.unsubscribeKitStatus = null;
     containerEl.empty();
 
     new Setting(containerEl)
@@ -101,7 +105,7 @@ export class TinymistSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Kit manifest")
-      .setDesc("Vault path to the kit manifest .typ file. Leave empty to use built-in Markdown templates.")
+      .setDesc("Vault path to the kit manifest .typ file. With no pointer and no default template, notes print on the built-in template; with a pointer, they use the kit's templates.")
       .addText((text) =>
         text
           .setPlaceholder("kit/md/manifest.typ")
@@ -129,7 +133,7 @@ export class TinymistSettingTab extends PluginSettingTab {
     const unsubscribeKitStatus = this.plugin.kit.onChange(() => {
       kitStatus.setName(this.plugin.kitStatus());
     });
-    this.plugin.register(() => unsubscribeKitStatus());
+    this.unsubscribeKitStatus = unsubscribeKitStatus;
 
     new Setting(containerEl)
       .setName("Save debounce (ms)")
@@ -261,6 +265,11 @@ export class TinymistSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+  }
+
+  hide(): void {
+    this.unsubscribeKitStatus?.();
+    this.unsubscribeKitStatus = null;
   }
 }
 

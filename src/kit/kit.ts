@@ -11,7 +11,7 @@ export type KitState =
   | { kind: "failed"; reason: string };
 
 export type KitStateView =
-  | { ready: true; kit: (KitView & { fontPaths?: readonly string[] }) | null }
+  | { ready: true; kit: KitView | null }
   | { ready: false; reason: string };
 
 interface KitOptions {
@@ -33,8 +33,10 @@ export class Kit {
   private readonly listeners = new Set<() => void>();
   private worker: Promise<void> | null = null;
   private requestVersion = 0;
+  private epoch = 0;
   private forceVersion = 0;
   private lastForceVersion = 0;
+  private observedManifestPath: string;
   private loadedManifestPath: string | null = null;
   private lastNotifiedDefault: string;
   private disposed = false;
@@ -42,13 +44,22 @@ export class Kit {
   constructor(private readonly options: KitOptions) {
     const settings = options.settings();
     this.state = settings.kitManifest.trim() === "" ? { kind: "none" } : { kind: "loading" };
+    this.observedManifestPath = settings.kitManifest.trim();
     this.lastNotifiedDefault = settings.defaultTemplate;
   }
 
   reload(force = false): Promise<void> {
     if (this.disposed) return Promise.resolve();
+    const manifestPath = this.manifestSetting();
+    if (manifestPath !== this.observedManifestPath) {
+      this.observedManifestPath = manifestPath;
+      this.epoch += 1;
+    }
     this.requestVersion += 1;
-    if (force) this.forceVersion = this.requestVersion;
+    if (force) {
+      this.forceVersion = this.requestVersion;
+      this.epoch += 1;
+    }
     if (!this.worker) {
       const worker = this.runReload();
       const wrapped = worker.finally(() => {
@@ -68,6 +79,7 @@ export class Kit {
   /** Mark the configured path missing after a vault rename or delete event. */
   markManifestMissing(path: string): void {
     if (this.disposed || this.manifestSetting() !== path) return;
+    this.epoch += 1;
     this.loadedManifestPath = path;
     this.state = { kind: "failed", reason: `Manifest file not found: ${path}` };
     this.notify();
@@ -129,7 +141,9 @@ export class Kit {
         continue;
       }
       this.lastForceVersion = force;
+      const readEpoch = this.epoch;
       this.state = { kind: "loading" };
+      this.loadedManifestPath = null;
       this.notify();
 
       let manifest: ParsedManifest | null = null;
@@ -150,8 +164,7 @@ export class Kit {
       }
       if (this.disposed) return;
 
-      const superseded =
-        this.manifestSetting() !== manifestPath || this.forceVersion !== force;
+      const superseded = this.epoch !== readEpoch;
       if (!superseded) {
         this.loadedManifestPath = manifestPath;
         this.state = manifest ? { kind: "ready", manifest } : { kind: "failed", reason: failure ?? "Unknown manifest error" };

@@ -252,23 +252,24 @@ export default class TinymistPlugin extends Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof TFile && file.path === this.settings.kitManifest) {
+        if (file instanceof TFile && file.path === this.settings.kitManifest.trim()) {
           void this.kit.reload(true);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file.path === this.settings.kitManifest) {
+        if (file.path === this.settings.kitManifest.trim()) {
           this.kit.markManifestMissing(file.path);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (oldPath === this.settings.kitManifest) {
+        const manifestPath = this.settings.kitManifest.trim();
+        if (oldPath === manifestPath) {
           this.kit.markManifestMissing(oldPath);
-        } else if (file.path === this.settings.kitManifest) {
+        } else if (file.path === manifestPath) {
           void this.kit.reload(true);
         }
       }),
@@ -280,6 +281,13 @@ export default class TinymistPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       void this.startLsp(false);
       void this.kit.reload();
+      this.registerEvent(
+        this.app.vault.on("create", (file) => {
+          if (file.path === this.settings.kitManifest.trim()) {
+            void this.kit.reload(true);
+          }
+        }),
+      );
       // Formula renders depend on the files their preamble reads (the book main, templates,
       // alias files). Registered after layout-ready, so the vault's initial create events do
       // not count; a folder counts when it goes or moves (it may hold .typ files).
@@ -506,12 +514,8 @@ export default class TinymistPlugin extends Plugin {
     for (const path of this.settings.fontPaths) add(isAbsolute(path) ? path : join(root, path));
     const kit = this.kitOrNull();
     if (!kit) return result;
-    const view = kit.view();
-    if (view.ready && view.kit) {
-      for (const path of view.kit.fontPaths ?? []) add(path);
-      if (view.kit.fontPaths === undefined && kit.state.kind === "ready") {
-        for (const path of kit.state.manifest.fontPaths) add(path);
-      }
+    if (kit.state.kind === "ready") {
+      for (const path of kit.state.manifest.fontPaths) add(path);
     }
     return result;
   }
@@ -613,9 +617,16 @@ export default class TinymistPlugin extends Plugin {
   }
 
   private async restartLanguageServer(): Promise<void> {
+    this.resolvedBinary = undefined;
     this.suppressKitFontRestart = true;
     try {
       await this.kitOrNull()?.reload(true);
+      const root = this.vaultBasePath();
+      const running = this.startedFontPaths ?? this.lsp?.cloneConfiguration().fontPaths;
+      if (root && running && !samePaths(running, this.resolveFontPaths(root))) {
+        this.fragments?.stop();
+        this.typstRender?.invalidate();
+      }
       await this.startLsp(true);
     } finally {
       this.suppressKitFontRestart = false;
