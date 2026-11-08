@@ -33,6 +33,7 @@ import { LspClient, LspStatus, uriToPath } from "./lsp/client";
 import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
+import { installExportRedirect } from "./integrations/exportRedirect";
 import {
   mdAdapter,
   pdfDestination,
@@ -235,6 +236,8 @@ export default class TinymistPlugin extends Plugin {
 
     this.addSettingTab(new TinymistSettingTab(this.app, this));
     registerNoteControls(this);
+    const restoreExportRedirect = installExportRedirect(this);
+    if (restoreExportRedirect) this.register(restoreExportRedirect);
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) =>
