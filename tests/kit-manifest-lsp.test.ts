@@ -34,6 +34,16 @@ function received(log: string): RecordedMessage[] {
     : [];
 }
 
+async function waitForExit(log: string): Promise<RecordedMessage[]> {
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const messages = received(log);
+    if (messages.some((entry) => entry.direction === "from-client" && entry.message.method === "exit")) return messages;
+    if (Date.now() >= deadline) throw new Error("timed out waiting for the fake language server to receive exit");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 test("readManifest uses exportQuery with write disabled as its third argument", async () => {
   // #given
   const vault = mkdtempSync(join(tmpdir(), "tinymist-kit-manifest-lsp-"));
@@ -53,9 +63,10 @@ test("readManifest uses exportQuery with write disabled as its third argument", 
     await readManifest(LSP_FIXTURE, vault, manifest);
 
     // #then
-    const command = received(log).find((entry) => entry.direction === "from-client" && entry.message.method === "workspace/executeCommand");
+    const messages = await waitForExit(log);
+    const command = messages.find((entry) => entry.direction === "from-client" && entry.message.method === "workspace/executeCommand");
     assert.deepEqual(
-      { command: command?.message.params, lifecycle: received(log).filter((entry) =>
+      { command: command?.message.params, lifecycle: messages.filter((entry) =>
         entry.direction === "from-client" && ["shutdown", "exit"].includes(entry.message.method ?? ""),
       ).map((entry) => entry.message.method) },
       {

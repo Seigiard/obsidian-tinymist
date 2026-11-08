@@ -50,6 +50,10 @@ interface FontPathSettings extends TinymistSettings {
 const FontPathLspClient = LspClient as unknown as FontPathLspClientConstructor;
 const FontPathFragmentRenderer = TypstFragmentRenderer as unknown as FontPathFragmentRendererConstructor;
 const LSP_FIXTURE = resolve("tests/support/font-path-lsp.mjs");
+const VAULT_BASE = join("/", "vault");
+const SETTINGS_FONT_PATH = join(VAULT_BASE, "settings");
+const SHARED_FONT_PATH = join("/", "shared");
+const KIT_FONT_PATH = join(VAULT_BASE, "kit", "fonts");
 const RENDER_ROOT = resolve("tests/fixtures");
 const RENDER_FILE = join(RENDER_ROOT, "book", "chapters", "ch1.typ");
 const RENDER_TEXT = readFileSync(RENDER_FILE, "utf8");
@@ -214,10 +218,10 @@ test("effective font paths append deduplicated ready-kit paths without changing 
   const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
     kit: Kit;
   };
-  plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings", "/shared", "settings"] };
+  plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings", SHARED_FONT_PATH, "settings"] };
   let finishRead: ((manifest: ParsedManifest) => void) | null = null;
   plugin.kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
     readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
@@ -225,19 +229,19 @@ test("effective font paths append deduplicated ready-kit paths without changing 
 
   // #when
   const reload = plugin.kit.reload();
-  const loading = plugin.resolveFontPaths("/vault");
-  finishRead?.({ templates: {}, fontPaths: ["/shared", "/kit/fonts", "/kit/fonts"] });
+  const loading = plugin.resolveFontPaths(VAULT_BASE);
+  finishRead?.({ templates: {}, fontPaths: [SHARED_FONT_PATH, KIT_FONT_PATH, KIT_FONT_PATH] });
   await reload;
-  const ready = plugin.resolveFontPaths("/vault");
+  const ready = plugin.resolveFontPaths(VAULT_BASE);
 
   // #then
   try {
     assert.deepEqual(
       { loading, ready, stored: plugin.settings.fontPaths },
       {
-        loading: ["/vault/settings", "/shared"],
-        ready: ["/vault/settings", "/shared", "/kit/fonts"],
-        stored: ["settings", "/shared", "settings"],
+        loading: [SETTINGS_FONT_PATH, SHARED_FONT_PATH],
+        ready: [SETTINGS_FONT_PATH, SHARED_FONT_PATH, KIT_FONT_PATH],
+        stored: ["settings", SHARED_FONT_PATH, "settings"],
       },
     );
   } finally {
@@ -254,12 +258,12 @@ test("effective font paths retain the ready kit fonts while a forced reload is l
   let finishReload: ((manifest: ParsedManifest) => void) | null = null;
   let reads = 0;
   plugin.kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
     readManifest: async () => {
       reads += 1;
-      if (reads === 1) return { templates: {}, fontPaths: ["/kit/fonts"] };
+      if (reads === 1) return { templates: {}, fontPaths: [KIT_FONT_PATH] };
       return await new Promise<ParsedManifest>((resolve) => { finishReload = resolve; });
     },
   });
@@ -267,19 +271,19 @@ test("effective font paths retain the ready kit fonts while a forced reload is l
 
   // #when
   const reload = plugin.kit.reload(true);
-  const loading = plugin.resolveFontPaths("/vault");
+  const loading = plugin.resolveFontPaths(VAULT_BASE);
   const state = plugin.kit.state;
-  finishReload?.({ templates: {}, fontPaths: ["/kit/fonts"] });
+  finishReload?.({ templates: {}, fontPaths: [KIT_FONT_PATH] });
   await reload;
 
   // #then
   try {
     assert.deepEqual(
-      { state, loading, ready: plugin.resolveFontPaths("/vault") },
+      { state, loading, ready: plugin.resolveFontPaths(VAULT_BASE) },
       {
-        state: { kind: "loading", previous: { templates: {}, fontPaths: ["/kit/fonts"] } },
-        loading: ["/vault/settings", "/kit/fonts"],
-        ready: ["/vault/settings", "/kit/fonts"],
+        state: { kind: "loading", previous: { templates: {}, fontPaths: [KIT_FONT_PATH] } },
+        loading: [SETTINGS_FONT_PATH, KIT_FONT_PATH],
+        ready: [SETTINGS_FONT_PATH, KIT_FONT_PATH],
       },
     );
   } finally {
@@ -299,12 +303,12 @@ test("a real Kit loading then ready restarts once only when the merged list diff
     plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
     let finishRead: ((manifest: ParsedManifest) => void) | null = null;
     plugin.kit = new Kit({
-      vaultBase: "/vault",
+      vaultBase: VAULT_BASE,
       bin: () => "/bin/tinymist",
       settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
       readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
     });
-    plugin.vaultBasePath = () => "/vault";
+    plugin.vaultBasePath = () => VAULT_BASE;
     plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
     plugin.startLsp = async (restart) => { restarts.push(restart); };
     Reflect.set(plugin, "automaticPdfController", {
@@ -315,7 +319,7 @@ test("a real Kit loading then ready restarts once only when the merged list diff
 
     // #when
     const reload = plugin.kit.reload();
-    finishRead?.({ templates: {}, fontPaths: ["/kit/fonts"] });
+    finishRead?.({ templates: {}, fontPaths: [KIT_FONT_PATH] });
     await reload;
     await Promise.all(changes);
 
@@ -327,8 +331,8 @@ test("a real Kit loading then ready restarts once only when the merged list diff
   };
 
   // #when
-  const changed = await run(["/vault/settings"]);
-  const unchanged = await run(["/vault/settings", "/kit/fonts"]);
+  const changed = await run([SETTINGS_FONT_PATH]);
+  const unchanged = await run([SETTINGS_FONT_PATH, KIT_FONT_PATH]);
 
   // #then
   assert.deepEqual(
@@ -350,13 +354,13 @@ test("restart-language-server invalidates fragment renders and refreshes automat
     let configurationChanges = 0;
     plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
     plugin.kit = new Kit({
-      vaultBase: "/vault",
+      vaultBase: VAULT_BASE,
       bin: () => "/bin/tinymist",
       settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
-      readManifest: async () => ({ templates: {}, fontPaths: ["/kit/fonts"] }),
+      readManifest: async () => ({ templates: {}, fontPaths: [KIT_FONT_PATH] }),
     });
     await plugin.kit.reload();
-    plugin.vaultBasePath = () => "/vault";
+    plugin.vaultBasePath = () => VAULT_BASE;
     plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
     plugin.fragments = { stop: () => { stopped += 1; } } as never;
     plugin.typstRender = { invalidate: () => { invalidated += 1; } } as never;
@@ -377,8 +381,8 @@ test("restart-language-server invalidates fragment renders and refreshes automat
   };
 
   // #when
-  const changed = await run(["/vault/settings"]);
-  const unchanged = await run(["/vault/settings", "/kit/fonts"]);
+  const changed = await run([SETTINGS_FONT_PATH]);
+  const unchanged = await run([SETTINGS_FONT_PATH, KIT_FONT_PATH]);
 
   // #then
   assert.deepEqual(

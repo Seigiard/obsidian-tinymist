@@ -1,11 +1,19 @@
 import "./support/dom";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { test } from "node:test";
 import { Kit, type KitState, type KitStateView } from "../src/kit/kit";
 import { parseManifest, type ParsedManifest } from "../src/kit/manifest";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { TFile, testApp } from "./support/obsidian";
+
+const VAULT_BASE = join("/", "vault");
+const KIT_FONT_PATH = join(VAULT_BASE, "kit", "fonts");
+
+function manifestPath(path: string): string {
+  return join(VAULT_BASE, path);
+}
 
 async function afterDelay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -58,12 +66,12 @@ test("the normative manifest makes root Typst template paths and absolute font p
   };
 
   // #when
-  const parsed = parseManifest(manifest, "kit/md", "/vault");
+  const parsed = parseManifest(manifest, "kit/md", VAULT_BASE);
 
   // #then
   assert.deepEqual(parsed, {
     templates: { reference: "/kit/md/reference.typ" },
-    fontPaths: ["/vault/kit/fonts/files"],
+    fontPaths: [join(VAULT_BASE, "kit/md", "../fonts/files")],
   });
 });
 
@@ -71,9 +79,9 @@ test("a kit moves from none through loading to ready or failed and exposes its c
   // #given
   let settings = { kitManifest: "", defaultTemplate: "reference" };
   const reads: string[] = [];
-  let next: ParsedManifest | Error = { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] };
+  let next: ParsedManifest | Error = { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] };
   const kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => settings,
     readManifest: async (_bin, _vault, manifest) => {
@@ -112,7 +120,7 @@ test("a kit moves from none through loading to ready or failed and exposes its c
       },
       {
         initial: { templates: {}, defaultTemplate: "reference" },
-        reads: ["/vault/kit/md/manifest.typ", "/vault/kit/md/broken.typ"],
+        reads: [manifestPath("kit/md/manifest.typ"), manifestPath("kit/md/broken.typ")],
         views: [
           "Typst kit is loading",
           { templates: { reference: "/kit/md/reference.typ" }, defaultTemplate: "reference" },
@@ -122,11 +130,11 @@ test("a kit moves from none through loading to ready or failed and exposes its c
         ],
         states: [
           { kind: "loading" },
-          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] } },
-          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] } },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] } },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] } },
           {
             kind: "loading",
-            previous: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] },
+            previous: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] },
           },
           { kind: "failed", reason: "manifest is invalid" },
         ],
@@ -176,7 +184,7 @@ test("a setting change during a manifest read discards it and loads the later se
   const reads: string[] = [];
   let letterReads = 0;
   const kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => settings,
     readManifest: async (_bin, _vault, path) => {
@@ -206,7 +214,7 @@ test("a setting change during a manifest read discards it and loads the later se
     assert.deepEqual(
       { reads, state: kit.state, loadingPath: Reflect.get(kit, "loadedManifestPath") },
       {
-        reads: ["/vault/kit/md/letter.typ", "/vault/kit/md/reference.typ", "/vault/kit/md/letter.typ"],
+        reads: [manifestPath("kit/md/letter.typ"), manifestPath("kit/md/reference.typ"), manifestPath("kit/md/letter.typ")],
         state: { kind: "ready", manifest: { templates: { letter: "/kit/md/reloaded-letter.typ" }, fontPaths: [] } },
         loadingPath: "kit/md/letter.typ",
       },
@@ -221,7 +229,7 @@ test("a missing manifest supersedes an in-flight read and keeps its failure", as
   const settings = { kitManifest: "kit/md/manifest.typ", defaultTemplate: "" };
   let finishRead: ((manifest: ParsedManifest) => void) | null = null;
   const kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => settings,
     readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
@@ -256,7 +264,7 @@ test("plugin reload triggers read only for the configured manifest and preserves
   const reads: string[] = [];
   let failReads = false;
   plugin.kit = new Kit({
-    vaultBase: "/vault",
+    vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
     settings: () => ({
       kitManifest: plugin.settings.kitManifest,
@@ -337,11 +345,11 @@ test("plugin reload triggers read only for the configured manifest and preserves
       },
       {
         reads: [
-          "/vault/kit/md/manifest.typ",
-          "/vault/kit/md/next.typ",
-          "/vault/kit/md/next.typ",
-          "/vault/kit/md/next.typ",
-          "/vault/kit/md/next.typ",
+          manifestPath("kit/md/manifest.typ"),
+          manifestPath("kit/md/next.typ"),
+          manifestPath("kit/md/next.typ"),
+          manifestPath("kit/md/next.typ"),
+          manifestPath("kit/md/next.typ"),
         ],
         afterKitSetting: 2,
         afterDefaultTemplate: 2,
