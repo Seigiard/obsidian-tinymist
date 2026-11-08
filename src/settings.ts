@@ -21,6 +21,10 @@ export interface TinymistSettings {
   cursorPreview: boolean;
   /** The mode newly opened Typst files start in (each tab then keeps its own). */
   editingMode: "source" | "live";
+  /** Vault-relative path to the kit's exported manifest. */
+  kitManifest: string;
+  /** Template id used by Markdown sources when they do not select one. */
+  defaultTemplate: string;
   /** Per-file automatic PDF opt-ins and last plugin-owned output fingerprints. */
   automaticPdf?: AutomaticPdfStoredState;
 }
@@ -35,6 +39,8 @@ export const DEFAULT_SETTINGS: TinymistSettings = {
   hoverRender: true,
   cursorPreview: false,
   editingMode: "source",
+  kitManifest: "",
+  defaultTemplate: "",
 };
 
 export class TinymistSettingTab extends PluginSettingTab {
@@ -90,6 +96,40 @@ export class TinymistSettingTab extends PluginSettingTab {
             }
           }),
       );
+
+    new Setting(containerEl).setName("Kit").setHeading();
+
+    new Setting(containerEl)
+      .setName("Kit manifest")
+      .setDesc("Vault path to the kit manifest .typ file. Leave empty to use built-in Markdown templates.")
+      .addText((text) =>
+        text
+          .setPlaceholder("kit/md/manifest.typ")
+          .setValue(this.plugin.settings.kitManifest)
+          .onChange(async (value) => {
+            this.plugin.settings.kitManifest = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Default template")
+      .setDesc("Template id from the kit manifest. A Markdown note can override it with typst-template.")
+      .addText((text) =>
+        text
+          .setPlaceholder("reference")
+          .setValue(this.plugin.settings.defaultTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultTemplate = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    const kitStatus = new Setting(containerEl).setName(this.plugin.kitStatus());
+    const unsubscribeKitStatus = this.plugin.kit.onChange(() => {
+      kitStatus.setName(this.plugin.kitStatus());
+    });
+    this.plugin.register(() => unsubscribeKitStatus());
 
     new Setting(containerEl)
       .setName("Save debounce (ms)")

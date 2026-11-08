@@ -27,6 +27,8 @@ import { HistoryCache } from "./editor/shared/editorKit";
 import { YoloBridge } from "./editor/shared/yoloBridge";
 import { FileEvent, TypstRender } from "./editor/typstRender";
 import { LspTextEdit, TypstView, VIEW_TYPE_TYPST } from "./editor/typstView";
+import { Kit, type KitStateView } from "./kit/kit";
+import { parseManifest, readManifest } from "./kit/manifest";
 import { LspClient, LspStatus, uriToPath } from "./lsp/client";
 import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
@@ -51,6 +53,7 @@ import {
 export default class TinymistPlugin extends Plugin {
   settings: TinymistSettings = DEFAULT_SETTINGS;
   lsp: LspClient | null = null;
+  kit: Kit = this.createKit();
   preview: PreviewManager = new PreviewManager(this);
   sources: SourceRegistry = new SourceRegistry([
     typAdapter({
@@ -74,10 +77,22 @@ export default class TinymistPlugin extends Plugin {
   private statusBarEl: HTMLElement | null = null;
   private resolvedBinary: string | null | undefined;
   private savedFontPaths: readonly string[] | undefined;
+  private savedKitManifest = "";
+  private savedDefaultTemplate = "";
+  private kitReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private kitUnsubscribe: (() => void) | null = null;
+  private startedFontPaths: readonly string[] | undefined;
+  private kitChangePromise: Promise<void> | null = null;
+  private suppressKitFontRestart = false;
   private readonly automaticPdfListeners = new Set<() => void>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.kitUnsubscribe = this.kit.onChange(() => {
+      void this.onKitChange().catch((error: unknown) => {
+        console.error("[tinymist] kit change failed:", error);
+      });
+    });
     this.yolo = new YoloBridge(this.app, {
       name: "tinymist",
       enabled: () => this.settings.yoloTabCompletion,
@@ -154,7 +169,11 @@ export default class TinymistPlugin extends Plugin {
     this.addCommand({
       id: "restart-language-server",
       name: "Restart language server",
-      callback: () => void this.startLsp(true),
+      callback: () => {
+        void this.restartLanguageServer().catch((error: unknown) => {
+          console.error("[tinymist] language server restart failed:", error);
+        });
+      },
     });
 
     this.addCommand({
@@ -232,11 +251,35 @@ export default class TinymistPlugin extends Plugin {
       }),
     );
     this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile && file.path === this.settings.kitManifest) {
+          void this.kit.reload(true);
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file.path === this.settings.kitManifest) {
+          this.kit.markManifestMissing(file.path);
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (oldPath === this.settings.kitManifest) {
+          this.kit.markManifestMissing(oldPath);
+        } else if (file.path === this.settings.kitManifest) {
+          void this.kit.reload(true);
+        }
+      }),
+    );
+    this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => this.syncPinnedMain()),
     );
 
     this.app.workspace.onLayoutReady(() => {
       void this.startLsp(false);
+      void this.kit.reload();
       // Formula renders depend on the files their preamble reads (the book main, templates,
       // alias files). Registered after layout-ready, so the vault's initial create events do
       // not count; a folder counts when it goes or moves (it may hold .typ files).
@@ -262,6 +305,11 @@ export default class TinymistPlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.kitReloadTimer) clearTimeout(this.kitReloadTimer);
+    this.kitReloadTimer = null;
+    this.kitUnsubscribe?.();
+    this.kitUnsubscribe = null;
+    this.kit.dispose();
     this.automaticPdfController?.dispose();
     this.automaticPdfController = null;
     this.automaticPdfListeners.clear();
@@ -279,16 +327,24 @@ export default class TinymistPlugin extends Plugin {
     const fontPaths = Array.isArray(data?.fontPaths)
       ? data.fontPaths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
       : [];
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { fontPaths });
+    const kitManifest = typeof data?.kitManifest === "string" ? data.kitManifest : "";
+    const defaultTemplate = typeof data?.defaultTemplate === "string" ? data.defaultTemplate : "";
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { fontPaths, kitManifest, defaultTemplate });
     this.savedFontPaths = [...fontPaths];
+    this.savedKitManifest = this.settings.kitManifest;
+    this.savedDefaultTemplate = this.settings.defaultTemplate;
   }
 
   async saveSettings(forceRenderInvalidation = false): Promise<void> {
+    const kitManifestChanged = this.savedKitManifest !== this.settings.kitManifest;
+    const defaultTemplateChanged = this.savedDefaultTemplate !== this.settings.defaultTemplate;
     const fontPaths = this.settings.fontPaths.filter((path) => path.trim() !== "");
     const fontPathsChanged =
       this.savedFontPaths === undefined || !samePaths(this.savedFontPaths, fontPaths);
     this.settings.fontPaths = fontPaths;
     this.savedFontPaths = [...fontPaths];
+    this.savedKitManifest = this.settings.kitManifest;
+    this.savedDefaultTemplate = this.settings.defaultTemplate;
     this.resolvedBinary = undefined;
     this.automaticPdfController?.configurationChanged();
     // The renderer restarts with the (possibly new) binary at its next render, and live
@@ -297,6 +353,10 @@ export default class TinymistPlugin extends Plugin {
     if (fontPathsChanged || forceRenderInvalidation) this.typstRender?.invalidate();
     else this.typstRender?.retryFailed();
     await this.saveData(this.settings);
+    if (this.kit) {
+      if (kitManifestChanged) this.scheduleKitReload();
+      else if (defaultTemplateChanged) this.notifyKitSettingsChanged();
+    }
   }
 
   async applyFontPaths(fontPaths: readonly string[]): Promise<void> {
@@ -436,9 +496,58 @@ export default class TinymistPlugin extends Plugin {
 
   resolveFontPaths(root: string | null = this.vaultBasePath()): string[] {
     if (!root) return [];
-    return this.settings.fontPaths.map((path) =>
-      isAbsolute(path) ? path : join(root, path),
-    );
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const add = (path: string): void => {
+      if (seen.has(path)) return;
+      seen.add(path);
+      result.push(path);
+    };
+    for (const path of this.settings.fontPaths) add(isAbsolute(path) ? path : join(root, path));
+    const view = this.kit.view();
+    if (view.ready && view.kit) {
+      for (const path of view.kit.fontPaths ?? []) add(path);
+      if (view.kit.fontPaths === undefined && this.kit.state?.kind === "ready") {
+        for (const path of this.kit.state.manifest.fontPaths) add(path);
+      }
+    }
+    return result;
+  }
+
+  kitStatus(): string {
+    switch (this.kit.state.kind) {
+      case "none":
+        return "Kit: none";
+      case "loading":
+        return "Kit: loading";
+      case "ready":
+        return `Kit: ready (${Object.keys(this.kit.state.manifest.templates).length} templates)`;
+      case "failed":
+        return `Kit: failed: ${this.kit.state.reason}`;
+    }
+  }
+
+  /** Reconcile the primary server with the effective kit font list. */
+  async onKitChange(): Promise<void> {
+    const previous = this.kitChangePromise ?? Promise.resolve();
+    const current = previous.then(async () => {
+      if (this.suppressKitFontRestart) return;
+      if (this.kit.state?.kind === "loading") return;
+      const root = this.vaultBasePath();
+      const running = this.startedFontPaths ?? this.lsp?.cloneConfiguration().fontPaths;
+      if (!root || !running) return;
+      const resolved = this.resolveFontPaths(root);
+      if (samePaths(running, resolved)) return;
+      this.fragments?.stop();
+      this.typstRender?.invalidate();
+      await this.startLsp(true);
+    });
+    this.kitChangePromise = current;
+    try {
+      await current;
+    } finally {
+      if (this.kitChangePromise === current) this.kitChangePromise = null;
+    }
   }
 
   onDiagnostics(cb: (uri: string) => void): () => void {
@@ -466,14 +575,16 @@ export default class TinymistPlugin extends Plugin {
       );
       return;
     }
+    const fontPaths = this.resolveFontPaths(root);
     const lsp = new LspClient(
       bin,
       root,
       (uri) => {
         for (const cb of this.diagListeners) cb(uri);
       },
-      { fontPaths: this.resolveFontPaths(root) },
+      { fontPaths },
     );
+    this.startedFontPaths = [...fontPaths];
     lsp.onStatusChange = (s) => this.setStatusBar(s);
     this.lsp = lsp;
     try {
@@ -492,6 +603,16 @@ export default class TinymistPlugin extends Plugin {
       if (leaf.view instanceof TypstView) leaf.view.reannounce();
     }
     this.syncPinnedMain();
+  }
+
+  private async restartLanguageServer(): Promise<void> {
+    this.suppressKitFontRestart = true;
+    try {
+      await this.kit.reload(true);
+      await this.startLsp(true);
+    } finally {
+      this.suppressKitFontRestart = false;
+    }
   }
 
   /**
@@ -708,6 +829,40 @@ export default class TinymistPlugin extends Plugin {
     void this.app.workspace.revealLeaf(leaf);
   }
 
+  private createKit(): Kit {
+    const root = this.vaultBasePath() ?? "";
+    return new Kit({
+      vaultBase: root,
+      bin: () => this.resolveBinary(),
+      settings: () => ({
+        kitManifest: this.settings.kitManifest,
+        defaultTemplate: this.settings.defaultTemplate,
+      }),
+      readManifest: async (binPath, vaultBase, manifestAbsPath, timeoutMs) => {
+        const value = await readManifest(binPath, vaultBase, manifestAbsPath, timeoutMs);
+        const parsed = parseManifest(value, manifestVaultDir(manifestAbsPath, vaultBase), vaultBase);
+        if ("error" in parsed) throw new Error(parsed.error);
+        return parsed;
+      },
+    });
+  }
+
+  private scheduleKitReload(): void {
+    if (this.kitReloadTimer) clearTimeout(this.kitReloadTimer);
+    this.kitReloadTimer = setTimeout(() => {
+      this.kitReloadTimer = null;
+      void this.kit.reload().catch((error: unknown) => {
+        console.error("[tinymist] kit reload failed:", error);
+      });
+    }, 500);
+  }
+
+  private notifyKitSettingsChanged(): void {
+    void this.kit.reload().catch((error: unknown) => {
+      console.error("[tinymist] kit settings update failed:", error);
+    });
+  }
+
   private activeSourcePath(): string | null {
     const typst = this.app.workspace.getActiveViewOfType(TypstView)?.absolutePath();
     if (typst) return typst;
@@ -729,7 +884,8 @@ export default class TinymistPlugin extends Plugin {
       },
       readFile: (vaultPath) => this.app.vault.adapter.read(vaultPath),
       exists: (vaultPath) => this.app.vault.getAbstractFileByPath(vaultPath) instanceof TFile,
-      kit: () => null,
+      kit: (): KitStateView => this.kit.view(),
+      onKitChange: (listener) => this.kit.onChange(listener),
       reveal: (vaultPath, position) => {
         const root = this.vaultBasePath();
         return root
@@ -761,6 +917,12 @@ export default class TinymistPlugin extends Plugin {
 
 function samePaths(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((path, index) => path === b[index]);
+}
+
+function manifestVaultDir(manifestAbsPath: string, vaultBase: string): string {
+  const path = relative(vaultBase, manifestAbsPath).split(sep).join("/");
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
 }
 
 class AutomaticPdfConfirmModal extends Modal {
