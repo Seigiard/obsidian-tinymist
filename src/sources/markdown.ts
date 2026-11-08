@@ -26,6 +26,7 @@ interface OpenClient {
 interface SourceState {
   file: string;
   entry: string;
+  text: string;
   conversion: ReturnType<typeof convert>;
   ended: boolean;
   disposed: boolean;
@@ -58,6 +59,7 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       const state: SourceState = {
         file: vaultPath,
         entry: virtualAddress(root, vaultPath),
+        text,
         conversion,
         ended: false,
         disposed: false,
@@ -86,7 +88,8 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       };
       const onEditorChange = (path: string, nextText: string): void => {
         if (state.ended || path !== state.file) return;
-        state.conversion = convert(normalizeText(nextText), host.kit());
+        state.text = normalizeText(nextText);
+        state.conversion = convert(state.text, host.kit());
         if (!conversionHasFatal(state.conversion.problems)) {
           for (const open of clients.values()) {
             if (open.opened) open.client.didChange(state.entry, state.conversion.typ);
@@ -94,6 +97,21 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
           }
         }
         emit("problems");
+      };
+      const refresh = async (): Promise<void> => {
+        if (state.ended) return;
+        const editorText = host.editorText(state.file);
+        const nextText = normalizeText(editorText ?? await host.readFile(state.file));
+        if (nextText === state.text) {
+          if (!state.conversion.source) {
+            throw new Error("the note is no longer a Typst source");
+          }
+          return;
+        }
+        onEditorChange(state.file, nextText);
+        if (!state.conversion.source) {
+          throw new Error("the note is no longer a Typst source");
+        }
       };
       const onRename = (oldPath: string, newPath: string): void => {
         if (state.ended || oldPath !== state.file) return;
@@ -139,13 +157,14 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
         },
         inputs: undefined,
         pinnable: false,
-        exportable: false,
+        exportable: true,
         get pdf(): string {
           return pdfDestination(state.file);
         },
         get problems(): Problem[] {
           return state.conversion.problems;
         },
+        refresh,
         open(client): { close(): void } {
           let open = clients.get(client);
           if (open) {

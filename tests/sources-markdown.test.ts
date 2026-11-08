@@ -31,6 +31,7 @@ interface HostFixture {
   host: MarkdownSourceHost;
   readFiles: string[];
   reveals: Array<{ file: string; position: Position }>;
+  setFileText(text: string): void;
   emitEditorChange(path: string, text: string): void;
   emitRename(oldPath: string, newPath: string): void;
   emitDelete(path: string): void;
@@ -76,6 +77,7 @@ function fakeHost(options: HostOptions = {}): HostFixture {
   const readFiles: string[] = [];
   const reveals: Array<{ file: string; position: Position }> = [];
   const existing = new Set(options.existing ?? []);
+  let fileText = options.fileText ?? SOURCE_TEXT;
   const subscribe = <T>(listeners: Set<T>, listener: T): (() => void) => {
     listeners.add(listener);
     return () => listeners.delete(listener);
@@ -86,7 +88,7 @@ function fakeHost(options: HostOptions = {}): HostFixture {
     editorText: () => options.editorText === undefined ? SOURCE_TEXT : options.editorText,
     readFile: async (path) => {
       readFiles.push(path);
-      return options.fileText ?? SOURCE_TEXT;
+      return fileText;
     },
     exists: (path) => existing.has(path),
     kit: () => options.kit ?? null,
@@ -105,6 +107,9 @@ function fakeHost(options: HostOptions = {}): HostFixture {
     host,
     readFiles,
     reveals,
+    setFileText: (text) => {
+      fileText = text;
+    },
     emitEditorChange: (path, text) => {
       for (const listener of editorListeners) listener(path, text);
     },
@@ -229,7 +234,7 @@ test("a Markdown source exposes literal virtual addresses and PDF destination", 
       document: ARLIDUS_ENTRY,
       inputs: undefined,
       pinnable: false,
-      exportable: false,
+      exportable: true,
       pdf: "Notes/Арлидус.pdf",
     },
   );
@@ -274,6 +279,79 @@ test("open clients receive independent document updates and closing one stops it
   } finally {
     secondHandle.close();
   }
+});
+
+test("refreshing a closed Markdown source updates open clients only when the vault text changed", async () => {
+  // #given
+  const fixture = fakeHost({ editorText: null, fileText: SOURCE_TEXT });
+  const source = await createSource(fixture);
+  const client = new RecordingClient();
+  const handle = source.open(client as never);
+  const events: string[] = [];
+  source.on("problems", () => events.push("problems"));
+  const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
+  assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
+  if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
+  fixture.setFileText("---\ntypst: true\n---\n# Refreshed heading\n");
+
+  // #when
+  await refreshed.refresh();
+  await refreshed.refresh();
+
+  // #then
+  try {
+    assert.deepEqual(
+      { calls: client.calls, events, reads: fixture.readFiles },
+      {
+        calls: [
+          { method: "didOpen", path: ARLIDUS_ENTRY, text: SOURCE_TYP },
+          {
+            method: "didChange",
+            path: ARLIDUS_ENTRY,
+            text: `${BUILT_INS}#show: template.with(\n\n)\n= Refreshed heading\n`,
+          },
+        ],
+        events: ["problems"],
+        reads: ["Notes/Арлидус.md", "Notes/Арлидус.md", "Notes/Арлидус.md"],
+      },
+    );
+  } finally {
+    handle.close();
+  }
+});
+
+test("refresh rejects when saved Markdown text no longer enables Typst", async () => {
+  // #given
+  const fixture = fakeHost({ editorText: null, fileText: SOURCE_TEXT });
+  const source = await createSource(fixture);
+  const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
+  assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
+  if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
+  fixture.setFileText("---\n---\n= No longer a source\n");
+
+  // #when
+  const refresh = refreshed.refresh();
+
+  // #then
+  await assert.rejects(refresh, { message: "the note is no longer a Typst source" });
+});
+
+test("refresh rejects unchanged text after an editor change removed the Typst source", async () => {
+  // #given
+  const fixture = fakeHost({ editorText: null, fileText: SOURCE_TEXT });
+  const source = await createSource(fixture);
+  const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
+  assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
+  if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
+  const noLongerSource = "---\n---\n= No longer a source\n";
+  fixture.emitEditorChange("Notes/Арлидус.md", noLongerSource);
+  fixture.setFileText(noLongerSource);
+
+  // #when
+  const refresh = refreshed.refresh();
+
+  // #then
+  await assert.rejects(refresh, { message: "the note is no longer a Typst source" });
 });
 
 test("repeated opens on one client share one document until the final handle closes", async () => {
