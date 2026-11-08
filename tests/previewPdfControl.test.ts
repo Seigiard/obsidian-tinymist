@@ -8,7 +8,7 @@ import type { AutomaticPdfExporter } from "../src/automatic-pdf";
 import { TypstView } from "../src/editor/typstView";
 import TinymistPlugin from "../src/main";
 import { PreviewView } from "../src/preview/previewView";
-import type { TypstSource } from "../src/sources";
+import { mdAdapter, type MarkdownSourceHost, type TypstSource } from "../src/sources";
 import { Menu, TFile, TestApp, TFolder, WorkspaceLeaf, testApp } from "./support/obsidian";
 
 const PREVIEW_URL = "http://127.0.0.1:4321";
@@ -224,7 +224,7 @@ test("preview header exposes one labeled keyboard checkbox for the selected sour
   }
 });
 
-test("Markdown preview disables Automatic PDF while a Typst preview keeps it enabled", async () => {
+test("Markdown and Typst previews enable Automatic PDF for exportable sources", async () => {
   // #given
   const app = testApp("/vault");
   const makeSource = (file: string, exportable: boolean): TypstSource => ({
@@ -243,9 +243,24 @@ test("Markdown preview disables Automatic PDF while a Typst preview keeps it ena
     on: () => () => {},
     release: () => {},
   } as TypstSource & { exportable: boolean });
-  const markdown = makeSource("Notes/A.md", false);
+  const markdownHost: MarkdownSourceHost = {
+    root: () => "/vault",
+    frontmatter: () => ({ typst: true }),
+    editorText: () => "---\ntypst: true\n---\n= Note",
+    readFile: async () => "---\ntypst: true\n---\n= Note",
+    exists: () => false,
+    kit: () => ({ ready: true, kit: null }),
+    onKitChange: () => () => {},
+    reveal: async () => {},
+    onEditorChange: () => () => {},
+    onRename: () => () => {},
+    onDelete: () => () => {},
+  };
+  const markdown = await mdAdapter(markdownHost).create("Notes/A.md", () => {});
+  assert.ok(markdown, "expected a flagged Markdown source");
   const typst = makeSource("Notes/A.typ", true);
   let selected = markdown;
+  const setCalls: Array<{ path: string; enabled: boolean }> = [];
   const plugin = {
     preview: {
       onChange: () => () => {},
@@ -256,27 +271,41 @@ test("Markdown preview disables Automatic PDF while a Typst preview keeps it ena
     onDiagnostics: () => () => {},
     onAutomaticPdfChange: () => () => {},
     automaticPdfEnabled: () => true,
-    setAutomaticPdf: async () => {},
+    setAutomaticPdf: async (path: string, enabled: boolean) => {
+      setCalls.push({ path, enabled });
+    },
     lsp: null,
     vaultBasePath: () => "/vault",
   } as unknown as TinymistPlugin;
   const markdownView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
+  const markdownState = controlState(markdownView);
+  checkbox(markdownView).click();
+  await settle();
   selected = typst;
   const typstView = new PreviewView(new WorkspaceLeaf(app) as never, plugin);
 
   // #when
-  const markdownState = controlState(markdownView);
   const typstState = controlState(typstView);
 
   // #then
   try {
     assert.deepEqual(
       {
-        markdown: { disabled: markdownState.disabled, checked: markdownState.checked, label: markdownState.label },
+        markdown: {
+          disabled: markdownState.disabled,
+          checked: markdownState.checked,
+          label: markdownState.label,
+          setCalls,
+        },
         typst: { disabled: typstState.disabled, checked: typstState.checked, label: typstState.label },
       },
       {
-        markdown: { disabled: true, checked: false, label: "Automatic PDF export" },
+        markdown: {
+          disabled: false,
+          checked: true,
+          label: "Automatic PDF export",
+          setCalls: [{ path: "Notes/A.md", enabled: false }],
+        },
         typst: { disabled: false, checked: true, label: "Automatic PDF export" },
       },
     );

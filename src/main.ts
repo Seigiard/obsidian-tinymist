@@ -913,6 +913,7 @@ export default class TinymistPlugin extends Plugin {
       editorText: (vaultPath) => {
         for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
           if (!(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== vaultPath) continue;
+          if (leaf.view.getMode() !== "source") continue;
           return leaf.view.editor.getValue();
         }
         return null;

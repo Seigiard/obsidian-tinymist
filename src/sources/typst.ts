@@ -23,6 +23,7 @@ export interface TypstSource {
   readonly exportable: boolean;
   readonly pdf: string;
   readonly problems?: readonly { line: number; message: string; fatal: boolean }[];
+  refresh?(): Promise<void>;
   open(client: LspClient): { close(): void };
   toSource(position: Position): Position;
   toEntry(position: Position): Position;
