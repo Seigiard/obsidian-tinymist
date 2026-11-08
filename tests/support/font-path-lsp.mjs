@@ -34,7 +34,9 @@ function respond(message) {
       ? { items: [{ page: 0, data: page }] }
       : command === "tinymist.exportPdf"
         ? { data: Buffer.from("%PDF-1.7\nfont configuration fixture\n").toString("base64") }
-        : null;
+        : command === "tinymist.exportQuery"
+          ? JSON.parse(process.env.KIT_MANIFEST_QUERY_RESULT ?? "null")
+          : null;
     send({ jsonrpc: "2.0", id: message.id, result });
   }
 }

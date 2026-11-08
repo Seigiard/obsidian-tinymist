@@ -208,6 +208,70 @@ test("main LSP initialization sends every resolved configured font path", async 
   });
 });
 
+test("effective font paths append deduplicated ready-kit paths without changing settings", () => {
+  // #given
+  const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
+    kit: { view(): { ready: true; kit: { fontPaths: readonly string[] } } };
+  };
+  plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings", "/shared", "settings"] };
+  plugin.kit = {
+    view: () => ({ ready: true, kit: { fontPaths: ["/shared", "/kit/fonts", "/kit/fonts"] } }),
+  };
+
+  // #when
+  const resolved = plugin.resolveFontPaths("/vault");
+
+  // #then
+  assert.deepEqual(
+    { resolved, stored: plugin.settings.fontPaths },
+    {
+      resolved: ["/vault/settings", "/shared", "/kit/fonts"],
+      stored: ["settings", "/shared", "settings"],
+    },
+  );
+});
+
+test("a kit font-path change restarts once only when the merged list differs", async () => {
+  // #given
+  const run = async (running: readonly string[]) => {
+    const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
+      kit: { view(): { ready: true; kit: { fontPaths: readonly string[] } } };
+      vaultBasePath(): string;
+      onKitChange?: () => Promise<void>;
+    };
+    const restarts: boolean[] = [];
+    let stopped = 0;
+    let invalidated = 0;
+    plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
+    plugin.kit = { view: () => ({ ready: true, kit: { fontPaths: ["/kit/fonts"] } }) };
+    plugin.vaultBasePath = () => "/vault";
+    plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
+    plugin.fragments = { stop: () => { stopped += 1; } } as never;
+    plugin.typstRender = { invalidate: () => { invalidated += 1; } } as never;
+    plugin.startLsp = async (restart) => { restarts.push(restart); };
+
+    // #when
+    const result = typeof plugin.onKitChange === "function"
+      ? await plugin.onKitChange()
+      : "missing kit-change handler";
+
+    return { result, restarts, stopped, invalidated };
+  };
+
+  // #when
+  const changed = await run(["/vault/settings"]);
+  const unchanged = await run(["/vault/settings", "/kit/fonts"]);
+
+  // #then
+  assert.deepEqual(
+    { changed, unchanged },
+    {
+      changed: { result: undefined, restarts: [true], stopped: 1, invalidated: 1 },
+      unchanged: { result: undefined, restarts: [], stopped: 0, invalidated: 0 },
+    },
+  );
+});
+
 test("preview source activation and clearing preserve configured font paths", async () => {
   await withFakeServer(async (vault, messages) => {
     // #given
