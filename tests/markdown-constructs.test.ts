@@ -255,6 +255,23 @@ test("N1: comment delimiters inside inline code remain literal text", () => {
   assert.deepEqual(conversion.typ.split("\n").slice(3), ["`a %% b` c", "next"]);
 });
 
+test("Z1: comment boundaries exclude stray code delimiters and preserve real code spans", () => {
+  // #given
+  const texts = [
+    sourceNote(["typst: true"], ["%% draft ` %% visible `code`", "Next paragraph"]),
+    sourceNote(["typst: true"], ["%% draft %% visible `code`", "Next paragraph"]),
+    sourceNote(["typst: true"], ["`a %% b` %% c %%"]),
+  ];
+  // #when
+  const lines = texts.map((text) => convert(text, null).typ.split("\n").slice(3));
+  // #then
+  assert.deepEqual(lines, [
+    [" visible `code`", "Next paragraph"],
+    [" visible `code`", "Next paragraph"],
+    ["`a %% b` "],
+  ]);
+});
+
 test("N2: table rows trim trailing whitespace without adding a column", () => {
   // #given
   const text = sourceNote(["typst: true"], ["| a | b |  ", "|---|---|\t", "| 1 | 2 | ", "| x | y"]);
