@@ -38,6 +38,7 @@ export interface AutomaticPdfExportRequest {
   entryPath: string;
   root: string;
   sourceInput?: string;
+  open?: (client: LspClient) => { close(): void };
 }
 
 export interface AutomaticPdfExporter {
@@ -232,6 +233,18 @@ export class AutomaticPdfController {
 
   async setAutomaticPdf(sourcePath: string, enabled: boolean): Promise<void> {
     if (this.disposed || !this.host.sources.mayBeSource(sourcePath)) return;
+    const destinationPath = pdfDestination(sourcePath);
+    if (enabled) {
+      for (const [otherSourcePath, otherEntry] of this.entries) {
+        if (otherSourcePath === sourcePath || !otherEntry.enabled) continue;
+        const otherDestination = otherEntry.destinationPath ?? pdfDestination(otherSourcePath);
+        if (otherDestination !== destinationPath) continue;
+        this.host.notice(
+          `Automatic PDF export for ${otherSourcePath} already writes ${otherDestination}.`,
+        );
+        return;
+      }
+    }
     const entry = this.entry(sourcePath);
     this.revokeAuthorization(entry);
     entry.enabled = enabled;
@@ -644,6 +657,16 @@ export class AutomaticPdfController {
       job.outcome = "failed";
       return;
     }
+    const fatal = source.problems?.find((problem) => problem.fatal);
+    if (fatal) {
+      entry.status = "error";
+      this.notifyError(
+        entry,
+        `PDF export failed for ${job.sourcePath}: ${fatal.message} (line ${fatal.line + 1})`,
+      );
+      job.outcome = "failed";
+      return;
+    }
     const initial = await this.readDestination(destinationPath);
     if (initial.error) {
       this.markFailure(entry, `Could not read ${destinationPath}: ${String(initial.error)}`);
@@ -667,6 +690,7 @@ export class AutomaticPdfController {
         entryPath: source.entry,
         root,
         sourceInput: source.inputs,
+        open: (client) => source.open(client),
       });
     } catch (error) {
       if (!this.isCurrent(job, entry)) {
@@ -1052,17 +1076,23 @@ export class NativeAutomaticPdfExporter implements AutomaticPdfExporter {
       // cannot poison the next export after a failed compile.
       const client = new LspClient(this.binaryPath, this.rootPath, () => {}, this.configuration);
       this.client = client;
+      let openHandle: { close(): void } | undefined;
       try {
         await client.start();
         if (this.stopped) throw new Error("automatic PDF exporter stopped");
         client.setExportInput(request.sourceInput);
+        openHandle = request.open?.(client);
         const result = await client.exportPdf(request.entryPath);
         const data = result?.data;
         if (!data) throw new Error("Tinymist returned no PDF data");
         return new Uint8Array(Buffer.from(data, "base64"));
       } finally {
-        client.stop();
-        if (this.client === client) this.client = null;
+        try {
+          openHandle?.close();
+        } finally {
+          client.stop();
+          if (this.client === client) this.client = null;
+        }
       }
     });
     this.serial = run.then(

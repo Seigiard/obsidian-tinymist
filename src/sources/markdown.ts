@@ -139,7 +139,7 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
         },
         inputs: undefined,
         pinnable: false,
-        exportable: false,
+        exportable: true,
         get pdf(): string {
           return pdfDestination(state.file);
         },

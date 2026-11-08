@@ -1,4 +1,4 @@
-import { MarkdownView, type TFile, type WorkspaceLeaf } from "obsidian";
+import { MarkdownView, Menu, TAbstractFile, TFile, type WorkspaceLeaf } from "obsidian";
 import type TinymistPlugin from "../main";
 
 /** Installs the source-aware preview action on Markdown note views. */
@@ -44,6 +44,24 @@ export function registerNoteControls(plugin: TinymistPlugin): void {
       refreshPath(file.path);
     }));
   }
+
+  plugin.registerEvent(plugin.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+    if (!(file instanceof TFile) || !/\.md$/iu.test(file.path) || !plugin.sources.mayBeSource(file.path)) {
+      return;
+    }
+    const path = file.path;
+    const enabled = plugin.automaticPdfEnabled(path);
+    const status = plugin.automaticPdfStatus(path);
+    menu.addItem((item) =>
+      item
+        .setTitle("Automatic PDF export")
+        .setChecked(enabled)
+        .onClick(() => plugin.setAutomaticPdf(path, !enabled)),
+    );
+    menu.addItem((item) => item.setTitle("Rebuild PDF").onClick(() => plugin.rebuildPdf(path)));
+    const label = status[0].toUpperCase() + status.slice(1);
+    menu.addItem((item) => item.setTitle(`PDF: ${label}`).setDisabled(true));
+  }));
 
   for (const leaf of plugin.app.workspace.getLeavesOfType("markdown")) {
     refresh(leaf.view instanceof MarkdownView ? leaf.view : null);
