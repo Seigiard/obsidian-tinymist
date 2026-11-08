@@ -257,7 +257,7 @@ test("automatic export refuses the reverse same-destination source order", async
 test("a fatal Markdown conversion fails without exporting a virtual-address notice", async () => {
   // #given
   const h = await harness();
-  h.note("Notes/A.md", "---\ntypst: true\ntemplate: unavailable\n---\n= Note\n");
+  h.note("Notes/A.md", "---\ntypst: true\ntypst-template: unavailable\n---\n= Note\n");
   Notice.shown.length = 0;
 
   // #when
@@ -276,7 +276,7 @@ test("a fatal Markdown conversion fails without exporting a virtual-address noti
       {
         receipt: { outcome: "failed", generation: 1, pdfPath: "Notes/A.pdf", status: "error" },
         requests: 0,
-        notices: ["PDF export failed for Notes/A.md: Unknown Typst template unavailable (line 2)"],
+        notices: ["PDF export failed for Notes/A.md: Unknown Typst template unavailable (line 3)"],
         virtualAddressMentioned: false,
       },
     );
