@@ -11,10 +11,28 @@ if (!arch || !platform || !process.env.RUNNER_TEMP || !process.env.GITHUB_ENV) {
 }
 const headers = { "User-Agent": "typst-live-native-ci" };
 if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+const MAX_ATTEMPTS = 5;
+const RETRY_DELAY_MS = 10_000;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function get(url, api = false) {
-  const response = await fetch(url, { headers: api ? headers : {}, signal: AbortSignal.timeout(120_000) });
-  if (!response.ok) throw new Error(`Upstream release request returned ${response.status}`);
-  return response;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, { headers: api ? headers : {}, signal: AbortSignal.timeout(120_000) });
+    } catch (error) {
+      if (attempt === MAX_ATTEMPTS) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Retrying ${url} after status network error (${message}); attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
+      await wait(RETRY_DELAY_MS);
+      continue;
+    }
+    if (response.ok) return response;
+    if (response.status < 500 || response.status >= 600 || attempt === MAX_ATTEMPTS) {
+      throw new Error(`Upstream release request returned ${response.status}`);
+    }
+    console.error(`Retrying ${url} after status ${response.status}; attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
+    await wait(RETRY_DELAY_MS);
+  }
 }
 const release = await (await get("https://api.github.com/repos/Myriad-Dreamin/tinymist/releases/latest", true)).json();
 if (release.draft || release.prerelease) throw new Error("Expected a stable Tinymist release");
