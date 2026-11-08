@@ -6,7 +6,7 @@ export type { ParsedManifest } from "./manifest";
 
 export type KitState =
   | { kind: "none" }
-  | { kind: "loading" }
+  | { kind: "loading"; previous?: ParsedManifest }
   | { kind: "ready"; manifest: ParsedManifest }
   | { kind: "failed"; reason: string };
 
@@ -142,7 +142,13 @@ export class Kit {
       }
       this.lastForceVersion = force;
       const readEpoch = this.epoch;
-      this.state = { kind: "loading" };
+      const previous =
+        this.state.kind === "ready"
+          ? this.state.manifest
+          : this.state.kind === "loading"
+            ? this.state.previous
+            : undefined;
+      this.state = previous ? { kind: "loading", previous } : { kind: "loading" };
       this.loadedManifestPath = null;
       this.notify();
 

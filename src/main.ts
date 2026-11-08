@@ -516,6 +516,8 @@ export default class TinymistPlugin extends Plugin {
     if (!kit) return result;
     if (kit.state.kind === "ready") {
       for (const path of kit.state.manifest.fontPaths) add(path);
+    } else if (kit.state.kind === "loading" && kit.state.previous) {
+      for (const path of kit.state.previous.fontPaths) add(path);
     }
     return result;
   }
@@ -551,6 +553,7 @@ export default class TinymistPlugin extends Plugin {
       if (samePaths(running, resolved)) return;
       this.fragments?.stop();
       this.typstRender?.invalidate();
+      this.automaticPdfController?.configurationChanged();
       await this.startLsp(true);
     });
     this.kitChangePromise = current;
@@ -626,6 +629,7 @@ export default class TinymistPlugin extends Plugin {
       if (root && running && !samePaths(running, this.resolveFontPaths(root))) {
         this.fragments?.stop();
         this.typstRender?.invalidate();
+        this.automaticPdfController?.configurationChanged();
       }
       await this.startLsp(true);
     } finally {
