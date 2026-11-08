@@ -8,6 +8,7 @@ import { NativeAutomaticPdfExporter } from "../src/automatic-pdf";
 import type { LspClient } from "../src/lsp/client";
 import TinymistPlugin from "../src/main";
 import { Notice, TFile, type TestApp, testApp } from "./support/obsidian";
+import { nodeFixture } from "./support/nodeFixture";
 
 const encoder = new TextEncoder();
 
@@ -18,21 +19,49 @@ interface MarkdownExportRequest {
   open?: (client: LspClient) => { close(): void };
 }
 
+interface ExportClientCall {
+  method: "didOpen" | "didChange" | "didClose";
+  path: string;
+  text?: string;
+}
+
+class RecordingExportClient {
+  readonly calls: ExportClientCall[] = [];
+
+  didOpen(path: string, text: string): void {
+    this.calls.push({ method: "didOpen", path, text });
+  }
+
+  didChange(path: string, text: string): void {
+    this.calls.push({ method: "didChange", path, text });
+  }
+
+  didClose(path: string): void {
+    this.calls.push({ method: "didClose", path });
+  }
+}
+
 class ControlledExporter {
   readonly requests: MarkdownExportRequest[] = [];
   readonly responses: Array<Uint8Array | Error> = [];
+  openClient: RecordingExportClient | null = null;
 
   async exportPdf(request: MarkdownExportRequest): Promise<Uint8Array> {
     this.requests.push(request);
-    const response = this.responses.shift() ?? encoder.encode("PDF-default");
-    if (response instanceof Error) throw response;
-    return response;
+    const handle = this.openClient && request.open?.(this.openClient as never);
+    try {
+      const response = this.responses.shift() ?? encoder.encode("PDF-default");
+      if (response instanceof Error) throw response;
+      return response;
+    } finally {
+      handle?.close();
+    }
   }
 
   stop(): void {}
 }
 
-class MarkdownPdfPlugin extends TinymistPlugin {
+class TestPlugin extends TinymistPlugin {
   readonly exporter = new ControlledExporter();
   readonly confirmations: unknown[] = [];
   readonly confirmationResults: boolean[] = [];
@@ -52,7 +81,7 @@ class MarkdownPdfPlugin extends TinymistPlugin {
 interface Harness {
   root: string;
   app: TestApp;
-  plugin: MarkdownPdfPlugin;
+  plugin: TestPlugin;
   note(path: string, text?: string): TFile;
   typst(path: string): TFile;
   close(): void;
@@ -61,7 +90,7 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), "automatic-pdf-markdown-"));
   const app = testApp(root);
-  const plugin = new MarkdownPdfPlugin(app as never, {});
+  const plugin = new TestPlugin(app as never, {});
   await plugin.onload();
   return {
     root,
@@ -285,6 +314,59 @@ test("a fatal Markdown conversion fails without exporting a virtual-address noti
   }
 });
 
+test("each manual rebuild repeats the fatal Markdown conversion notice", async () => {
+  // #given
+  const h = await harness();
+  h.note("Notes/A.md", "---\ntypst: true\ntypst-template: unavailable\n---\n= Note\n");
+  Notice.shown.length = 0;
+
+  // #when
+  const first = await h.plugin.rebuildPdf("Notes/A.md");
+  const second = await h.plugin.rebuildPdf("Notes/A.md");
+
+  // #then
+  try {
+    assert.deepEqual(
+      { first, second, notices: [...Notice.shown] },
+      {
+        first: { outcome: "failed", generation: 1, pdfPath: "Notes/A.pdf", status: "error" },
+        second: { outcome: "failed", generation: 2, pdfPath: "Notes/A.pdf", status: "error" },
+        notices: [
+          "PDF export failed for Notes/A.md: Unknown Typst template unavailable (line 3)",
+          "PDF export failed for Notes/A.md: Unknown Typst template unavailable (line 3)",
+        ],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("an automatic save keeps the fatal Markdown conversion notice latched", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md", "---\ntypst: true\ntypst-template: unavailable\n---\n= Note\n");
+  Notice.shown.length = 0;
+  await h.plugin.setAutomaticPdf(note.path, true);
+
+  // #when
+  await h.app.vault.emit("modify", note);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // #then
+  try {
+    assert.deepEqual(
+      { status: h.plugin.automaticPdfStatus(note.path), notices: [...Notice.shown] },
+      {
+        status: "error",
+        notices: ["PDF export failed for Notes/A.md: Unknown Typst template unavailable (line 3)"],
+      },
+    );
+  } finally {
+    h.close();
+  }
+});
+
 test("a Markdown export failure reports the note path and never stores its virtual address", async () => {
   // #given
   const h = await harness();
@@ -313,6 +395,40 @@ test("a Markdown export failure reports the note path and never stores its virtu
       },
     );
   } finally {
+    h.close();
+  }
+});
+
+test("an externally changed held Markdown note opens its current file text for automatic export", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md", "---\ntypst: true\n---\n= Old heading\n");
+  const held = await h.plugin.sources.hold(note.path);
+  assert.ok(held, "expected the preview holder to keep the Markdown source alive");
+  const client = new RecordingExportClient();
+  h.plugin.exporter.openClient = client;
+  await h.plugin.setAutomaticPdf(note.path, true);
+  client.calls.splice(0);
+  const updated = "---\ntypst: true\n---\n= New heading\n";
+  writeFileSync(join(h.root, note.path), updated);
+  h.app.vault.files.set(note.path, updated);
+
+  // #when
+  await h.app.vault.emit("modify", note);
+  const rebuilt = await settleUntil(() => client.calls.some((call) => call.method === "didOpen"));
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        rebuilt,
+        currentHeadingOpened: client.calls.some((call) => call.text?.includes("= New heading")),
+        staleHeadingOpened: client.calls.some((call) => call.text?.includes("= Old heading")),
+      },
+      { rebuilt: true, currentHeadingOpened: true, staleHeadingOpened: false },
+    );
+  } finally {
+    held.release();
     h.close();
   }
 });
@@ -364,6 +480,7 @@ process.stdin.on("data", (chunk) => {
   };
   const previousLog = process.env.AUTOMATIC_PDF_LSP_LOG;
   process.env.AUTOMATIC_PDF_LSP_LOG = log;
+  const restoreSpawn = nodeFixture(binary);
 
   // #when
   try {
@@ -394,6 +511,7 @@ process.stdin.on("data", (chunk) => {
     );
   } finally {
     exporter.stop();
+    await restoreSpawn();
     if (previousLog === undefined) delete process.env.AUTOMATIC_PDF_LSP_LOG;
     else process.env.AUTOMATIC_PDF_LSP_LOG = previousLog;
     rmSync(root, { recursive: true, force: true });
