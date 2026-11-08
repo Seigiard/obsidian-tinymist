@@ -433,6 +433,52 @@ test("an externally changed held Markdown note opens its current file text for a
   }
 });
 
+test("an automatic export keeps its published PDF when a held Markdown note stops being a Typst source", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md");
+  const held = await h.plugin.sources.hold(note.path);
+  assert.ok(held, "expected the preview holder to keep the Markdown source alive");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-published"));
+  await h.plugin.setAutomaticPdf(note.path, true);
+  h.app.vault.binaryWrites.splice(0);
+  Notice.shown.length = 0;
+  const noLongerSource = "---\n---\n= No longer a source\n";
+  writeFileSync(join(h.root, note.path), noLongerSource);
+  h.app.vault.files.set(note.path, noLongerSource);
+  h.app.metadataCache.setFrontmatter(note.path, {});
+
+  // #when
+  await h.app.vault.emit("modify", note);
+  const settled = await settleUntil(() => h.plugin.automaticPdfStatus(note.path) !== "building");
+
+  // #then
+  try {
+    const notices = [...Notice.shown];
+    assert.deepEqual(
+      {
+        settled,
+        writes: h.app.vault.binaryWrites.map(({ path }) => path),
+        status: h.plugin.automaticPdfStatus(note.path),
+        pdf: bytes(h.app, "Notes/A.pdf"),
+        noticeNamesNote: notices.some((notice) => notice.includes("Notes/A.md")),
+        noticeNamesCause: notices.some((notice) => notice.includes("the note is no longer a Typst source")),
+      },
+      {
+        settled: true,
+        writes: [],
+        status: "error",
+        pdf: "PDF-published",
+        noticeNamesNote: true,
+        noticeNamesCause: true,
+      },
+    );
+  } finally {
+    held.release();
+    h.close();
+  }
+});
+
 test("native export opens the virtual document before export and closes it before stop", async () => {
   // #given
   const root = mkdtempSync(join(tmpdir(), "automatic-pdf-open-order-"));

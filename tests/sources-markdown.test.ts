@@ -320,6 +320,40 @@ test("refreshing a closed Markdown source updates open clients only when the vau
   }
 });
 
+test("refresh rejects when saved Markdown text no longer enables Typst", async () => {
+  // #given
+  const fixture = fakeHost({ editorText: null, fileText: SOURCE_TEXT });
+  const source = await createSource(fixture);
+  const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
+  assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
+  if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
+  fixture.setFileText("---\n---\n= No longer a source\n");
+
+  // #when
+  const refresh = refreshed.refresh();
+
+  // #then
+  await assert.rejects(refresh, { message: "the note is no longer a Typst source" });
+});
+
+test("refresh rejects unchanged text after an editor change removed the Typst source", async () => {
+  // #given
+  const fixture = fakeHost({ editorText: null, fileText: SOURCE_TEXT });
+  const source = await createSource(fixture);
+  const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
+  assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
+  if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
+  const noLongerSource = "---\n---\n= No longer a source\n";
+  fixture.emitEditorChange("Notes/Арлидус.md", noLongerSource);
+  fixture.setFileText(noLongerSource);
+
+  // #when
+  const refresh = refreshed.refresh();
+
+  // #then
+  await assert.rejects(refresh, { message: "the note is no longer a Typst source" });
+});
+
 test("repeated opens on one client share one document until the final handle closes", async () => {
   // #given
   const fixture = fakeHost();
