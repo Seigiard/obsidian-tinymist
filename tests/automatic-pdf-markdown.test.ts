@@ -25,6 +25,19 @@ interface ExportClientCall {
   text?: string;
 }
 
+interface DeferredExport {
+  promise: Promise<Uint8Array>;
+  resolve(bytes: Uint8Array): void;
+}
+
+function deferredExport(): DeferredExport {
+  let resolve!: (bytes: Uint8Array) => void;
+  const promise = new Promise<Uint8Array>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 class RecordingExportClient {
   readonly calls: ExportClientCall[] = [];
 
@@ -43,7 +56,7 @@ class RecordingExportClient {
 
 class ControlledExporter {
   readonly requests: MarkdownExportRequest[] = [];
-  readonly responses: Array<Uint8Array | Error> = [];
+  readonly responses: Array<Uint8Array | Error | Promise<Uint8Array>> = [];
   openClient: RecordingExportClient | null = null;
 
   async exportPdf(request: MarkdownExportRequest): Promise<Uint8Array> {
@@ -469,6 +482,57 @@ test("an automatic export keeps its published PDF when a held Markdown note stop
         writes: [],
         status: "error",
         pdf: "PDF-published",
+        noticeNamesNote: true,
+        noticeNamesCause: true,
+      },
+    );
+  } finally {
+    held.release();
+    h.close();
+  }
+});
+
+test("a completed export does not replace a PDF after its held Markdown note stops being a Typst source", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md");
+  const held = await h.plugin.sources.hold(note.path);
+  assert.ok(held, "expected the preview holder to keep the Markdown source alive");
+  h.plugin.exporter.responses.push(encoder.encode("PDF-X"));
+  await h.plugin.rebuildPdf(note.path);
+  const pending = deferredExport();
+  h.plugin.exporter.responses.push(pending.promise);
+  h.app.vault.binaryWrites.splice(0);
+  Notice.shown.length = 0;
+
+  // #when
+  const rebuilding = h.plugin.rebuildPdf(note.path);
+  const exportStarted = await settleUntil(() => h.plugin.exporter.requests.length === 2);
+  const noLongerSource = "---\n---\n= No longer a source\n";
+  writeFileSync(join(h.root, note.path), noLongerSource);
+  h.app.vault.files.set(note.path, noLongerSource);
+  pending.resolve(encoder.encode("PDF-Y"));
+  const receipt = await rebuilding;
+
+  // #then
+  try {
+    const notices = [...Notice.shown];
+    assert.deepEqual(
+      {
+        exportStarted,
+        receipt,
+        writes: h.app.vault.binaryWrites.map(({ path, data }) => ({ path, data: new TextDecoder().decode(data) })),
+        status: h.plugin.automaticPdfStatus(note.path),
+        pdf: bytes(h.app, "Notes/A.pdf"),
+        noticeNamesNote: notices.some((notice) => notice.includes("Notes/A.md")),
+        noticeNamesCause: notices.some((notice) => notice.includes("the note is no longer a Typst source")),
+      },
+      {
+        exportStarted: true,
+        receipt: { outcome: "failed", generation: 2, pdfPath: "Notes/A.pdf", status: "error" },
+        writes: [],
+        status: "error",
+        pdf: "PDF-X",
         noticeNamesNote: true,
         noticeNamesCause: true,
       },

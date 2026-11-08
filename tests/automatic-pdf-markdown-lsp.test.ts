@@ -1,6 +1,7 @@
 import "./support/dom";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -79,6 +80,6 @@ test("native Markdown rebuild writes only its sibling PDF", { skip: !BIN && "tin
     );
   } finally {
     plugin.onunload();
-    rmSync(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
   }
 });
