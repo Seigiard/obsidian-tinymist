@@ -207,10 +207,16 @@ test("source creation prefers normalized editor text and falls back to the vault
 
 test("a ready kit imports a selected template or its default, while no kit leaves built-ins alone", async () => {
   // #given
-  const ready = { ready: true, kit: { templates: { reference: "/kit/md/reference.typ" }, defaultTemplate: "reference" } } as const;
+  const ready = {
+    ready: true,
+    kit: {
+      templates: { reference: "/kit/md/reference.typ", letter: "/kit/md/letter.typ" },
+      defaultTemplate: "reference",
+    },
+  } as const;
   const selected = await createSource(fakeHost({
     kit: ready,
-    editorText: "---\ntypst: true\ntypst-template: reference\n---\nBody",
+    editorText: "---\ntypst: true\ntypst-template: letter\n---\nBody",
   }), "Notes/Selected.md");
   const fallback = await createSource(fakeHost({
     kit: ready,
@@ -234,7 +240,7 @@ test("a ready kit imports a selected template or its default, while no kit leave
     assert.deepEqual(
       [selectedClient.calls[0]?.text?.split("\n")[0], fallbackClient.calls[0]?.text?.split("\n")[0], builtInClient.calls[0]?.text?.split("\n")[0]],
       [
-        `${BUILT_INS}#import "/kit/md/reference.typ": *; #show: template.with(`,
+        `${BUILT_INS}#import "/kit/md/letter.typ": *; #show: template.with(`,
         `${BUILT_INS}#import "/kit/md/reference.typ": *; #show: template.with(`,
         `${BUILT_INS}#show: template.with(`,
       ],
@@ -243,6 +249,41 @@ test("a ready kit imports a selected template or its default, while no kit leave
     selectedHandle.close();
     fallbackHandle.close();
     builtInHandle.close();
+  }
+});
+
+test("an open Markdown source closes while the kit is unavailable and reopens with current text", async () => {
+  // #given
+  const ready = { ready: true, kit: { templates: {}, defaultTemplate: "" } } as const;
+  const fixture = fakeHost({ kit: ready });
+  const source = await createSource(fixture, "Notes/Kit-state.md");
+  const client = new RecordingClient();
+  const problems: unknown[] = [];
+  source.on("problems", () => problems.push(source.problems));
+  const handle = source.open(client as never);
+
+  // #when
+  fixture.emitKitChange({ ready: false, reason: "Typst kit failed: Manifest file not found: kit/md/manifest.typ" });
+  fixture.emitKitChange(ready);
+
+  // #then
+  try {
+    assert.deepEqual(
+      { calls: client.calls, problems },
+      {
+        calls: [
+          { method: "didOpen", path: virtualAddress("/v", "Notes/Kit-state.md"), text: SOURCE_TYP },
+          { method: "didClose", path: virtualAddress("/v", "Notes/Kit-state.md") },
+          { method: "didOpen", path: virtualAddress("/v", "Notes/Kit-state.md"), text: SOURCE_TYP },
+        ],
+        problems: [
+          [{ line: 0, message: "Typst kit failed: Manifest file not found: kit/md/manifest.typ", fatal: true }],
+          [],
+        ],
+      },
+    );
+  } finally {
+    handle.close();
   }
 });
 

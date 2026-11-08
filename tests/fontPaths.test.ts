@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { Text } from "@codemirror/state";
 import { typstMathAt } from "../src/editor/typstFragment";
 import { FragmentBackend, TypstRender } from "../src/editor/typstRender";
+import { Kit, type ParsedManifest } from "../src/kit/kit";
 import { LspClient } from "../src/lsp/client";
 import { TypstFragmentRenderer } from "../src/lsp/fragmentRenderer";
 import TinymistPlugin from "../src/main";
@@ -208,54 +209,75 @@ test("main LSP initialization sends every resolved configured font path", async 
   });
 });
 
-test("effective font paths append deduplicated ready-kit paths without changing settings", () => {
+test("effective font paths append deduplicated ready-kit paths without changing settings", async () => {
   // #given
   const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
-    kit: { view(): { ready: true; kit: { fontPaths: readonly string[] } } };
+    kit: Kit;
   };
   plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings", "/shared", "settings"] };
-  plugin.kit = {
-    view: () => ({ ready: true, kit: { fontPaths: ["/shared", "/kit/fonts", "/kit/fonts"] } }),
-  };
+  let finishRead: ((manifest: ParsedManifest) => void) | null = null;
+  plugin.kit = new Kit({
+    vaultBase: "/vault",
+    bin: () => "/bin/tinymist",
+    settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
+    readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
+  });
 
   // #when
-  const resolved = plugin.resolveFontPaths("/vault");
+  const reload = plugin.kit.reload();
+  const loading = plugin.resolveFontPaths("/vault");
+  finishRead?.({ templates: {}, fontPaths: ["/shared", "/kit/fonts", "/kit/fonts"] });
+  await reload;
+  const ready = plugin.resolveFontPaths("/vault");
 
   // #then
-  assert.deepEqual(
-    { resolved, stored: plugin.settings.fontPaths },
-    {
-      resolved: ["/vault/settings", "/shared", "/kit/fonts"],
-      stored: ["settings", "/shared", "settings"],
-    },
-  );
+  try {
+    assert.deepEqual(
+      { loading, ready, stored: plugin.settings.fontPaths },
+      {
+        loading: ["/vault/settings", "/shared"],
+        ready: ["/vault/settings", "/shared", "/kit/fonts"],
+        stored: ["settings", "/shared", "settings"],
+      },
+    );
+  } finally {
+    plugin.kit.dispose();
+  }
 });
 
-test("a kit font-path change restarts once only when the merged list differs", async () => {
+test("a real Kit loading then ready restarts once only when the merged list differs", async () => {
   // #given
   const run = async (running: readonly string[]) => {
     const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
-      kit: { view(): { ready: true; kit: { fontPaths: readonly string[] } } };
+      kit: Kit;
       vaultBasePath(): string;
-      onKitChange?: () => Promise<void>;
     };
     const restarts: boolean[] = [];
-    let stopped = 0;
-    let invalidated = 0;
     plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
-    plugin.kit = { view: () => ({ ready: true, kit: { fontPaths: ["/kit/fonts"] } }) };
+    let finishRead: ((manifest: ParsedManifest) => void) | null = null;
+    plugin.kit = new Kit({
+      vaultBase: "/vault",
+      bin: () => "/bin/tinymist",
+      settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
+      readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
+    });
     plugin.vaultBasePath = () => "/vault";
     plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
-    plugin.fragments = { stop: () => { stopped += 1; } } as never;
-    plugin.typstRender = { invalidate: () => { invalidated += 1; } } as never;
     plugin.startLsp = async (restart) => { restarts.push(restart); };
+    const changes: Promise<void>[] = [];
+    plugin.kit.onChange(() => { changes.push(plugin.onKitChange()); });
 
     // #when
-    const result = typeof plugin.onKitChange === "function"
-      ? await plugin.onKitChange()
-      : "missing kit-change handler";
+    const reload = plugin.kit.reload();
+    finishRead?.({ templates: {}, fontPaths: ["/kit/fonts"] });
+    await reload;
+    await Promise.all(changes);
 
-    return { result, restarts, stopped, invalidated };
+    try {
+      return restarts;
+    } finally {
+      plugin.kit.dispose();
+    }
   };
 
   // #when
@@ -266,8 +288,54 @@ test("a kit font-path change restarts once only when the merged list differs", a
   assert.deepEqual(
     { changed, unchanged },
     {
-      changed: { result: undefined, restarts: [true], stopped: 1, invalidated: 1 },
-      unchanged: { result: undefined, restarts: [], stopped: 0, invalidated: 0 },
+      changed: [true],
+      unchanged: [],
+    },
+  );
+});
+
+test("restart-language-server invalidates fragment renders only when kit fonts changed", async () => {
+  // #given
+  const run = async (running: readonly string[]) => {
+    const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & { kit: Kit };
+    const restarts: boolean[] = [];
+    let stopped = 0;
+    let invalidated = 0;
+    plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
+    plugin.kit = new Kit({
+      vaultBase: "/vault",
+      bin: () => "/bin/tinymist",
+      settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
+      readManifest: async () => ({ templates: {}, fontPaths: ["/kit/fonts"] }),
+    });
+    await plugin.kit.reload();
+    plugin.vaultBasePath = () => "/vault";
+    plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
+    plugin.fragments = { stop: () => { stopped += 1; } } as never;
+    plugin.typstRender = { invalidate: () => { invalidated += 1; } } as never;
+    plugin.startLsp = async (restart) => { restarts.push(restart); };
+
+    // #when
+    await (plugin as unknown as { restartLanguageServer(): Promise<void> }).restartLanguageServer();
+
+    // #then
+    try {
+      return { stopped, invalidated, restarts };
+    } finally {
+      plugin.kit.dispose();
+    }
+  };
+
+  // #when
+  const changed = await run(["/vault/settings"]);
+  const unchanged = await run(["/vault/settings", "/kit/fonts"]);
+
+  // #then
+  assert.deepEqual(
+    { changed, unchanged },
+    {
+      changed: { stopped: 1, invalidated: 1, restarts: [true] },
+      unchanged: { stopped: 0, invalidated: 0, restarts: [true] },
     },
   );
 });

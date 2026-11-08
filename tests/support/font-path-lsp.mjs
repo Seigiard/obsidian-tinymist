@@ -53,7 +53,7 @@ function receive(chunk) {
     if (buffer.length < bodyEnd) return;
     const message = JSON.parse(buffer.subarray(bodyStart, bodyEnd).toString("utf8"));
     buffer = buffer.subarray(bodyEnd);
-    if (message.method !== "shutdown" && message.method !== "exit") record("from-client", message);
+    record("from-client", message);
     respond(message);
   }
 }

@@ -3,8 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { readManifest } from "../src/kit/manifest";
 import { nodeFixture } from "./support/nodeFixture";
-import { loadKitModule } from "./support/kit-module";
 
 const BIN =
   process.env.TINYMIST_BIN ??
@@ -23,17 +23,9 @@ const MANIFEST = {
   "font-paths": ["../fonts/files"],
 };
 
-interface ManifestReader {
-  readManifest(binPath: string, vaultBase: string, manifestAbsPath: string, timeoutMs?: number): Promise<unknown>;
-}
-
 interface RecordedMessage {
   direction: "from-client" | "to-client";
   message: { method?: string; params?: { command?: string; arguments?: unknown[] } };
-}
-
-function readManifestModule(): ManifestReader {
-  return loadKitModule<ManifestReader>("src/kit/manifest.ts");
 }
 
 function received(log: string): RecordedMessage[] {
@@ -58,18 +50,26 @@ test("readManifest uses exportQuery with write disabled as its third argument", 
 
   // #when
   try {
-    await readManifestModule().readManifest(LSP_FIXTURE, vault, manifest);
+    await readManifest(LSP_FIXTURE, vault, manifest);
 
     // #then
     const command = received(log).find((entry) => entry.direction === "from-client" && entry.message.method === "workspace/executeCommand");
-    assert.deepEqual(command?.message.params, {
-      command: "tinymist.exportQuery",
-      arguments: [
-        manifest,
-        { format: "json", selector: "<manifest>", field: "value", one: true },
-        { write: false },
-      ],
-    });
+    assert.deepEqual(
+      { command: command?.message.params, lifecycle: received(log).filter((entry) =>
+        entry.direction === "from-client" && ["shutdown", "exit"].includes(entry.message.method ?? ""),
+      ).map((entry) => entry.message.method) },
+      {
+        command: {
+          command: "tinymist.exportQuery",
+          arguments: [
+            manifest,
+            { format: "json", selector: "<manifest>", field: "value", one: true },
+            { write: false },
+          ],
+        },
+        lifecycle: ["shutdown", "exit"],
+      },
+    );
   } finally {
     await restoreSpawn();
     if (oldLog === undefined) delete process.env.FONT_PATH_LSP_LOG;
@@ -87,7 +87,7 @@ test("readManifest reads the normative fixture without writing beside the manife
   const before = readdirSync(join(vault, "md")).sort();
 
   // #when
-  const result = await readManifestModule().readManifest(BIN!, vault, manifest);
+  const result = await readManifest(BIN!, vault, manifest);
 
   // #then
   assert.deepEqual(

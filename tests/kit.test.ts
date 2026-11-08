@@ -1,45 +1,14 @@
+import "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Kit, type KitStateView } from "../src/kit/kit";
+import { parseManifest, type ParsedManifest } from "../src/kit/manifest";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import { loadKitModule } from "./support/kit-module";
+import { TFile, testApp } from "./support/obsidian";
 
-interface ParsedManifest {
-  templates: Record<string, string>;
-  fontPaths: string[];
-}
-
-interface ManifestModule {
-  parseManifest(value: unknown, manifestVaultDir: string, vaultBase: string): ParsedManifest | { error: string };
-}
-
-interface KitStateView {
-  ready: boolean;
-  kit?: { templates: Record<string, string>; defaultTemplate: string } | null;
-  reason?: string;
-}
-
-interface KitModule {
-  Kit: new (options: {
-    vaultBase: string;
-    bin(): string | null;
-    settings(): { kitManifest: string; defaultTemplate: string };
-    readManifest(binPath: string, vaultBase: string, manifestAbsPath: string): Promise<ParsedManifest>;
-  }) => {
-    state: { kind: string };
-    reload(): Promise<void>;
-    view(): KitStateView;
-    onChange(listener: () => void): () => void;
-    dispose(): void;
-  };
-}
-
-function manifestModule(): ManifestModule {
-  return loadKitModule<ManifestModule>("src/kit/manifest.ts");
-}
-
-function kitModule(): KitModule {
-  return loadKitModule<KitModule>("src/kit/kit.ts");
+async function afterDelay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 test("kit settings default to empty values and survive loading and saving", async () => {
@@ -89,7 +58,7 @@ test("the normative manifest makes root Typst template paths and absolute font p
   };
 
   // #when
-  const parsed = manifestModule().parseManifest(manifest, "kit/md", "/vault");
+  const parsed = parseManifest(manifest, "kit/md", "/vault");
 
   // #then
   assert.deepEqual(parsed, {
@@ -103,7 +72,7 @@ test("a kit moves from none through loading to ready or failed and exposes its c
   let settings = { kitManifest: "", defaultTemplate: "reference" };
   const reads: string[] = [];
   let next: ParsedManifest | Error = { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] };
-  const kit = new (kitModule().Kit)({
+  const kit = new Kit({
     vaultBase: "/vault",
     bin: () => "/bin/tinymist",
     settings: () => settings,
@@ -164,18 +133,209 @@ test("the Markdown host forwards kit state and kit-change notifications", () => 
     },
   };
   const host = (plugin as unknown as {
-    markdownSourceHost(): { kit(): unknown; onKitChange?: (listener: () => void) => () => void };
+    markdownSourceHost(): { kit(): unknown; onKitChange(listener: () => void): () => void };
   }).markdownSourceHost();
   let changes = 0;
 
   // #when
-  const unsubscribe = host.onKitChange?.(() => { changes += 1; });
+  const unsubscribe = host.onKitChange(() => { changes += 1; });
   for (const listener of listeners) listener();
-  unsubscribe?.();
+  unsubscribe();
 
   // #then
   assert.deepEqual(
     { view: host.kit(), changes, unsubscribed: listeners.size },
     { view: state, changes: 1, unsubscribed: 0 },
   );
+});
+
+test("a setting change during a manifest read discards it and loads the later setting", async () => {
+  // #given
+  let settings = { kitManifest: "kit/md/letter.typ", defaultTemplate: "" };
+  let finishReference: ((manifest: ParsedManifest) => void) | null = null;
+  const reads: string[] = [];
+  let letterReads = 0;
+  const kit = new Kit({
+    vaultBase: "/vault",
+    bin: () => "/bin/tinymist",
+    settings: () => settings,
+    readManifest: async (_bin, _vault, path) => {
+      reads.push(path);
+      if (path.endsWith("reference.typ")) {
+        return await new Promise<ParsedManifest>((resolve) => { finishReference = resolve; });
+      }
+      letterReads += 1;
+      return {
+        templates: { letter: letterReads === 1 ? "/kit/md/initial-letter.typ" : "/kit/md/reloaded-letter.typ" },
+        fontPaths: [],
+      };
+    },
+  });
+
+  // #when
+  await kit.reload();
+  settings = { kitManifest: "kit/md/reference.typ", defaultTemplate: "" };
+  const first = kit.reload();
+  settings = { kitManifest: "kit/md/letter.typ", defaultTemplate: "" };
+  const second = kit.reload();
+  finishReference?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] });
+  await Promise.all([first, second]);
+
+  // #then
+  try {
+    assert.deepEqual(
+      { reads, state: kit.state, loadingPath: Reflect.get(kit, "loadedManifestPath") },
+      {
+        reads: ["/vault/kit/md/letter.typ", "/vault/kit/md/reference.typ", "/vault/kit/md/letter.typ"],
+        state: { kind: "ready", manifest: { templates: { letter: "/kit/md/reloaded-letter.typ" }, fontPaths: [] } },
+        loadingPath: "kit/md/letter.typ",
+      },
+    );
+  } finally {
+    kit.dispose();
+  }
+});
+
+test("a missing manifest supersedes an in-flight read and keeps its failure", async () => {
+  // #given
+  const settings = { kitManifest: "kit/md/manifest.typ", defaultTemplate: "" };
+  let finishRead: ((manifest: ParsedManifest) => void) | null = null;
+  const kit = new Kit({
+    vaultBase: "/vault",
+    bin: () => "/bin/tinymist",
+    settings: () => settings,
+    readManifest: async () => await new Promise<ParsedManifest>((resolve) => { finishRead = resolve; }),
+  });
+
+  // #when
+  const reload = kit.reload();
+  const loadingPath = Reflect.get(kit, "loadedManifestPath");
+  kit.markManifestMissing("kit/md/manifest.typ");
+  finishRead?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] });
+  await reload;
+
+  // #then
+  try {
+    assert.deepEqual(
+      { loadingPath, state: kit.state },
+      {
+        loadingPath: null,
+        state: { kind: "failed", reason: "Manifest file not found: kit/md/manifest.typ" },
+      },
+    );
+  } finally {
+    kit.dispose();
+  }
+});
+
+test("plugin reload triggers read only for the configured manifest and preserves missing states", async () => {
+  // #given
+  const app = testApp();
+  app.pluginData = { ...DEFAULT_SETTINGS, kitManifest: "kit/md/manifest.typ" };
+  const plugin = new TinymistPlugin(app as never, {} as never);
+  const reads: string[] = [];
+  let failReads = false;
+  plugin.kit = new Kit({
+    vaultBase: "/vault",
+    bin: () => "/bin/tinymist",
+    settings: () => ({
+      kitManifest: plugin.settings.kitManifest,
+      defaultTemplate: plugin.settings.defaultTemplate,
+    }),
+    readManifest: async (_bin, _vault, path) => {
+      reads.push(path);
+      if (failReads) throw new Error("manifest is invalid");
+      return { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] };
+    },
+  });
+  plugin.startLsp = async () => {};
+  let defaultTemplateNotifications = 0;
+
+  // #when
+  try {
+    await plugin.onload();
+    await app.workspace.runLayoutReady();
+    await plugin.kit.reload();
+    plugin.kit.onChange(() => { defaultTemplateNotifications += 1; });
+
+    plugin.settings.kitManifest = "kit/md/next.typ";
+    await plugin.saveSettings();
+    await afterDelay(550);
+    await plugin.kit.reload();
+    const afterKitSetting = reads.length;
+    const beforeDefaultTemplateNotifications = defaultTemplateNotifications;
+
+    plugin.settings.defaultTemplate = "reference";
+    await plugin.saveSettings();
+    await afterDelay(0);
+    await plugin.kit.reload();
+    const afterDefaultTemplate = reads.length;
+    const afterDefaultTemplateNotifications = defaultTemplateNotifications - beforeDefaultTemplateNotifications;
+
+    await app.vault.emit("modify", new TFile("kit/md/next.typ"));
+    await plugin.kit.reload();
+    const afterManifestModify = reads.length;
+
+    await app.vault.emit("modify", new TFile("other.typ"));
+    await afterDelay(0);
+    const afterOtherModify = reads.length;
+
+    plugin.kit.markManifestMissing("kit/md/next.typ");
+    failReads = true;
+    await app.vault.emit("create", new TFile("kit/md/next.typ"));
+    await plugin.kit.reload();
+    const afterManifestCreate = reads.length;
+    const createState = plugin.kit.state;
+
+    await app.vault.emit("rename", new TFile("elsewhere.typ"), "kit/md/next.typ");
+    const renameState = plugin.kit.state;
+    await app.vault.emit("delete", new TFile("kit/md/next.typ"));
+    const deleteState = plugin.kit.state;
+
+    failReads = false;
+    const restart = (plugin.commands as Array<{ id?: string; callback?: () => void }>).find(
+      (command) => command.id === "restart-language-server",
+    );
+    if (!restart?.callback) throw new Error("restart-language-server command is not registered");
+    restart.callback();
+    await afterDelay(0);
+    await plugin.kit.reload();
+
+    // #then
+    assert.deepEqual(
+      {
+        reads,
+        afterKitSetting,
+        afterDefaultTemplate,
+        afterManifestModify,
+        afterOtherModify,
+        afterManifestCreate,
+        afterDefaultTemplateNotifications,
+        createKind: createState.kind,
+        renameState,
+        deleteState,
+      },
+      {
+        reads: [
+          "/vault/kit/md/manifest.typ",
+          "/vault/kit/md/next.typ",
+          "/vault/kit/md/next.typ",
+          "/vault/kit/md/next.typ",
+          "/vault/kit/md/next.typ",
+        ],
+        afterKitSetting: 2,
+        afterDefaultTemplate: 2,
+        afterManifestModify: 3,
+        afterOtherModify: 3,
+        afterManifestCreate: 4,
+        afterDefaultTemplateNotifications: 1,
+        createKind: "failed",
+        renameState: { kind: "failed", reason: "Manifest file not found: kit/md/next.typ" },
+        deleteState: { kind: "failed", reason: "Manifest file not found: kit/md/next.typ" },
+      },
+    );
+  } finally {
+    plugin.kit.dispose();
+    plugin.unload();
+  }
 });
