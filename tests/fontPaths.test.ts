@@ -245,6 +245,48 @@ test("effective font paths append deduplicated ready-kit paths without changing 
   }
 });
 
+test("effective font paths retain the ready kit fonts while a forced reload is loading", async () => {
+  // #given
+  const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & {
+    kit: Kit;
+  };
+  plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
+  let finishReload: ((manifest: ParsedManifest) => void) | null = null;
+  let reads = 0;
+  plugin.kit = new Kit({
+    vaultBase: "/vault",
+    bin: () => "/bin/tinymist",
+    settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
+    readManifest: async () => {
+      reads += 1;
+      if (reads === 1) return { templates: {}, fontPaths: ["/kit/fonts"] };
+      return await new Promise<ParsedManifest>((resolve) => { finishReload = resolve; });
+    },
+  });
+  await plugin.kit.reload();
+
+  // #when
+  const reload = plugin.kit.reload(true);
+  const loading = plugin.resolveFontPaths("/vault");
+  const state = plugin.kit.state;
+  finishReload?.({ templates: {}, fontPaths: ["/kit/fonts"] });
+  await reload;
+
+  // #then
+  try {
+    assert.deepEqual(
+      { state, loading, ready: plugin.resolveFontPaths("/vault") },
+      {
+        state: { kind: "loading", previous: { templates: {}, fontPaths: ["/kit/fonts"] } },
+        loading: ["/vault/settings", "/kit/fonts"],
+        ready: ["/vault/settings", "/kit/fonts"],
+      },
+    );
+  } finally {
+    plugin.kit.dispose();
+  }
+});
+
 test("a real Kit loading then ready restarts once only when the merged list differs", async () => {
   // #given
   const run = async (running: readonly string[]) => {
@@ -253,6 +295,7 @@ test("a real Kit loading then ready restarts once only when the merged list diff
       vaultBasePath(): string;
     };
     const restarts: boolean[] = [];
+    let configurationChanges = 0;
     plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
     let finishRead: ((manifest: ParsedManifest) => void) | null = null;
     plugin.kit = new Kit({
@@ -264,6 +307,9 @@ test("a real Kit loading then ready restarts once only when the merged list diff
     plugin.vaultBasePath = () => "/vault";
     plugin.lsp = { cloneConfiguration: () => ({ fontPaths: running }) } as never;
     plugin.startLsp = async (restart) => { restarts.push(restart); };
+    Reflect.set(plugin, "automaticPdfController", {
+      configurationChanged: () => { configurationChanges += 1; },
+    });
     const changes: Promise<void>[] = [];
     plugin.kit.onChange(() => { changes.push(plugin.onKitChange()); });
 
@@ -274,7 +320,7 @@ test("a real Kit loading then ready restarts once only when the merged list diff
     await Promise.all(changes);
 
     try {
-      return restarts;
+      return { configurationChanges, restarts };
     } finally {
       plugin.kit.dispose();
     }
@@ -288,19 +334,20 @@ test("a real Kit loading then ready restarts once only when the merged list diff
   assert.deepEqual(
     { changed, unchanged },
     {
-      changed: [true],
-      unchanged: [],
+      changed: { configurationChanges: 1, restarts: [true] },
+      unchanged: { configurationChanges: 0, restarts: [] },
     },
   );
 });
 
-test("restart-language-server invalidates fragment renders only when kit fonts changed", async () => {
+test("restart-language-server invalidates fragment renders and refreshes automatic PDF only when kit fonts changed", async () => {
   // #given
   const run = async (running: readonly string[]) => {
     const plugin = Object.create(TinymistPlugin.prototype) as TinymistPlugin & { kit: Kit };
     const restarts: boolean[] = [];
     let stopped = 0;
     let invalidated = 0;
+    let configurationChanges = 0;
     plugin.settings = { ...DEFAULT_SETTINGS, fontPaths: ["settings"] };
     plugin.kit = new Kit({
       vaultBase: "/vault",
@@ -314,13 +361,16 @@ test("restart-language-server invalidates fragment renders only when kit fonts c
     plugin.fragments = { stop: () => { stopped += 1; } } as never;
     plugin.typstRender = { invalidate: () => { invalidated += 1; } } as never;
     plugin.startLsp = async (restart) => { restarts.push(restart); };
+    Reflect.set(plugin, "automaticPdfController", {
+      configurationChanged: () => { configurationChanges += 1; },
+    });
 
     // #when
     await (plugin as unknown as { restartLanguageServer(): Promise<void> }).restartLanguageServer();
 
     // #then
     try {
-      return { stopped, invalidated, restarts };
+      return { stopped, invalidated, configurationChanges, restarts };
     } finally {
       plugin.kit.dispose();
     }
@@ -334,8 +384,8 @@ test("restart-language-server invalidates fragment renders only when kit fonts c
   assert.deepEqual(
     { changed, unchanged },
     {
-      changed: { stopped: 1, invalidated: 1, restarts: [true] },
-      unchanged: { stopped: 0, invalidated: 0, restarts: [true] },
+      changed: { stopped: 1, invalidated: 1, configurationChanges: 1, restarts: [true] },
+      unchanged: { stopped: 0, invalidated: 0, configurationChanges: 0, restarts: [true] },
     },
   );
 });

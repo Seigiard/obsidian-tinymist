@@ -1,7 +1,7 @@
 import "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Kit, type KitStateView } from "../src/kit/kit";
+import { Kit, type KitState, type KitStateView } from "../src/kit/kit";
 import { parseManifest, type ParsedManifest } from "../src/kit/manifest";
 import TinymistPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
@@ -84,7 +84,11 @@ test("a kit moves from none through loading to ready or failed and exposes its c
   });
   const initial = kit.view();
   const views: KitStateView[] = [];
-  kit.onChange(() => views.push(kit.view()));
+  const states: KitState[] = [];
+  kit.onChange(() => {
+    views.push(kit.view());
+    states.push(kit.state);
+  });
 
   // #when
   await kit.reload();
@@ -99,16 +103,32 @@ test("a kit moves from none through loading to ready or failed and exposes its c
   // #then
   try {
     assert.deepEqual(
-      { initial: initial.ready ? initial.kit : initial.reason, reads, states: views.map((view) => view.ready ? view.kit : view.reason), final: kit.state.kind },
+      {
+        initial: initial.ready ? initial.kit : initial.reason,
+        reads,
+        views: views.map((view) => view.ready ? view.kit : view.reason),
+        states,
+        final: kit.state.kind,
+      },
       {
         initial: { templates: {}, defaultTemplate: "reference" },
         reads: ["/vault/kit/md/manifest.typ", "/vault/kit/md/broken.typ"],
-        states: [
+        views: [
           "Typst kit is loading",
           { templates: { reference: "/kit/md/reference.typ" }, defaultTemplate: "reference" },
           { templates: { reference: "/kit/md/reference.typ" }, defaultTemplate: "alternate" },
           "Typst kit is loading",
           "Typst kit failed: manifest is invalid",
+        ],
+        states: [
+          { kind: "loading" },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] } },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] } },
+          {
+            kind: "loading",
+            previous: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: ["/vault/kit/fonts"] },
+          },
+          { kind: "failed", reason: "manifest is invalid" },
         ],
         final: "failed",
       },
