@@ -292,7 +292,7 @@ test("refreshing a closed Markdown source updates open clients only when the vau
   const refreshed = source as TypstSource & { refresh?: () => Promise<void> };
   assert.equal(typeof refreshed.refresh, "function", "expected Markdown sources to refresh closed vault text");
   if (!refreshed.refresh) throw new Error("Markdown refresh is unavailable");
-  fixture.setFileText("---\ntypst: true\n---\n= Refreshed heading\n");
+  fixture.setFileText("---\ntypst: true\n---\n# Refreshed heading\n");
 
   // #when
   await refreshed.refresh();
@@ -308,7 +308,7 @@ test("refreshing a closed Markdown source updates open clients only when the vau
           {
             method: "didChange",
             path: ARLIDUS_ENTRY,
-            text: `${BUILT_INS}#show: template.with(\n\n)\n= Refreshed heading`,
+            text: `${BUILT_INS}#show: template.with(\n\n)\n= Refreshed heading\n`,
           },
         ],
         events: ["problems"],
