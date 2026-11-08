@@ -102,8 +102,16 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
         if (state.ended) return;
         const editorText = host.editorText(state.file);
         const nextText = normalizeText(editorText ?? await host.readFile(state.file));
-        if (nextText === state.text) return;
+        if (nextText === state.text) {
+          if (!state.conversion.source) {
+            throw new Error("the note is no longer a Typst source");
+          }
+          return;
+        }
         onEditorChange(state.file, nextText);
+        if (!state.conversion.source) {
+          throw new Error("the note is no longer a Typst source");
+        }
       };
       const onRename = (oldPath: string, newPath: string): void => {
         if (state.ended || oldPath !== state.file) return;

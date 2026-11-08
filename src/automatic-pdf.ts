@@ -660,7 +660,7 @@ export class AutomaticPdfController {
     try {
       await source.refresh?.();
     } catch (error) {
-      this.markFailure(entry, `Could not read ${job.sourcePath}: ${String(error)}`);
+      this.markFailure(entry, `Could not read ${job.sourcePath}: ${String(error)}`, "error");
       job.outcome = "failed";
       return;
     }
@@ -943,8 +943,8 @@ export class AutomaticPdfController {
     }
   }
 
-  private markFailure(entry: Entry, message: string): void {
-    entry.status = this.destinationExists(entry.destinationPath ?? "") ? "stale" : "error";
+  private markFailure(entry: Entry, message: string, status?: AutomaticPdfStatus): void {
+    entry.status = status ?? (this.destinationExists(entry.destinationPath ?? "") ? "stale" : "error");
     this.notifyError(entry, message);
   }
 
