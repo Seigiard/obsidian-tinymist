@@ -714,6 +714,14 @@ export class AutomaticPdfController {
       return;
     }
 
+    try {
+      await source.refresh?.();
+    } catch (error) {
+      this.markFailure(entry, `Could not read ${job.sourcePath}: ${String(error)}`, "error");
+      job.outcome = "failed";
+      return;
+    }
+
     const current = await this.readDestination(destinationPath);
     if (current.error) {
       this.markFailure(entry, `Could not reread ${destinationPath}: ${String(current.error)}`);
