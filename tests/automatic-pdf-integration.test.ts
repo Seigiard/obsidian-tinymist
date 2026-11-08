@@ -299,9 +299,15 @@ test("manual rebuild uses previewEntry wrapper inputs but publishes the selected
 
   // #then
   try {
+    const request = h.plugin.exporter.requests[0];
     assert.deepEqual(
       {
-        request: h.plugin.exporter.requests[0],
+        request: {
+          entryPath: request.entryPath,
+          root: request.root,
+          sourceInput: request.sourceInput,
+        },
+        hasOpen: typeof request.open === "function",
         write: h.app.vault.binaryWrites[0] && {
           path: h.app.vault.binaryWrites[0].path,
           data: new TextDecoder().decode(h.app.vault.binaryWrites[0].data),
@@ -315,6 +321,7 @@ test("manual rebuild uses previewEntry wrapper inputs but publishes the selected
           root: h.root,
           sourceInput: "/book/chapter.typ",
         },
+        hasOpen: true,
         write: { path: "book/chapter.pdf", data: "PDF-wrapper" },
         primaryCalls: [],
         fragmentCalls: [],
