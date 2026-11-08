@@ -20,6 +20,12 @@ interface CodeRange {
   width: number;
 }
 
+interface BacktickRun {
+  start: number;
+  width: number;
+  escaped: boolean;
+}
+
 interface UrlRange {
   start: number;
   end: number;
@@ -389,30 +395,8 @@ function isWhitespace(character: string | undefined): boolean {
 }
 
 function findCodeRanges(text: string): CodeRange[] {
-  const runs: Array<{ start: number; width: number; escaped: boolean }> = [];
-  let index = 0;
-  let backslashes = 0;
-  while (index < text.length) {
-    if (text[index] !== "`") {
-      if (text[index] === "\\") backslashes += 1;
-      else backslashes = 0;
-      index += codePointWidth(text, index);
-      continue;
-    }
-    const start = index;
-    while (index < text.length && text[index] === "`") index += 1;
-    runs.push({ start, width: index - start, escaped: backslashes % 2 === 1 });
-    backslashes = 0;
-  }
-
-  const nextSameRun = new Array<number>(runs.length).fill(-1);
-  const nextByWidth = new Map<number, number>();
-  for (let run = runs.length - 1; run >= 0; run -= 1) {
-    const current = runs[run];
-    const openingWidth = current.escaped ? current.width - 1 : current.width;
-    nextSameRun[run] = openingWidth > 0 ? nextByWidth.get(openingWidth) ?? -1 : -1;
-    nextByWidth.set(current.width, current.start);
-  }
+  const runs = findBacktickRuns(text);
+  const nextSameRun = findNextSameRuns(runs);
 
   const ranges: CodeRange[] = [];
   let consumedThrough = 0;
@@ -428,6 +412,38 @@ function findCodeRanges(text: string): CodeRange[] {
     }
   }
   return ranges;
+}
+
+function findBacktickRuns(text: string): BacktickRun[] {
+  const runs: BacktickRun[] = [];
+  let index = 0;
+  let backslashes = 0;
+  while (index < text.length) {
+    if (text[index] !== "`") {
+      if (text[index] === "\\") backslashes += 1;
+      else backslashes = 0;
+      index += codePointWidth(text, index);
+      continue;
+    }
+    const start = index;
+    while (index < text.length && text[index] === "`") index += 1;
+    runs.push({ start, width: index - start, escaped: backslashes % 2 === 1 });
+    backslashes = 0;
+  }
+
+  return runs;
+}
+
+function findNextSameRuns(runs: readonly BacktickRun[]): number[] {
+  const nextSameRun = new Array<number>(runs.length).fill(-1);
+  const nextByWidth = new Map<number, number>();
+  for (let run = runs.length - 1; run >= 0; run -= 1) {
+    const current = runs[run];
+    const openingWidth = current.escaped ? current.width - 1 : current.width;
+    nextSameRun[run] = openingWidth > 0 ? nextByWidth.get(openingWidth) ?? -1 : -1;
+    nextByWidth.set(current.width, current.start);
+  }
+  return nextSameRun;
 }
 
 function findUrls(text: string, codeRanges: CodeRange[]): UrlRange[] {
@@ -616,33 +632,46 @@ function isMarkdownEscapeTarget(character: string): boolean {
 
 function stripComments(text: string, state: InlineState): string {
   if (!state.commentOpen && !text.includes("%%")) return text;
-  const codeRanges = findCodeRanges(text);
+  const runs = findBacktickRuns(text);
+  const nextSameRun = findNextSameRuns(runs);
+  const runByStart = new Map(runs.map((run, index) => [run.start, index]));
   let result = "";
   let index = 0;
+  let visibleStart = 0;
   while (index < text.length) {
     if (state.commentOpen) {
-      const close = findCommentDelimiter(text, index, codeRanges);
+      const close = text.indexOf("%%", index);
       if (close < 0) return result;
       state.commentOpen = false;
       index = close + 2;
+      visibleStart = index;
       continue;
     }
-    const open = findCommentDelimiter(text, index, codeRanges);
-    if (open < 0) {
-      result += text.slice(index);
-      return result;
+    if (text.startsWith("%%", index)) {
+      result += text.slice(visibleStart, index);
+      state.commentOpen = true;
+      index += 2;
+      visibleStart = index;
+      continue;
     }
-    result += text.slice(index, open);
-    state.commentOpen = true;
-    index = open + 2;
+    if (text[index] === "`") {
+      const runIndex = runByStart.get(index);
+      if (runIndex !== undefined) {
+        const current = runs[runIndex];
+        const openingWidth = current.width - (current.escaped ? 1 : 0);
+        const close = nextSameRun[runIndex];
+        if (openingWidth > 0 && close >= 0) {
+          index = close + openingWidth;
+          continue;
+        }
+        index += current.width;
+        continue;
+      }
+    }
+    index += codePointWidth(text, index);
   }
+  result += text.slice(visibleStart);
   return result;
-}
-
-function findCommentDelimiter(text: string, from: number, codeRanges: readonly CodeRange[]): number {
-  let index = text.indexOf("%%", from);
-  while (index >= 0 && isInsideRange(index, codeRanges)) index = text.indexOf("%%", index + 2);
-  return index;
 }
 
 function reportUnsupportedConstructs(text: string, reportProblem?: ProblemReporter): void {
