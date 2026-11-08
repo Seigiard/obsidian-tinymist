@@ -339,11 +339,37 @@ export class TestWorkspace {
   }
 }
 
+export class TestMetadataCache {
+  private readonly values = new Map<string, Record<string, unknown>>();
+  private readonly events = new Map<string, Set<EventCallback>>();
+
+  getCache(path: string): { frontmatter: Record<string, unknown> } | null {
+    const frontmatter = this.values.get(path);
+    return frontmatter ? { frontmatter } : null;
+  }
+
+  setFrontmatter(path: string, frontmatter: Record<string, unknown>): void {
+    this.values.set(path, frontmatter);
+  }
+
+  on(name: string, callback: EventCallback): { detach(): void } {
+    let callbacks = this.events.get(name);
+    if (!callbacks) this.events.set(name, (callbacks = new Set()));
+    callbacks.add(callback);
+    return { detach: () => callbacks?.delete(callback) };
+  }
+
+  async emit(name: string, ...args: unknown[]): Promise<void> {
+    await Promise.all([...(this.events.get(name) ?? [])].map((callback) => callback(...args)));
+  }
+}
+
 export interface TestApp {
   vault: TestVault;
   scope: Scope;
   workspace: TestWorkspace;
   fileManager: TestFileManager;
+  metadataCache: TestMetadataCache;
   plugins: { plugins: Record<string, unknown> };
   pluginData: Record<string, unknown>;
 }
@@ -355,6 +381,7 @@ export function testApp(basePath = "/vault"): TestApp {
     scope: new Scope(),
     workspace: new TestWorkspace(),
     fileManager: new TestFileManager(vault),
+    metadataCache: new TestMetadataCache(),
     plugins: { plugins: {} },
     pluginData: {},
   };

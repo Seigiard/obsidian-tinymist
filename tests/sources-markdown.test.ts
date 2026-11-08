@@ -229,7 +229,7 @@ test("a Markdown source exposes literal virtual addresses and PDF destination", 
       document: ARLIDUS_ENTRY,
       inputs: undefined,
       pinnable: false,
-      exportable: false,
+      exportable: true,
       pdf: "Notes/Арлидус.pdf",
     },
   );

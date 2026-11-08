@@ -1,7 +1,8 @@
 import "./support/dom";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Notice } from "obsidian";
+import { Menu, Notice } from "obsidian";
+import type { AutomaticPdfReceipt } from "../src/automatic-pdf";
 import TinymistPlugin from "../src/main";
 import { MarkdownView, TFile, testApp, type TestApp } from "./support/obsidian";
 import { virtualAddress } from "./support/virtualAddress";
@@ -42,6 +43,9 @@ function metadataCache(initial: Record<string, Record<string, unknown>>): Metada
 class NoteControlPlugin extends TinymistPlugin {
   readonly commands: CommandRecord[] = [];
   readonly opened: string[] = [];
+  readonly automaticPdfCalls: Array<{ path: string; enabled: boolean }> = [];
+  readonly rebuildPdfCalls: string[] = [];
+  automaticPdf = true;
 
   addCommand(command: unknown): void {
     this.commands.push(command as CommandRecord);
@@ -51,6 +55,23 @@ class NoteControlPlugin extends TinymistPlugin {
 
   async openPreview(path: string): Promise<void> {
     this.opened.push(path);
+  }
+
+  automaticPdfEnabled(_path: string): boolean {
+    return this.automaticPdf;
+  }
+
+  automaticPdfStatus(): "missing" {
+    return "missing";
+  }
+
+  async setAutomaticPdf(path: string, enabled: boolean): Promise<void> {
+    this.automaticPdfCalls.push({ path, enabled });
+  }
+
+  async rebuildPdf(path: string): Promise<AutomaticPdfReceipt> {
+    this.rebuildPdfCalls.push(path);
+    return { outcome: "cancelled", generation: 0, pdfPath: "Notes/A.pdf", status: "missing" };
   }
 }
 
@@ -106,6 +127,45 @@ test("a flagged Markdown view owns one removable Open preview header action", as
         actions: [{ icon: "eye", title: "Open preview", removed: true }],
         liveBeforeRemoval: 1,
         opened: ["Notes/A.md"],
+      },
+    );
+  } finally {
+    h.plugin.onunload();
+  }
+});
+
+test("a flagged note file menu matches the Typst PDF controls and ignores plain notes", async () => {
+  // #given
+  const h = await noteHarness();
+  const flagged = new Menu();
+  const plain = new Menu();
+  const plainFile = new TFile("Notes/Plain.md");
+  h.metadata.setFrontmatter(plainFile.path, {});
+
+  // #when
+  await h.app.workspace.emit("file-menu", flagged, h.file);
+  await flagged.items[0]?.trigger();
+  await flagged.items[1]?.trigger();
+  await h.app.workspace.emit("file-menu", plain, plainFile);
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        flagged: flagged.items.map(({ title, checked, disabled }) => ({ title, checked, disabled })),
+        automaticPdfCalls: h.plugin.automaticPdfCalls,
+        rebuildPdfCalls: h.plugin.rebuildPdfCalls,
+        plainTitles: plain.items.map(({ title }) => title),
+      },
+      {
+        flagged: [
+          { title: "Automatic PDF export", checked: true, disabled: false },
+          { title: "Rebuild PDF", checked: false, disabled: false },
+          { title: "PDF: Missing", checked: false, disabled: true },
+        ],
+        automaticPdfCalls: [{ path: "Notes/A.md", enabled: false }],
+        rebuildPdfCalls: ["Notes/A.md"],
+        plainTitles: [],
       },
     );
   } finally {
