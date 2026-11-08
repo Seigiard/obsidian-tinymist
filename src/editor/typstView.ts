@@ -103,7 +103,8 @@ export class TypstView extends TextFileView {
     this.mode = this.defaultMode();
     this.modeAction = this.addAction("book-open", "Switch to live preview", () => this.toggleMode());
     this.addAction("eye", "Open preview", () => {
-      void this.plugin.openPreview(this);
+      const path = this.absolutePath();
+      if (path) void this.plugin.openPreview(path);
     });
     this.syncModeUi();
     // Obsidian's global hotkeys consume these keys before CodeMirror sees them.
