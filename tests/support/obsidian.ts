@@ -449,6 +449,8 @@ export class MarkdownView extends Component {
 }
 
 export class Plugin extends Component {
+  readonly commands: unknown[] = [];
+
   constructor(
     public app: TestApp,
     public manifest: Record<string, unknown> = {},
@@ -466,7 +468,7 @@ export class Plugin extends Component {
 
   registerView(_type: string, _creator: Callback): void {}
   registerExtensions(_extensions: string[], _type: string): void {}
-  addCommand(_command: unknown): void {}
+  addCommand(command: unknown): void { this.commands.push(command); }
   addSettingTab(_tab: unknown): void {}
 
   addStatusBarItem(): { setText(text: string): void } {

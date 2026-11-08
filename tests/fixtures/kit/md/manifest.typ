@@ -1,0 +1,1 @@
+#metadata((version: 1, templates: ((id: "reference", path: "reference.typ", params: (columns: (type: "int"), theme: (type: "enum", values: ("ink", "forest")))),), "font-paths": ("../fonts/files",))) <manifest>

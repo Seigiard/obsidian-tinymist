@@ -444,6 +444,15 @@ export class LspClient {
     );
   }
 
+  /** Query metadata without writing an export. Tinymist receives write:false as the third argument. */
+  exportQuery(
+    path: string,
+    opts: Record<string, unknown> = {},
+    timeoutMs = 15000,
+  ): Promise<unknown> {
+    return this.executeCommand("tinymist.exportQuery", [path, opts, { write: false }], timeoutMs);
+  }
+
   executeCommand<T = unknown>(
     command: string,
     args: unknown[],

@@ -1,6 +1,7 @@
 import { join } from "path";
+import type { KitStateView } from "../kit/kit";
 import type { LspClient } from "../lsp/client";
-import { convert, type KitView, type Problem } from "../markdown/convert";
+import { convert, type Problem } from "../markdown/convert";
 import { pdfDestination } from "./typst";
 import type { Position, SourceAdapter, TypstSource } from "./typst";
 
@@ -10,8 +11,9 @@ export interface MarkdownSourceHost {
   editorText(vaultPath: string): string | null;
   readFile(vaultPath: string): Promise<string>;
   exists(vaultPath: string): boolean;
-  kit(): KitView | null;
+  kit(): KitStateView;
   reveal(vaultPath: string, position: Position): Promise<void>;
+  onKitChange(listener: () => void): () => void;
   onEditorChange(listener: (vaultPath: string, text: string) => void): () => void;
   onRename(listener: (oldPath: string, newPath: string) => void): () => void;
   onDelete(listener: (vaultPath: string) => void): () => void;
@@ -53,7 +55,7 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       if (!root) return null;
       const editorText = host.editorText(vaultPath);
       const text = normalizeText(editorText ?? await host.readFile(vaultPath));
-      const conversion = convert(text, host.kit());
+      const conversion = convertForKit(text, host.kit());
       if (!conversion.source) return null;
 
       const state: SourceState = {
@@ -89,8 +91,17 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       const onEditorChange = (path: string, nextText: string): void => {
         if (state.ended || path !== state.file) return;
         state.text = normalizeText(nextText);
-        state.conversion = convert(state.text, host.kit());
-        if (!conversionHasFatal(state.conversion.problems)) {
+        applyConversion(convertForKit(state.text, host.kit()), false);
+      };
+      const onKitChange = (): void => {
+        if (state.ended) return;
+        applyConversion(convertForKit(state.text, host.kit()), true);
+      };
+      const applyConversion = (next: SourceState["conversion"], closeOnFatal: boolean): void => {
+        state.conversion = next;
+        if (closeOnFatal && conversionHasFatal(state.conversion.problems)) {
+          for (const open of clients.values()) closeClient(open);
+        } else if (!conversionHasFatal(state.conversion.problems)) {
           for (const open of clients.values()) {
             if (open.opened) open.client.didChange(state.entry, state.conversion.typ);
             else reopen(open);
@@ -142,6 +153,7 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
       };
 
       eventListeners.add(host.onEditorChange(onEditorChange));
+      eventListeners.add(host.onKitChange(onKitChange));
       eventListeners.add(host.onRename(onRename));
       eventListeners.add(host.onDelete(onDelete));
 
@@ -226,6 +238,19 @@ export function mdAdapter(host: MarkdownSourceHost): SourceAdapter {
 
 function normalizeText(text: string): string {
   return text.replace(/^\ufeff/u, "").replaceAll("\r\n", "\n");
+}
+
+function convertForKit(text: string, kit: KitStateView): ReturnType<typeof convert> {
+  if (!kit.ready) {
+    return {
+      source: true,
+      typ: "",
+      toMd: (_line, column) => column,
+      toTyp: (_line, column) => column,
+      problems: [{ line: 0, message: kit.reason, fatal: true }],
+    };
+  }
+  return convert(text, kit.kit);
 }
 
 function conversionHasFatal(problems: readonly Problem[]): boolean {

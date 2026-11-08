@@ -125,6 +125,10 @@ restart the main server, restart the fragment renderer on its next render, and c
 formula renders made with the old paths. The existing **Restart language server** command also
 uses the saved paths. No compiler restart or render-cache invalidation happens for each keystroke.
 
+## Kit manifests
+
+Set **Kit manifest** to a vault path and **Default template** to a template id. The manifest supplies the Markdown templates and additional font paths. Those manifest font paths are added to the list sent to Tinymist without changing the **Font paths** setting. Notes stay blocked while a configured kit is loading or has failed.
+
 ## Optional AI completion
 
 Install and configure [YOLO](https://github.com/qiulinfan/obsidian-yolo), then

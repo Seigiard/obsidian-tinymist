@@ -20,12 +20,17 @@ interface MarkdownSourceHost {
   editorText(vaultPath: string): string | null;
   readFile(vaultPath: string): Promise<string>;
   exists(vaultPath: string): boolean;
-  kit(): KitView | null;
+  kit(): KitStateView;
   reveal(vaultPath: string, position: Position): Promise<void>;
+  onKitChange(listener: () => void): () => void;
   onEditorChange(listener: (vaultPath: string, text: string) => void): () => void;
   onRename(listener: (oldPath: string, newPath: string) => void): () => void;
   onDelete(listener: (vaultPath: string) => void): () => void;
 }
+
+type KitStateView =
+  | { ready: true; kit: KitView | null }
+  | { ready: false; reason: string };
 
 interface HostFixture {
   host: MarkdownSourceHost;
@@ -35,6 +40,7 @@ interface HostFixture {
   emitEditorChange(path: string, text: string): void;
   emitRename(oldPath: string, newPath: string): void;
   emitDelete(path: string): void;
+  emitKitChange(next: KitStateView): void;
   restartSubscriptions(): number;
 }
 
@@ -44,7 +50,7 @@ interface HostOptions {
   editorText?: string | null;
   fileText?: string;
   existing?: string[];
-  kit?: KitView | null;
+  kit?: KitStateView;
 }
 
 interface ClientCall {
@@ -73,10 +79,12 @@ function fakeHost(options: HostOptions = {}): HostFixture {
   const editorListeners = new Set<(path: string, text: string) => void>();
   const renameListeners = new Set<(oldPath: string, newPath: string) => void>();
   const deleteListeners = new Set<(path: string) => void>();
+  const kitListeners = new Set<() => void>();
   const restartListeners = new Set<() => void>();
   const readFiles: string[] = [];
   const reveals: Array<{ file: string; position: Position }> = [];
   const existing = new Set(options.existing ?? []);
+  let kit = options.kit ?? { ready: true, kit: null } as KitStateView;
   let fileText = options.fileText ?? SOURCE_TEXT;
   const subscribe = <T>(listeners: Set<T>, listener: T): (() => void) => {
     listeners.add(listener);
@@ -91,13 +99,14 @@ function fakeHost(options: HostOptions = {}): HostFixture {
       return fileText;
     },
     exists: (path) => existing.has(path),
-    kit: () => options.kit ?? null,
+    kit: () => kit,
     reveal: async (file, position) => {
       reveals.push({ file, position });
     },
     onEditorChange: (listener) => subscribe(editorListeners, listener),
     onRename: (listener) => subscribe(renameListeners, listener),
     onDelete: (listener) => subscribe(deleteListeners, listener),
+    onKitChange: (listener) => subscribe(kitListeners, listener),
   };
   Object.defineProperty(host, "onServerRestart", {
     configurable: true,
@@ -118,6 +127,10 @@ function fakeHost(options: HostOptions = {}): HostFixture {
     },
     emitDelete: (path) => {
       for (const listener of deleteListeners) listener(path);
+    },
+    emitKitChange: (next) => {
+      kit = next;
+      for (const listener of kitListeners) listener();
     },
     restartSubscriptions: () => restartListeners.size,
   };
@@ -194,6 +207,117 @@ test("source creation prefers normalized editor text and falls back to the vault
   } finally {
     firstHandle.close();
     secondHandle.close();
+  }
+});
+
+test("a ready kit imports a selected template or its default, while no kit leaves built-ins alone", async () => {
+  // #given
+  const ready = {
+    ready: true,
+    kit: {
+      templates: { reference: "/kit/md/reference.typ", letter: "/kit/md/letter.typ" },
+      defaultTemplate: "reference",
+    },
+  } as const;
+  const selected = await createSource(fakeHost({
+    kit: ready,
+    editorText: "---\ntypst: true\ntypst-template: letter\n---\nBody",
+  }), "Notes/Selected.md");
+  const fallback = await createSource(fakeHost({
+    kit: ready,
+    editorText: "---\ntypst: true\n---\nBody",
+  }), "Notes/Fallback.md");
+  const builtIn = await createSource(fakeHost({
+    kit: { ready: true, kit: null },
+    editorText: "---\ntypst: true\n---\nBody",
+  }), "Notes/Built-in.md");
+  const selectedClient = new RecordingClient();
+  const fallbackClient = new RecordingClient();
+  const builtInClient = new RecordingClient();
+
+  // #when
+  const selectedHandle = selected.open(selectedClient as never);
+  const fallbackHandle = fallback.open(fallbackClient as never);
+  const builtInHandle = builtIn.open(builtInClient as never);
+
+  // #then
+  try {
+    assert.deepEqual(
+      [selectedClient.calls[0]?.text?.split("\n")[0], fallbackClient.calls[0]?.text?.split("\n")[0], builtInClient.calls[0]?.text?.split("\n")[0]],
+      [
+        `${BUILT_INS}#import "/kit/md/letter.typ": *; #show: template.with(`,
+        `${BUILT_INS}#import "/kit/md/reference.typ": *; #show: template.with(`,
+        `${BUILT_INS}#show: template.with(`,
+      ],
+    );
+  } finally {
+    selectedHandle.close();
+    fallbackHandle.close();
+    builtInHandle.close();
+  }
+});
+
+test("an open Markdown source closes while the kit is unavailable and reopens with current text", async () => {
+  // #given
+  const ready = { ready: true, kit: { templates: {}, defaultTemplate: "" } } as const;
+  const fixture = fakeHost({ kit: ready });
+  const source = await createSource(fixture, "Notes/Kit-state.md");
+  const client = new RecordingClient();
+  const problems: unknown[] = [];
+  source.on("problems", () => problems.push(source.problems));
+  const handle = source.open(client as never);
+
+  // #when
+  fixture.emitKitChange({ ready: false, reason: "Typst kit failed: Manifest file not found: kit/md/manifest.typ" });
+  fixture.emitKitChange(ready);
+
+  // #then
+  try {
+    assert.deepEqual(
+      { calls: client.calls, problems },
+      {
+        calls: [
+          { method: "didOpen", path: virtualAddress("/v", "Notes/Kit-state.md"), text: SOURCE_TYP },
+          { method: "didClose", path: virtualAddress("/v", "Notes/Kit-state.md") },
+          { method: "didOpen", path: virtualAddress("/v", "Notes/Kit-state.md"), text: SOURCE_TYP },
+        ],
+        problems: [
+          [{ line: 0, message: "Typst kit failed: Manifest file not found: kit/md/manifest.typ", fatal: true }],
+          [],
+        ],
+      },
+    );
+  } finally {
+    handle.close();
+  }
+});
+
+test("a source waits for a non-ready kit and opens after the kit becomes ready", async () => {
+  // #given
+  const fixture = fakeHost({ kit: { ready: false, reason: "Typst kit is loading" } });
+  const source = await createSource(fixture, "Notes/Waiting.md");
+  const client = new RecordingClient();
+  const problems: unknown[] = [];
+  source.on("problems", () => problems.push(source.problems));
+
+  // #when
+  const handle = source.open(client as never);
+  const initial = source.problems;
+  fixture.emitKitChange({ ready: true, kit: null });
+
+  // #then
+  try {
+    assert.deepEqual(
+      { initial, final: source.problems, calls: client.calls, problems },
+      {
+        initial: [{ line: 0, message: "Typst kit is loading", fatal: true }],
+        final: [],
+        calls: [{ method: "didOpen", path: virtualAddress("/v", "Notes/Waiting.md"), text: SOURCE_TYP }],
+        problems: [[]],
+      },
+    );
+  } finally {
+    handle.close();
   }
 });
 
