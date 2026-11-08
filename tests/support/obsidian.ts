@@ -406,7 +406,10 @@ export class MarkdownView extends Component {
   readonly cursorCalls: Array<{ line: number; ch: number }> = [];
   readonly scrollCalls: unknown[] = [];
   readonly actions: MarkdownActionRecord[] = [];
+  mode: "source" | "preview" = "source";
+  editorText = "";
   readonly editor = {
+    getValue: (): string => this.editorText,
     setCursor: (position: { line: number; ch: number }): void => {
       this.cursorCalls.push(position);
     },
@@ -417,6 +420,10 @@ export class MarkdownView extends Component {
 
   constructor(public file: TFile | null = null) {
     super();
+  }
+
+  getMode(): "source" | "preview" {
+    return this.mode;
   }
 
   addAction(icon: string, title: string, callback: Callback): HTMLElement {

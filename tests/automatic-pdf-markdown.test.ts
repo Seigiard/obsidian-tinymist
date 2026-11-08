@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { NativeAutomaticPdfExporter } from "../src/automatic-pdf";
 import type { LspClient } from "../src/lsp/client";
 import TinymistPlugin from "../src/main";
-import { Notice, TFile, type TestApp, testApp } from "./support/obsidian";
+import { MarkdownView, Notice, TFile, type TestApp, WorkspaceLeaf, testApp } from "./support/obsidian";
 import { nodeFixture } from "./support/nodeFixture";
 
 const encoder = new TextEncoder();
@@ -140,6 +140,15 @@ async function settleUntil(predicate: () => boolean, timeout = 1200): Promise<bo
 function bytes(app: TestApp, path: string): string | null {
   const value = app.vault.binaryFiles.get(path);
   return value ? new TextDecoder().decode(value) : null;
+}
+
+function openMarkdownLeaf(h: Harness, note: TFile, mode: "source" | "preview", editorText: string): void {
+  const view = new MarkdownView(note);
+  view.mode = mode;
+  view.editorText = editorText;
+  const leaf = new WorkspaceLeaf(h.app);
+  leaf.view = view;
+  h.app.workspace.getLeavesOfType = () => [leaf];
 }
 
 test("manual Markdown rebuild supplies the converted virtual source to the exporter", async () => {
@@ -442,6 +451,58 @@ test("an externally changed held Markdown note opens its current file text for a
     );
   } finally {
     held.release();
+    h.close();
+  }
+});
+
+test("a Reading-mode Markdown leaf exports the saved heading", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md", "---\ntypst: true\n---\n# Old heading\n");
+  const oldText = "---\ntypst: true\n---\n# Old heading\n";
+  openMarkdownLeaf(h, note, "preview", oldText);
+  const client = new RecordingExportClient();
+  h.plugin.exporter.openClient = client;
+  const savedText = "---\ntypst: true\n---\n# New heading\n";
+  writeFileSync(join(h.root, note.path), savedText);
+  h.app.vault.files.set(note.path, savedText);
+
+  // #when
+  await h.plugin.rebuildPdf(note.path);
+
+  // #then
+  try {
+    assert.equal(
+      client.calls.find((call) => call.method === "didOpen")?.text,
+      "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; #show: template.with(\n\n)\n= New heading\n",
+    );
+  } finally {
+    h.close();
+  }
+});
+
+test("a Source-mode Markdown leaf exports its editor heading", async () => {
+  // #given
+  const h = await harness();
+  const note = h.note("Notes/A.md", "---\ntypst: true\n---\n# Old heading\n");
+  const editorText = "---\ntypst: true\n---\n# Source heading\n";
+  openMarkdownLeaf(h, note, "source", editorText);
+  const client = new RecordingExportClient();
+  h.plugin.exporter.openClient = client;
+  const savedText = "---\ntypst: true\n---\n# New heading\n";
+  writeFileSync(join(h.root, note.path), savedText);
+  h.app.vault.files.set(note.path, savedText);
+
+  // #when
+  await h.plugin.rebuildPdf(note.path);
+
+  // #then
+  try {
+    assert.equal(
+      client.calls.find((call) => call.method === "didOpen")?.text,
+      "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; #show: template.with(\n\n)\n= Source heading\n",
+    );
+  } finally {
     h.close();
   }
 });
