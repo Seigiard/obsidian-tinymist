@@ -136,11 +136,14 @@ Tinymist compiles the focused Typst note only. Activating a Typst note makes it
 the compile target unless a preview pins another file; diagnostics from other
 files are cleared until you focus them again.
 While a Typst note is open on the language server, an empty
-`.typst-cache/notes/<note path>.typ` file exists in the vault because Tinymist
-needs the compile target on disk, and it is removed afterwards; the whole
-`.typst-cache` folder may be deleted at any time, and relative paths in raw
-`/typst` blocks resolve from that folder, so file paths in raw Typst start with
-`/`.
+`.typst-cache/notes/<note path>.typ` file exists in the vault, and it is
+removed afterwards. Tinymist recompiles a main file that has no file on disk
+about twenty times per second
+([Myriad-Dreamin/tinymist#2780](https://github.com/Myriad-Dreamin/tinymist/issues/2780));
+the empty file is the workaround, and it goes away once a Tinymist release
+with the fix is the plugin's minimum. The whole `.typst-cache` folder may be
+deleted at any time, and relative paths in raw `/typst` blocks resolve from
+that folder, so file paths in raw Typst start with `/`.
 
 ## Optional AI completion
 
