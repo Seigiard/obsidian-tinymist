@@ -200,7 +200,7 @@ export class PreviewManager {
     }
     lsp.setPreviewSource(source.inputs);
     this.inputSet = true;
-    args.push("--page-title", basename(source.entry), source.entry);
+    args.push("--page-title", previewTitle(source), source.entry);
 
     let result: PreviewResult;
     try {
@@ -400,7 +400,7 @@ export class PreviewManager {
       args.push(`--invert-colors=${this.plugin.settings.invertPreviewColors}`);
     }
     lsp.setPreviewSource(source.inputs);
-    args.push("--page-title", basename(source.entry), source.entry);
+    args.push("--page-title", previewTitle(source), source.entry);
     let result: PreviewResult;
     try {
       result = await lsp.executeCommand<PreviewResult>(
@@ -452,6 +452,12 @@ export class PreviewManager {
     this.inputSet = false;
     this.mainTaken = false;
   }
+}
+
+function previewTitle(source: TypstSource): string {
+  return source.file.toLowerCase().endsWith(".md")
+    ? basename(source.file)
+    : basename(source.entry);
 }
 
 function describedStartError(source: TypstSource, error: unknown): Error {

@@ -13,6 +13,7 @@ import {
   TAbstractFile,
   TFile,
   WorkspaceLeaf,
+  editorInfoField,
 } from "obsidian";
 import {
   AutomaticPdfController,
@@ -44,12 +45,16 @@ import {
   type Position,
 } from "./sources";
 import { registerNoteControls } from "./integrations/noteControls";
+import { editorDiagnostics } from "./underlines/editorDiagnostics";
+import { NoteHolder } from "./underlines/noteHolder";
 import {
   DEFAULT_SETTINGS,
   parseFontPaths,
   TinymistSettings,
   TinymistSettingTab,
 } from "./settings";
+
+const NOTE_SHADOW_ROOT = ".typst-cache/notes";
 
 export default class TinymistPlugin extends Plugin {
   settings: TinymistSettings = DEFAULT_SETTINGS;
@@ -72,6 +77,7 @@ export default class TinymistPlugin extends Plugin {
   fragments: TypstFragmentRenderer | null = null;
   /** Formula renders for the hover, cached across views. */
   typstRender: TypstRender | null = null;
+  noteHolder: NoteHolder | null = null;
   private automaticPdfController: AutomaticPdfController | null = null;
 
   private diagListeners = new Set<(uri: string) => void>();
@@ -88,6 +94,7 @@ export default class TinymistPlugin extends Plugin {
   private readonly automaticPdfListeners = new Set<() => void>();
 
   async onload(): Promise<void> {
+    await this.clearNoteShadowCache();
     await this.loadSettings();
     this.kitUnsubscribe = this.kit.onChange(() => {
       void this.onKitChange().catch((error: unknown) => {
@@ -239,6 +246,42 @@ export default class TinymistPlugin extends Plugin {
     const restoreExportRedirect = installExportRedirect(this);
     if (restoreExportRedirect) this.register(restoreExportRedirect);
 
+    this.noteHolder = new NoteHolder({
+      registry: this.sources,
+      client: () => this.client(),
+      onDiagnostics: (callback) => this.onDiagnostics(callback),
+      diagnostics: (uri) => this.lsp?.diagnostics(uri) ?? [],
+      leaves: () => this.app.workspace.getLeavesOfType("markdown")
+        .flatMap((leaf) => leaf.view instanceof MarkdownView && leaf.view.file
+          ? [{ path: leaf.view.file.path }]
+          : []),
+      onLayout: (callback) => {
+        const ref = this.app.workspace.on("layout-change", callback);
+        return () => this.app.workspace.offref(ref);
+      },
+      onOpened: () => this.syncPinnedMain(),
+      onMoved: (oldEntry, newEntry) => this.retargetMain(oldEntry, newEntry),
+      onReleased: (_path, entry) => this.retargetMain(entry, null),
+    });
+    this.registerEditorExtension(editorDiagnostics(
+      (view) => view.state.field(editorInfoField, false)?.file?.path ?? null,
+      this.noteHolder,
+    ));
+    this.registerEvent(this.app.workspace.on("file-open", () => {
+      this.refreshNoteHolder();
+    }));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      this.refreshNoteHolder();
+    }));
+    const metadataCache = (this.app as unknown as {
+      metadataCache?: { on(name: string, callback: (file: TFile) => void): { detach(): void } };
+    }).metadataCache;
+    if (metadataCache) {
+      this.registerEvent(metadataCache.on("changed", (file) => {
+        if (file.extension === "md") this.refreshNoteHolder();
+      }));
+    }
+
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) =>
         {
@@ -324,6 +367,8 @@ export default class TinymistPlugin extends Plugin {
     this.automaticPdfController?.dispose();
     this.automaticPdfController = null;
     this.automaticPdfListeners.clear();
+    this.noteHolder?.dispose();
+    this.noteHolder = null;
     this.yolo.destroy();
     this.lsp?.stop();
     this.lsp = null;
@@ -572,6 +617,19 @@ export default class TinymistPlugin extends Plugin {
     return () => this.diagListeners.delete(cb);
   }
 
+  private refreshNoteHolder(): void {
+    const holder = this.noteHolder;
+    if (!holder) return;
+    void holder.refresh().catch((error: unknown) => {
+      console.error("[tinymist] note diagnostics refresh failed:", error);
+    });
+  }
+
+  private client(): LspClient | null {
+    const lsp = this.lsp;
+    return lsp?.started ? lsp : null;
+  }
+
   async startLsp(restart: boolean): Promise<void> {
     if (restart) this.resolvedBinary = undefined;
     const previewPath = restart ? this.preview.onLspRestart() : null;
@@ -611,6 +669,14 @@ export default class TinymistPlugin extends Plugin {
       new Notice("Tinymist: failed to start language server. See console.");
       return;
     }
+    if (restart) this.noteHolder?.reopen();
+    else {
+      try {
+        await this.noteHolder?.refresh();
+      } catch (error) {
+        console.error("[tinymist] initial note diagnostics refresh failed:", error);
+      }
+    }
     if (previewPath) {
       await this.preview.start(previewPath).catch((error: unknown) => {
         console.error("[tinymist] failed to reopen preview:", error);
@@ -643,16 +709,44 @@ export default class TinymistPlugin extends Plugin {
   /**
    * Compile the active chapter through its book's main.typ (see bookMain), so `@`
    * completes labels from every chapter; standalone files compile on their own.
-   * Only the active Typst editor decides; other leaves leave the pin alone. A
-   * running preview owns tinymist's main until it stops (PreviewManager.stop).
+   * The active Typst editor or held Markdown note decides; other leaves leave
+   * the pin alone. A running preview owns tinymist's main until it stops
+   * (PreviewManager.stop).
    */
-  syncPinnedMain(): void {
+  syncPinnedMain(releasedEntry?: string): void {
     const lsp = this.lsp;
-    const path = this.app.workspace.getActiveViewOfType(TypstView)?.absolutePath();
-    const root = this.vaultBasePath();
-    if (!lsp || lsp.status !== "running" || !path || !root) return;
-    const main = this.settings.pinBookMain ? typBookMain(path, root) : null;
+    if (!lsp || lsp.status !== "running") return;
+    if (releasedEntry && this.preview.url) return;
+
+    const typstPath = this.app.workspace.getActiveViewOfType(TypstView)?.absolutePath();
+    let main: string | null;
+    if (typstPath) {
+      const root = this.vaultBasePath();
+      if (!root) return;
+      main = this.settings.pinBookMain ? typBookMain(typstPath, root) : null;
+    } else {
+      const notePath = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path;
+      if (notePath) {
+        main = this.noteHolder?.entryOf(notePath) ?? null;
+        if (!main && (!releasedEntry || lsp.mainFile !== releasedEntry)) return;
+      } else {
+        if (!releasedEntry || lsp.mainFile !== releasedEntry) return;
+        main = null;
+      }
+    }
+
     if (main === lsp.mainFile) return;
+    if (this.preview.url) lsp.mainFile = main;
+    else lsp.pinMain(main);
+  }
+
+  retargetMain(oldEntry: string, replacement: string | null): void {
+    const lsp = this.lsp;
+    if (!lsp || lsp.status !== "running" || lsp.mainFile !== oldEntry) return;
+
+    const activeNotePath = this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path;
+    const main = replacement
+      ?? (activeNotePath ? this.noteHolder?.entryOf(activeNotePath) ?? null : null);
     if (this.preview.url) lsp.mainFile = main;
     else lsp.pinMain(main);
   }
@@ -909,7 +1003,36 @@ export default class TinymistPlugin extends Plugin {
     return markdown && root ? join(root, markdown) : markdown ?? null;
   }
 
+  private async clearNoteShadowCache(): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    try {
+      if (typeof adapter.exists === "function" && !(await adapter.exists(NOTE_SHADOW_ROOT))) return;
+      await adapter.rmdir(NOTE_SHADOW_ROOT, true);
+    } catch (error) {
+      console.warn("[tinymist] note shadow cache cleanup failed:", error);
+    }
+  }
+
   private markdownSourceHost(): MarkdownSourceHost {
+    const adapterExists = (adapter: unknown, path: string): Promise<boolean> => {
+      const exists = (adapter as {
+        exists?: (candidate: string) => Promise<boolean>;
+      }).exists;
+      return typeof exists === "function"
+        ? exists.call(adapter, path)
+        : Promise.resolve(false);
+    };
+    const ensureShadowParents = async (adapter: unknown, path: string): Promise<void> => {
+      const parts = path.split("/");
+      let current = "";
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part;
+        if (!(await adapterExists(adapter, current))) {
+          await (adapter as { mkdir(path: string): Promise<void> }).mkdir(current);
+        }
+      }
+    };
+    const shadowPath = (vaultPath: string): string => `${NOTE_SHADOW_ROOT}/${vaultPath}.typ`;
     return {
       root: () => this.vaultBasePath(),
       frontmatter: (vaultPath) => this.app.metadataCache.getCache(vaultPath)?.frontmatter ?? null,
@@ -923,6 +1046,26 @@ export default class TinymistPlugin extends Plugin {
       },
       readFile: (vaultPath) => this.app.vault.adapter.read(vaultPath),
       exists: (vaultPath) => this.app.vault.getAbstractFileByPath(vaultPath) instanceof TFile,
+      writeShadow: async (vaultPath) => {
+        const adapter = this.app.vault.adapter;
+        const path = shadowPath(vaultPath);
+        await ensureShadowParents(adapter, path.slice(0, path.lastIndexOf("/")));
+        await adapter.write(path, "");
+      },
+      removeShadow: async (vaultPath) => {
+        const adapter = this.app.vault.adapter;
+        const path = shadowPath(vaultPath);
+        const exists = (adapter as {
+          exists?: (candidate: string) => Promise<boolean>;
+        }).exists;
+        if (typeof exists === "function" && !(await exists.call(adapter, path))) return;
+        try {
+          await adapter.remove(path);
+        } catch (error) {
+          if (typeof exists === "function" && !(await exists.call(adapter, path))) return;
+          throw error;
+        }
+      },
       kit: (): KitStateView => this.kitStateView(),
       onKitChange: (listener) => this.kitOrNull()?.onChange(listener) ?? (() => {}),
       reveal: (vaultPath, position) => {

@@ -3,6 +3,7 @@ import { quoteString } from "./frontmatter";
 
 export interface InlineState {
   commentOpen: boolean;
+  vaultPath?: string;
 }
 
 export type ProblemReporter = (message: string) => void;
@@ -34,6 +35,7 @@ interface UrlRange {
 interface InlineOptions {
   lineStart?: boolean;
   escapeMarkdownMarkers?: boolean;
+  vaultPath?: string;
 }
 
 interface MarkdownLinkRange {
@@ -85,14 +87,14 @@ export function convertInlineText(
   const inlineState = state ?? { commentOpen: false };
   const prepared = stripComments(text, inlineState);
   reportUnsupportedConstructs(prepared, reportProblem);
-  return convertInline(prepared, sourceOffset, options);
+  return convertInline(prepared, sourceOffset, { ...options, vaultPath: options.vaultPath ?? inlineState.vaultPath });
 }
 
 export function convertProseLine(line: string, reportProblem?: ProblemReporter, sourceOffset = 0, state?: InlineState): MappedLineBuilder {
   const inlineState = state ?? { commentOpen: false };
   const prepared = stripComments(line, inlineState);
   reportUnsupportedConstructs(prepared, reportProblem);
-  return convertProseLinePrepared(prepared, reportProblem, sourceOffset);
+  return convertProseLinePrepared(prepared, reportProblem, sourceOffset, inlineState.vaultPath);
 }
 
 function convertInline(text: string, sourceOffset: number, options: InlineOptions = {}, linkDepth = 0): MappedLineBuilder {
@@ -142,7 +144,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     const image = imageByStart.get(index);
     if (image) {
       const dimensions = image.width === undefined ? "" : `, width: ${image.width}pt${image.height === undefined ? "" : `, height: ${image.height}pt`}`;
-      builder.appendInserted(`#std.image(${quoteString(image.path)}${dimensions});`, sourceOffset + image.start);
+      builder.appendInserted(`#std.image(${quoteString(resolveImagePath(image.path, options.vaultPath))}${dimensions});`, sourceOffset + image.start);
       index = image.end;
       continue;
     }
@@ -159,14 +161,14 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
               convertInline(
                 text.slice(markdown.labelStart, markdown.labelEnd),
                 sourceOffset + markdown.labelStart,
-                { lineStart: true, escapeMarkdownMarkers: true },
+                { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
                 linkDepth + 1,
               ),
             );
             builder.appendInserted("];", sourceOffset + markdown.end);
           }
         } else {
-          builder.appendInserted(`#std.image(${quoteString(markdown.target)});`, sourceOffset + markdown.start);
+          builder.appendInserted(`#std.image(${quoteString(resolveImagePath(markdown.target, options.vaultPath))});`, sourceOffset + markdown.start);
         }
       } else if (/^https?:\/\//iu.test(markdown.target)) {
         builder.appendInserted(`#std.link(${quoteString(markdown.target)})[`, sourceOffset + markdown.start);
@@ -174,7 +176,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           convertInline(
             text.slice(markdown.labelStart, markdown.labelEnd),
             sourceOffset + markdown.labelStart,
-            { lineStart: true, escapeMarkdownMarkers: true },
+            { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
             linkDepth + 1,
           ),
         );
@@ -185,7 +187,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           convertInline(
             text.slice(markdown.labelStart, markdown.labelEnd),
             sourceOffset + markdown.labelStart,
-            { lineStart: true, escapeMarkdownMarkers: true },
+            { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
             linkDepth + 1,
           ),
         );
@@ -198,7 +200,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     const wikilink = wikilinkByStart.get(index);
     if (wikilink) {
       builder.appendInserted("#[", sourceOffset + wikilink.start);
-      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, { lineStart: true, escapeMarkdownMarkers: true }, linkDepth));
+      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath }, linkDepth));
       builder.appendInserted("];", sourceOffset + wikilink.end);
       index = wikilink.end;
       continue;
@@ -222,7 +224,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     if (mark) {
       const marker = mark.strong ? "*" : "_";
       builder.appendMapped(marker, sourceOffset + mark.start, mark.width);
-      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width, {}, linkDepth));
+      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width, { vaultPath: options.vaultPath }, linkDepth));
       builder.appendMapped(marker, sourceOffset + mark.end - mark.width, mark.width);
       index = mark.end;
       continue;
@@ -295,13 +297,18 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
   return builder;
 }
 
-function convertProseLinePrepared(line: string, _reportProblem: ProblemReporter | undefined, sourceOffset: number): MappedLineBuilder {
+function convertProseLinePrepared(
+  line: string,
+  _reportProblem: ProblemReporter | undefined,
+  sourceOffset: number,
+  vaultPath?: string,
+): MappedLineBuilder {
   const builder = new MappedLineBuilder();
   const heading = /^(#+)([ \t]+)(.*)$/u.exec(line);
   if (heading) {
     builder.appendMapped("=".repeat(heading[1].length), sourceOffset, heading[1].length);
     builder.appendSource(heading[2], sourceOffset + heading[1].length);
-    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), sourceOffset + heading[1].length + heading[2].length, { lineStart: true }));
+    builder.appendBuilder(convertInline(line.slice(heading[1].length + heading[2].length), sourceOffset + heading[1].length + heading[2].length, { lineStart: true, vaultPath }));
     return builder;
   }
   const unordered = /^([ \t]*)([-*+])([ \t]+)(.*)$/u.exec(line);
@@ -311,7 +318,7 @@ function convertProseLinePrepared(line: string, _reportProblem: ProblemReporter 
     builder.appendSource(unordered[1], sourceOffset);
     builder.appendMapped("-", sourceOffset + markerStart, 1);
     builder.appendSource(unordered[3], sourceOffset + markerStart + 1);
-    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart, vaultPath);
     return builder;
   }
   const ordered = /^([ \t]*)(\d+\.)([ \t]+)(.*)$/u.exec(line);
@@ -320,16 +327,16 @@ function convertProseLinePrepared(line: string, _reportProblem: ProblemReporter 
     builder.appendSource(ordered[1], sourceOffset);
     builder.appendSource(ordered[2], sourceOffset + ordered[1].length);
     builder.appendSource(ordered[3], sourceOffset + ordered[1].length + ordered[2].length);
-    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart);
+    appendListText(builder, line.slice(contentStart), sourceOffset + contentStart, vaultPath);
     return builder;
   }
   const indentationLength = leadingIndentLength(line);
   builder.appendSource(line.slice(0, indentationLength), sourceOffset);
-  builder.appendBuilder(convertInline(line.slice(indentationLength), sourceOffset + indentationLength, { lineStart: true }));
+  builder.appendBuilder(convertInline(line.slice(indentationLength), sourceOffset + indentationLength, { lineStart: true, vaultPath }));
   return builder;
 }
 
-function appendListText(builder: MappedLineBuilder, text: string, sourceOffset: number): void {
+function appendListText(builder: MappedLineBuilder, text: string, sourceOffset: number, vaultPath?: string): void {
   let index = 0;
   while (index < text.length) {
     const marker = text[index];
@@ -353,7 +360,7 @@ function appendListText(builder: MappedLineBuilder, text: string, sourceOffset: 
     builder.appendSource(text.slice(digitEnd + 1, contentStart), sourceOffset + digitEnd + 1);
     index = contentStart;
   }
-  builder.appendBuilder(convertInline(text.slice(index), sourceOffset + index, { lineStart: true }));
+  builder.appendBuilder(convertInline(text.slice(index), sourceOffset + index, { lineStart: true, vaultPath }));
 }
 
 function appendGeneratedLiteral(
@@ -384,6 +391,24 @@ function leadingIndentLength(text: string): number {
   let index = 0;
   while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
   return index;
+}
+
+function resolveImagePath(target: string, vaultPath: string | undefined): string {
+  if (!vaultPath || target.startsWith("/") || /^https?:\/\//iu.test(target)) return target;
+
+  const base = vaultPath.split("/");
+  base.pop();
+  const resolved: string[] = [];
+  for (const part of [...base, ...target.split("/")]) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (resolved.length === 0) return target;
+      resolved.pop();
+      continue;
+    }
+    resolved.push(part);
+  }
+  return `/${resolved.join("/")}`;
 }
 
 function isNonMarkdownWhitespace(character: string | undefined): boolean {
