@@ -1,4 +1,4 @@
-import { convertBlock } from "./blocks";
+import { convertBlock, convertIndentedBlock } from "./blocks";
 import { analyzeFence, parseFenceOpening, type FenceState } from "./fences";
 import { convertProperty, findFrontmatterEnd, hasSourceFlag, quoteString, readFrontmatter, selectTemplate } from "./frontmatter";
 import { convertProseLine, type InlineState } from "./inline";
@@ -119,7 +119,9 @@ export function convert(text: string, kit: KitView | null, options: ConvertOptio
             problems.push({ line, message: "Typst code contains a line-break character", fatal: true });
           }
         } else {
-          const block = convertBlock(lines, line, inlineState, (problemLine, message) => problems.push({ line: problemLine, message, fatal: false }));
+          const block =
+            convertIndentedBlock(lines, line, frontmatterEnd + 1) ??
+            convertBlock(lines, line, inlineState, (problemLine, message) => problems.push({ line: problemLine, message, fatal: false }));
           if (block !== undefined) {
             for (let blockLine = 0; blockLine < block.lines.length; blockLine += 1) {
               const result = block.lines[blockLine].finish(lines[line + blockLine].length);

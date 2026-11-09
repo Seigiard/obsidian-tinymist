@@ -1,5 +1,5 @@
 import { quoteString } from "./frontmatter";
-import { analyzeFence, parseFenceOpening, type FenceState } from "./fences";
+import { analyzeFence, isFenceDelimiterLine, parseFenceOpening, type FenceState } from "./fences";
 import { convertInlineText, convertProseLine, type InlineState, type ProblemReporter } from "./inline";
 import { MappedLineBuilder } from "./lineMap";
 
@@ -50,6 +50,86 @@ export function convertBlock(
     end += 1;
   }
   return { end, lines: renderQuote(entries, state, reportProblem) };
+}
+
+export function convertIndentedBlock(lines: readonly string[], line: number, bodyStart: number): BlockConversion | undefined {
+  if (!canStartIndentedBlock(lines, line, bodyStart)) return undefined;
+
+  let end = line;
+  while (end < lines.length && (isIndentedLine(lines[end]) || isBlankLine(lines[end]))) end += 1;
+  while (end > line && isBlankLine(lines[end - 1])) end -= 1;
+
+  const firstIndent = indentationWidth(lines[line]);
+  const firstLineEnd = lines[line].length;
+  const first = new MappedLineBuilder();
+  first.appendMapped('#std.raw(block: true, "', firstIndent, 0);
+  appendQuotedContent(first, lines[line].slice(firstIndent), firstIndent);
+  for (let contentLine = line + 1; contentLine < end; contentLine += 1) {
+    first.appendInserted("\\n", firstLineEnd);
+    const content = isBlankLine(lines[contentLine]) ? "" : lines[contentLine].slice(indentationWidth(lines[contentLine]));
+    first.appendInserted(quoteString(content).slice(1, -1), firstLineEnd);
+  }
+  first.appendMappedAtSourceEnd('");', firstLineEnd);
+
+  const result = [first];
+  for (let contentLine = line + 1; contentLine < end; contentLine += 1) result.push(new MappedLineBuilder());
+  return { end, lines: result };
+}
+
+function canStartIndentedBlock(lines: readonly string[], line: number, bodyStart: number): boolean {
+  if (!isIndentedLine(lines[line]) || isBlankLine(lines[line])) return false;
+  if (line === bodyStart) return true;
+
+  const previous = lines[line - 1];
+  if (!isBlankLine(previous)) return isBlockPredecessor(previous);
+
+  let preceding = line - 2;
+  while (preceding >= bodyStart && isBlankLine(lines[preceding])) preceding -= 1;
+  return preceding < bodyStart || (!hasLeadingWhitespace(lines[preceding]) && !isIndentedBlockListItemLine(lines[preceding]));
+}
+
+function isBlockPredecessor(line: string): boolean {
+  return /^#+[ \t]+/u.test(line) || line.startsWith("/typst") || isFenceDelimiterLine(line);
+}
+
+function isListItemLine(line: string): boolean {
+  return /^[ \t]*(?:[-*+]|\d+\.)[ \t]+/u.test(line);
+}
+
+function isIndentedBlockListItemLine(line: string): boolean {
+  return isListItemLine(line) || /^[ \t]*\d+\)[ \t]+/u.test(line);
+}
+
+function hasLeadingWhitespace(line: string): boolean {
+  return line.startsWith(" ") || line.startsWith("\t");
+}
+
+function isIndentedLine(line: string): boolean {
+  return line.startsWith("\t") || line.startsWith("    ");
+}
+
+function isBlankLine(line: string): boolean {
+  return line.trim() === "";
+}
+
+function indentationWidth(line: string): number {
+  return line.startsWith("\t") ? 1 : 4;
+}
+
+function appendQuotedContent(builder: MappedLineBuilder, content: string, sourceStart: number): void {
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character === "\\" || character === '"') {
+      builder.appendEscaped(character, sourceStart + index);
+      continue;
+    }
+    const quoted = quoteString(character).slice(1, -1);
+    if (quoted === character) builder.appendSource(character, sourceStart + index);
+    else {
+      builder.appendInserted("\\", sourceStart + index);
+      builder.appendMapped(quoted.slice(1), sourceStart + index, 1);
+    }
+  }
 }
 
 function readTable(lines: readonly string[], start: number): { end: number; header: TableRow; rows: TableRow[] } | undefined {
