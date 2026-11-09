@@ -267,6 +267,26 @@ test("C52: a converted fill-in blank line compiles with literal delimiters", { s
   }
 });
 
+test("E6: a note with every deferred emphasis and code-block form compiles without warnings", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-forms-"));
+  const output = join(directory, "sample.typ");
+  const source = "---\ntypst: true\n---\n/typst#let strong = 1; #let emph = 1\n***both***\n**a **b** c**\na***x***b\n**x**s(y)\na**- x**b\n1*2*3\n中文**粗体**中文\nun*frig*believable\nне**вер**оятно\n**foo__*bar*__ baz**\n*foo_**bar**_ baz*\n*x _a_**c** y*\n**a x__*b*__y c**\n**foo__*bar*__**\n*[*- x*](note.md)*\n*[*= x*](note.md)*\n*a _-_? b*\n[a*b](https://x.y) c*d\n[[Note*x]] y* z\n[a](foo*bar.md) baz* q\n*see [foo*](https://x.y) z\n*a [b](c.md) d*\n*a **b* c**\n**a *b** c*\n*a _b* c_\n*a **b* _c_ d**\n**a ***b*** c**\n*x [y *b*](note.md) z*\n~~~typ\n#let tilde = 1\n~~~\n~~~js `detail`\nconst raw = 1;\n~~~\n    after-fence\n/typst#let predecessor = 1\n    after-typst\n# Code\n\n    after-heading-blank\n\ta\tb\n    indented";
+  const conversion = convert(source, { templates: {}, defaultTemplate: "" });
+  writeFileSync(output, conversion.typ);
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "sample.typ"], { cwd: directory, encoding: "utf8" });
+    // #then
+    assert.deepEqual(
+      { status: result.status, hasWarning: /warning/iu.test(result.stderr), firstBodyLine: conversion.typ.split("\n")[3] },
+      { status: 0, hasWarning: false, firstBodyLine: "#let strong = 1; #let emph = 1" },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("C78: parenthesized URLs compile with their stripped punctuation", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-parenthesized-url-"));
