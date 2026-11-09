@@ -180,9 +180,9 @@ test("an empty diagnostics publication removes an existing frontmatter problem w
 
   // #then
   try {
-    assert.deepEqual({ before, after: frontmatterBanner(view) }, {
+    assert.deepEqual({ before, after: bannerRows(frontmatterBanner(view)) }, {
       before: ["Unknown Typst template missing"],
-      after: null,
+      after: [],
     });
   } finally {
     view.destroy();
@@ -205,7 +205,7 @@ test("frontmatter warnings and infos do not render a problem widget", async () =
 
   // #then
   try {
-    assert.equal(frontmatterBanner(view), null);
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
   } finally {
     view.destroy();
   }
@@ -224,7 +224,7 @@ test("a body-line error does not render a frontmatter problem widget", async () 
 
   // #then
   try {
-    assert.equal(frontmatterBanner(view), null);
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
   } finally {
     view.destroy();
   }
@@ -243,7 +243,7 @@ test("an error in a document without frontmatter does not render a frontmatter p
 
   // #then
   try {
-    assert.equal(frontmatterBanner(view), null);
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
   } finally {
     view.destroy();
   }
