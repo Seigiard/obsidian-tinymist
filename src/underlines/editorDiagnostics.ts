@@ -1,5 +1,6 @@
 import { StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { findFrontmatterEnd } from "../markdown/frontmatter";
 import type { NoteDiagnostic } from "./noteDiagnostics";
 
 export const setNoteDiagnostics = StateEffect.define<readonly NoteDiagnostic[]>();
@@ -16,6 +17,28 @@ function offset(
     lineTo: line.to,
     offset: line.from + character,
   };
+}
+
+class FrontmatterProblemsWidget extends WidgetType {
+  constructor(readonly messages: readonly string[]) {
+    super();
+  }
+
+  eq(other: FrontmatterProblemsWidget): boolean {
+    return this.messages.length === other.messages.length
+      && this.messages.every((message, index) => message === other.messages[index]);
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const root = view.dom.ownerDocument.createElement("div");
+    root.className = "tinymist-note-frontmatter-problems";
+    root.replaceChildren(...this.messages.map((message) => {
+      const row = view.dom.ownerDocument.createElement("div");
+      row.textContent = message;
+      return row;
+    }));
+    return root;
+  }
 }
 
 function decorations(doc: Text, diagnostics: readonly NoteDiagnostic[]): DecorationSet {
@@ -48,6 +71,30 @@ function decorations(doc: Text, diagnostics: readonly NoteDiagnostic[]): Decorat
     });
   }
 
+  const lines = doc.toString().split("\n");
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  if (frontmatterEnd >= 0) {
+    const messages: string[] = [];
+    const seen = new Set<string>();
+    for (const diagnostic of diagnostics) {
+      if (diagnostic.severity !== "error" || diagnostic.from.line < 0 || diagnostic.from.line > frontmatterEnd) continue;
+      if (seen.has(diagnostic.message)) continue;
+      seen.add(diagnostic.message);
+      messages.push(diagnostic.message);
+    }
+    if (messages.length > 0) {
+      const position = frontmatterEnd + 1 < lines.length ? doc.line(frontmatterEnd + 2).from : doc.length;
+      ranges.push({
+        from: position,
+        to: position,
+        decoration: Decoration.widget({
+          widget: new FrontmatterProblemsWidget(messages),
+          block: true,
+          side: frontmatterEnd + 1 < lines.length ? -1 : 1,
+        }),
+      });
+    }
+  }
   ranges.sort((a, b) => a.from - b.from || a.to - b.to);
   return Decoration.set(ranges.map(({ from, to, decoration }) => decoration.range(from, to)));
 }
