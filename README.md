@@ -132,6 +132,47 @@ Set **Kit manifest** to a vault path and **Default template** to a template id. 
 ## Markdown / Typst notes
 
 Add `typst: true` to a Markdown note's frontmatter to use it as a Typst note. Tinymist diagnostics are underlined in the note editor, and the message is available in the underline's tooltip.
+
+### Note properties
+
+The frontmatter drives the conversion. Only properties whose name starts with
+`typst` take part; Obsidian's own properties (`tags`, `aliases`, a plain
+`template`) are left alone and never reach the template.
+
+- `typst: true` marks the note as a Typst note. Any other value, or a
+  multi-line value, leaves it a plain note.
+- `typst-<name>: value` becomes the named argument `<name>` of the template:
+  the note compiles as `#show: template.with(<name>: value, …)`. The name is a
+  Typst identifier (letters, digits, `_` and `-`, not starting with a digit,
+  not a keyword). `true`, `false` and numbers stay literals; `[a, b]` becomes
+  the array `("a", "b")`; everything else becomes a string, quoted or not
+  (`typst-title: "Hello, world"`, `typst-note: plain words`).
+- `typst-template: <id>` selects the kit template by its manifest id. Without
+  it the **Default template** setting applies. An unknown id is a fatal
+  problem (`Unknown Typst template <id>`): the note is not compiled until the
+  id is fixed. Without a kit the note compiles with a pass-through template
+  that accepts and ignores every argument.
+- A repeated property, an empty value, a multi-line value (a `|` or `>` block,
+  an indented continuation, a `- ` list) or a name that is not an identifier
+  is a warning on that line; the property is dropped and the rest of the note
+  compiles.
+
+```yaml
+---
+typst: true
+typst-template: reference
+typst-theme: forest
+typst-columns: 2
+---
+```
+
+compiles as `#show: template.with(theme: "forest", columns: 2)` with the kit's
+`reference` template imported. The kit manifest lists the templates and the
+parameters each one accepts.
+
+Frontmatter problems appear in the preview's problems list and, in source mode,
+as underlines on the property line. Live Preview shows the Properties panel in
+place of those lines, so the underline is hidden there.
 Tinymist compiles the focused Typst note only. Activating a Typst note makes it
 the compile target unless a preview pins another file; diagnostics from other
 files are cleared until you focus them again.
