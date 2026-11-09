@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { LspDiagnostic } from "../src/lsp/client";
 import type { Position, TypstSource } from "../src/sources";
-import { fileUri } from "./support/virtualAddress";
+import { fileUri, virtualAddress } from "./support/virtualAddress";
 
 interface SourceOptions {
   problems?: readonly { line: number; message: string; fatal: boolean }[];
@@ -11,8 +11,8 @@ interface SourceOptions {
 function source(options: SourceOptions = {}): TypstSource {
   return {
     file: "Notes/A.md",
-    entry: "/vault/.typst-cache/notes/Notes/A.md.typ",
-    document: "/vault/.typst-cache/notes/Notes/A.md.typ",
+    entry: virtualAddress("/vault", "Notes/A.md"),
+    document: virtualAddress("/vault", "Notes/A.md"),
     inputs: undefined,
     pinnable: false,
     exportable: true,

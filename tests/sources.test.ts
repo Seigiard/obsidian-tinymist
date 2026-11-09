@@ -11,6 +11,7 @@ import {
   type SourceAdapter,
   type TypstSource,
 } from "../src/sources";
+import { virtualAddress } from "./support/virtualAddress";
 
 function source(path: string, release: () => void): TypstSource {
   return {
@@ -44,10 +45,10 @@ function movingSource(
         return file;
       },
       get entry(): string {
-        return `/vault/.typst-cache/notes/${file}.typ`;
+        return virtualAddress("/vault", file);
       },
       get document(): string {
-        return `/vault/.typst-cache/notes/${file}.typ`;
+        return virtualAddress("/vault", file);
       },
       inputs: undefined,
       pinnable: false,
@@ -290,12 +291,12 @@ test("SourceRegistry rekeys a moved source for new and old path holds", async ()
 
   // #when
   const movedHold = await registry.hold("Archive/B.md");
-  const foundByDocument = registry.byDocument("/vault/.typst-cache/notes/Archive/B.md.typ");
+  const foundByDocument = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
   const oldPathHold = await registry.hold("Notes/A.md");
   assert.ok(movedHold && oldPathHold, "expected both post-rename holds to resolve");
   first.release();
   movedHold.release();
-  const movedAfterReleases = registry.byDocument("/vault/.typst-cache/notes/Archive/B.md.typ");
+  const movedAfterReleases = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
   const movedDisposals = created[0].disposals();
   oldPathHold.release();
 
@@ -347,10 +348,10 @@ test("SourceRegistry joins a pending destination hold to a source moved there", 
   destinationCreation.resolve();
   const [firstJoined, secondJoined] = await Promise.all([firstPending, secondPending]);
   assert.ok(firstJoined && secondJoined, "expected both destination holds to resolve");
-  const foundBeforeRelease = registry.byDocument("/vault/.typst-cache/notes/Archive/B.md.typ");
+  const foundBeforeRelease = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
   original.release();
   firstJoined.release();
-  const foundBeforeFinalRelease = registry.byDocument("/vault/.typst-cache/notes/Archive/B.md.typ");
+  const foundBeforeFinalRelease = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
   secondJoined.release();
 
   // #then
@@ -360,7 +361,7 @@ test("SourceRegistry joins a pending destination hold to a source moved there", 
       secondJoinedIsOriginal: secondJoined === original,
       foundBeforeReleaseIsOriginal: foundBeforeRelease === original,
       foundBeforeFinalReleaseIsOriginal: foundBeforeFinalRelease === original,
-      foundAfterFinalRelease: registry.byDocument("/vault/.typst-cache/notes/Archive/B.md.typ"),
+      foundAfterFinalRelease: registry.byDocument(virtualAddress("/vault", "Archive/B.md")),
       movedDisposals: created[0].disposals(),
       competingDisposals: created[1].disposals(),
     },

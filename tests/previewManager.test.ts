@@ -115,8 +115,8 @@ test("Markdown preview keeps the note file name as the page title", async () => 
   let startArgs: string[] = [];
   const held: TypstSource = {
     file: "Notes/Plan.md",
-    entry: "/vault/.typst-cache/notes/Notes/Plan.md.typ",
-    document: "/vault/.typst-cache/notes/Notes/Plan.md.typ",
+    entry: virtualAddress("/vault", "Notes/Plan.md"),
+    document: virtualAddress("/vault", "Notes/Plan.md"),
     inputs: undefined,
     pinnable: false,
     exportable: true,
@@ -163,7 +163,7 @@ test("Markdown preview keeps the note file name as the page title", async () => 
     assert.deepEqual(startArgs.slice(-3), [
       "--page-title",
       "Plan.md",
-      "/vault/.typst-cache/notes/Notes/Plan.md.typ",
+      virtualAddress("/vault", "Notes/Plan.md"),
     ]);
   } finally {
     await manager.stop();

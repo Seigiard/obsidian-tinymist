@@ -234,7 +234,7 @@ test("virtualAddress puts a Markdown entry under the vault note cache", async ()
   const entry = address("/vault", "Notes/Plan.md");
 
   // #then
-  assert.equal(entry, "/vault/.typst-cache/notes/Notes/Plan.md.typ");
+  assert.equal(entry, virtualAddress("/vault", "Notes/Plan.md"));
 });
 
 test("source creation prefers normalized editor text and falls back to the vault", async () => {
@@ -981,7 +981,7 @@ test("renaming a Markdown source recomputes relative images for its new folder",
       },
       {
         method: "didOpen",
-        path: "/v/.typst-cache/notes/Archive/A.md.typ",
+        path: virtualAddress("/v", "Archive/A.md"),
         image: '#std.image("/Archive/fig.png");',
       },
     );
@@ -1090,7 +1090,7 @@ test("a full Markdown preview start and edit keep its path out of Tinymist docum
       },
       {
         markdownAddresses: [],
-        previewTitlesAndEntries: [["A.md", "/v/.typst-cache/notes/Notes/A.md.typ"]],
+        previewTitlesAndEntries: [["A.md", virtualAddress("/v", "Notes/A.md")]],
       },
     );
   } finally {

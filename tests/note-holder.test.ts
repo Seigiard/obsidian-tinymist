@@ -189,7 +189,7 @@ test("plugin load wipes the note shadow cache once before a source opens", async
       {
         beforeStart: [{ path: ".typst-cache/notes", recursive: true }],
         afterStart: [{ path: ".typst-cache/notes", recursive: true }],
-        opens: ["/vault/.typst-cache/notes/Notes/A.md.typ"],
+        opens: [virtualAddress("/vault", "Notes/A.md")],
       },
     );
   } finally {
