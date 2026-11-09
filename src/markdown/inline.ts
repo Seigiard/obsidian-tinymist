@@ -13,6 +13,10 @@ interface EmphasisRange {
   end: number;
   width: number;
   strong: boolean;
+  triple: boolean;
+  functionForm: boolean;
+  flattenedStrong: boolean;
+  flattenedEmphasis: boolean;
 }
 
 interface CodeRange {
@@ -35,6 +39,8 @@ interface UrlRange {
 interface InlineOptions {
   lineStart?: boolean;
   escapeMarkdownMarkers?: boolean;
+  activeStrong?: number;
+  activeEmphasis?: number;
   vaultPath?: string;
 }
 
@@ -73,6 +79,12 @@ interface Delimiter {
   width: number;
   open: boolean;
   close: boolean;
+  active?: boolean;
+}
+
+interface OpaqueRange {
+  start: number;
+  end: number;
 }
 
 const MAX_LINK_NESTING = 32;
@@ -101,21 +113,51 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
   const builder = new MappedLineBuilder();
   const codeRanges = findCodeRanges(text);
   const urls = linkDepth < MAX_LINK_NESTING ? findUrls(text, codeRanges) : [];
-  const emphasis = findEmphasisRanges(text, codeRanges, urls);
   const markdownLinks = linkDepth < MAX_LINK_NESTING ? findMarkdownLinks(text, codeRanges) : [];
   const wikilinks = findWikilinks(text, codeRanges);
   const images = findImageRanges(text, codeRanges, linkDepth < MAX_LINK_NESTING);
+  const droppedRunEndByStart = new Map<number, number>();
+  const emphasis = findEmphasisRanges(
+    text,
+    codeRanges,
+    urls,
+    opaqueRanges(markdownLinks, wikilinks, images),
+    options.activeStrong ?? 0,
+    options.activeEmphasis ?? 0,
+    droppedRunEndByStart,
+  );
   const linebreaks = findLinebreaks(text, codeRanges);
   const codeByStart = new Map(codeRanges.map((range) => [range.start, range]));
   const urlByStart = new Map(urls.map((range) => [range.start, range]));
   const emphasisByStart = new Map(emphasis.map((range) => [range.start, range]));
+  const emphasisByClose = new Map(emphasis.map((range) => [range.end - range.width, range]));
   const markdownByStart = new Map(markdownLinks.map((range) => [range.start, range]));
   const wikilinkByStart = new Map(wikilinks.map((range) => [range.start, range]));
   const imageByStart = new Map(images.map((range) => [range.start, range]));
   const linebreakByStart = new Map(linebreaks.map((range) => [range.start, range]));
+  const contentStarts = new Set<number>();
+  if (options.escapeMarkdownMarkers) contentStarts.add(0);
+  for (const range of emphasis) {
+    if (hasFunctionForm(range)) contentStarts.add(range.start + range.width);
+    if (contentStarts.has(range.start) && isDroppedRange(range)) {
+      contentStarts.add(range.start + range.width);
+    }
+  }
+  const droppedRunCache = new Map<number, number>();
+  let activeStrong = options.activeStrong ?? 0;
+  let activeEmphasis = options.activeEmphasis ?? 0;
   let index = 0;
 
   while (index < text.length) {
+    const closing = emphasisByClose.get(index);
+    if (closing) {
+      appendEmphasisClosing(builder, closing, sourceOffset);
+      if (closing.strong) activeStrong -= 1;
+      if (!closing.strong || closing.triple) activeEmphasis -= 1;
+      index += closing.width;
+      continue;
+    }
+
     const code = codeByStart.get(index);
     if (code) {
       let content = text.slice(code.start + code.width, code.end - code.width);
@@ -161,7 +203,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
               convertInline(
                 text.slice(markdown.labelStart, markdown.labelEnd),
                 sourceOffset + markdown.labelStart,
-                { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
+                  { lineStart: true, escapeMarkdownMarkers: true, activeStrong, activeEmphasis, vaultPath: options.vaultPath },
                 linkDepth + 1,
               ),
             );
@@ -176,7 +218,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           convertInline(
             text.slice(markdown.labelStart, markdown.labelEnd),
             sourceOffset + markdown.labelStart,
-            { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
+              { lineStart: true, escapeMarkdownMarkers: true, activeStrong, activeEmphasis, vaultPath: options.vaultPath },
             linkDepth + 1,
           ),
         );
@@ -187,7 +229,7 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
           convertInline(
             text.slice(markdown.labelStart, markdown.labelEnd),
             sourceOffset + markdown.labelStart,
-            { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath },
+              { lineStart: true, escapeMarkdownMarkers: true, activeStrong, activeEmphasis, vaultPath: options.vaultPath },
             linkDepth + 1,
           ),
         );
@@ -200,7 +242,14 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
     const wikilink = wikilinkByStart.get(index);
     if (wikilink) {
       builder.appendInserted("#[", sourceOffset + wikilink.start);
-      builder.appendBuilder(convertInline(wikilink.display, sourceOffset + wikilink.displayStart, { lineStart: true, escapeMarkdownMarkers: true, vaultPath: options.vaultPath }, linkDepth));
+      builder.appendBuilder(
+        convertInline(
+          wikilink.display,
+          sourceOffset + wikilink.displayStart,
+          { lineStart: true, escapeMarkdownMarkers: true, activeStrong, activeEmphasis, vaultPath: options.vaultPath },
+          linkDepth,
+        ),
+      );
       builder.appendInserted("];", sourceOffset + wikilink.end);
       index = wikilink.end;
       continue;
@@ -222,11 +271,10 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
 
     const mark = emphasisByStart.get(index);
     if (mark) {
-      const marker = mark.strong ? "*" : "_";
-      builder.appendMapped(marker, sourceOffset + mark.start, mark.width);
-      builder.appendBuilder(convertInline(text.slice(mark.start + mark.width, mark.end - mark.width), sourceOffset + mark.start + mark.width, { vaultPath: options.vaultPath }, linkDepth));
-      builder.appendMapped(marker, sourceOffset + mark.end - mark.width, mark.width);
-      index = mark.end;
+      appendEmphasisOpening(builder, mark, sourceOffset);
+      if (mark.strong) activeStrong += 1;
+      if (!mark.strong || mark.triple) activeEmphasis += 1;
+      index += mark.width;
       continue;
     }
 
@@ -250,19 +298,21 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
       continue;
     }
 
-    if (character === "-" && text[index + width] === "?") {
+    if (character === "-" && text[skipDroppedRuns(index + width, droppedRunEndByStart, droppedRunCache)] === "?") {
       builder.appendEscaped(character, sourceOffset + index);
       index += width;
       continue;
     }
 
-    if (options.lineStart && index === 0) {
-      if (options.escapeMarkdownMarkers && (character === "-" || character === "+") && isWhitespace(text[index + width])) {
+    const lineStart = (options.lineStart && index === 0) || contentStarts.has(index);
+    if (lineStart) {
+      const afterMarker = skipDroppedRuns(index + width, droppedRunEndByStart, droppedRunCache);
+      if (contentStarts.has(index) && (character === "-" || character === "+") && isWhitespace(text[afterMarker])) {
         builder.appendEscaped(character, sourceOffset + index);
         index += width;
         continue;
       }
-      if (character === "-" && isNonMarkdownWhitespace(text[index + width])) {
+      if (character === "-" && isNonMarkdownWhitespace(text[afterMarker])) {
         builder.appendEscaped(character, sourceOffset + index);
         index += width;
         continue;
@@ -270,19 +320,28 @@ function convertInline(text: string, sourceOffset: number, options: InlineOption
       if (character >= "0" && character <= "9") {
         let digitEnd = index;
         while (digitEnd < text.length && text[digitEnd] >= "0" && text[digitEnd] <= "9") digitEnd += 1;
-        const whitespace = options.escapeMarkdownMarkers ? isWhitespace(text[digitEnd + 1]) : isNonMarkdownWhitespace(text[digitEnd + 1]);
-        if (text[digitEnd] === "." && whitespace) {
+        const afterDigits = skipDroppedRuns(digitEnd, droppedRunEndByStart, droppedRunCache);
+        const afterDot = skipDroppedRuns(afterDigits + 1, droppedRunEndByStart, droppedRunCache);
+        const whitespace = contentStarts.has(index) ? isWhitespace(text[afterDot]) : isNonMarkdownWhitespace(text[afterDot]);
+        if (text[afterDigits] === "." && whitespace) {
           builder.appendSource(text.slice(index, digitEnd), sourceOffset + index);
-          builder.appendEscaped(".", sourceOffset + digitEnd);
-          index = digitEnd + 1;
+          let dropped = digitEnd;
+          while (dropped < afterDigits) {
+            const droppedEnd = droppedRunEndByStart.get(dropped)!;
+            builder.appendDropped(sourceOffset + dropped, droppedEnd - dropped);
+            dropped = droppedEnd;
+          }
+          builder.appendEscaped(".", sourceOffset + afterDigits);
+          index = afterDigits + 1;
           continue;
         }
       }
       let equalsRunEnd = index + width;
       while (equalsRunEnd < text.length && text[equalsRunEnd] === "=") equalsRunEnd += 1;
+      const afterEquals = skipDroppedRuns(equalsRunEnd, droppedRunEndByStart, droppedRunCache);
       if (
-        (character === "=" && (!options.escapeMarkdownMarkers || isWhitespace(text[equalsRunEnd]))) ||
-        (character === "+" && (!text[index + width] || /\s/u.test(text[index + width])))
+        (character === "=" && (contentStarts.has(index) ? isWhitespace(text[afterEquals]) : true)) ||
+        (character === "+" && (!text[afterMarker] || /\s/u.test(text[afterMarker])))
       ) {
         builder.appendEscaped(character, sourceOffset + index);
         index += width;
@@ -385,6 +444,54 @@ function appendGeneratedLiteral(
     offset += width;
   }
   builder.appendMapped(suffix, contentStart + content.length, sourceEnd - (contentStart + content.length));
+}
+
+function hasStrongHalf(range: EmphasisRange): boolean {
+  return range.strong && !range.flattenedStrong;
+}
+
+function hasEmphasisHalf(range: EmphasisRange): boolean {
+  return (!range.strong || range.triple) && !range.flattenedEmphasis;
+}
+
+function isDroppedRange(range: EmphasisRange): boolean {
+  return !hasStrongHalf(range) && !hasEmphasisHalf(range);
+}
+
+function hasFunctionForm(range: EmphasisRange): boolean {
+  return range.functionForm && (hasStrongHalf(range) || hasEmphasisHalf(range));
+}
+
+function appendEmphasisOpening(builder: MappedLineBuilder, range: EmphasisRange, sourceOffset: number): void {
+  const sourceStart = sourceOffset + range.start;
+  const strong = hasStrongHalf(range);
+  const emphasis = hasEmphasisHalf(range);
+  if (isDroppedRange(range)) {
+    builder.appendDropped(sourceStart, range.width);
+  } else if (range.functionForm) {
+    builder.appendMapped(strong && emphasis ? "#std.strong[#std.emph[" : `#std.${strong ? "strong" : "emph"}[`, sourceStart, range.width);
+  } else if (strong && emphasis) {
+    builder.appendMapped("*", sourceStart, 2);
+    builder.appendMapped("_", sourceStart + 2, 1);
+  } else {
+    builder.appendMapped(strong ? "*" : "_", sourceStart, range.width);
+  }
+}
+
+function appendEmphasisClosing(builder: MappedLineBuilder, range: EmphasisRange, sourceOffset: number): void {
+  const sourceStart = sourceOffset + range.end - range.width;
+  const strong = hasStrongHalf(range);
+  const emphasis = hasEmphasisHalf(range);
+  if (isDroppedRange(range)) {
+    builder.appendDropped(sourceStart, range.width);
+  } else if (range.functionForm) {
+    builder.appendMapped(strong && emphasis ? "]];" : "];", sourceStart, range.width);
+  } else if (strong && emphasis) {
+    builder.appendMapped("_", sourceStart, 1);
+    builder.appendMapped("*", sourceStart + 1, 2);
+  } else {
+    builder.appendMapped(strong ? "*" : "_", sourceStart, range.width);
+  }
 }
 
 function leadingIndentLength(text: string): number {
@@ -535,55 +642,107 @@ function utf8ByteLength(text: string): number {
 
 const ASCII_URL_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?#@!$&'()*+,;=%\"";
 
-function findEmphasisRanges(text: string, codeRanges: CodeRange[], urls: UrlRange[]): EmphasisRange[] {
-  const delimiters = findDelimiters(text, codeRanges, urls);
-  const closing = new Map<string, number[]>();
+function findEmphasisRanges(
+  text: string,
+  codeRanges: CodeRange[],
+  urls: UrlRange[],
+  opaque: OpaqueRange[],
+  initialStrong: number,
+  initialEmphasis: number,
+  droppedRunEndByStart: Map<number, number>,
+): EmphasisRange[] {
+  const delimiters = findDelimiters(text, codeRanges, urls, opaque);
+  const openByKind = new Map<string, Delimiter[]>();
+  const openOrder: Delimiter[] = [];
+  const pairs: Array<{ open: Delimiter; close: Delimiter }> = [];
   for (const delimiter of delimiters) {
-    if (!delimiter.close) continue;
     const key = `${delimiter.marker}${delimiter.width}`;
-    const positions = closing.get(key);
-    if (positions) positions.push(delimiter.index);
-    else closing.set(key, [delimiter.index]);
+    const open = openByKind.get(key);
+    while (open && open.length > 0 && !open[open.length - 1].active) open.pop();
+    if (delimiter.close && open && open.length > 0) {
+      const opening = open.pop()!;
+      while (openOrder[openOrder.length - 1] !== opening) openOrder.pop()!.active = false;
+      openOrder.pop();
+      opening.active = false;
+      pairs.push({ open: opening, close: delimiter });
+      continue;
+    }
+    if (delimiter.open) {
+      delimiter.active = true;
+      openOrder.push(delimiter);
+      if (open) open.push(delimiter);
+      else openByKind.set(key, [delimiter]);
+    }
   }
 
-  const ranges: EmphasisRange[] = [];
-  let delimiterIndex = 0;
-  while (delimiterIndex < delimiters.length) {
-    const delimiter = delimiters[delimiterIndex];
-    if (!delimiter.open) {
-      delimiterIndex += 1;
-      continue;
+  const ranges = pairs.map(({ open, close }) => ({
+    start: open.index,
+    end: close.index + close.width,
+    width: open.width,
+    strong: open.width === 2 || open.width === 3,
+    triple: open.width === 3,
+    functionForm: false,
+    flattenedStrong: false,
+    flattenedEmphasis: false,
+  }));
+  ranges.sort((left, right) => left.start - right.start);
+  const active: EmphasisRange[] = [];
+  let activeStrong = initialStrong;
+  let activeEmphasis = initialEmphasis;
+  for (const range of ranges) {
+    while (active.length > 0 && active[active.length - 1].end <= range.start) {
+      const finished = active.pop()!;
+      if (finished.strong) activeStrong -= 1;
+      if (!finished.strong || finished.triple) activeEmphasis -= 1;
     }
-    const close = findClosing(closing, delimiter.index + delimiter.width, delimiter.marker, delimiter.width);
-    if (close < 0) {
-      delimiterIndex += 1;
-      continue;
-    }
-    ranges.push({ start: delimiter.index, end: close + delimiter.width, width: delimiter.width, strong: delimiter.width === 2 });
-    const end = close + delimiter.width;
-    do {
-      delimiterIndex += 1;
-    } while (delimiterIndex < delimiters.length && delimiters[delimiterIndex].index < end);
+    range.flattenedStrong = activeStrong > 0;
+    range.flattenedEmphasis = activeEmphasis > 0;
+    active.push(range);
+    if (range.strong) activeStrong += 1;
+    if (!range.strong || range.triple) activeEmphasis += 1;
+  }
+
+  const droppedEndToStart = new Map<number, number>();
+  for (const range of ranges) {
+    if (!isDroppedRange(range)) continue;
+    droppedEndToStart.set(range.start + range.width, range.start);
+    droppedEndToStart.set(range.end, range.end - range.width);
+    droppedRunEndByStart.set(range.start, range.start + range.width);
+    droppedRunEndByStart.set(range.end - range.width, range.end);
+  }
+  const leftSkipCache = new Map<number, number>();
+  const rightSkipCache = new Map<number, number>();
+  for (const range of ranges) {
+    const left = skipDroppedRuns(range.start, droppedEndToStart, leftSkipCache);
+    const right = skipDroppedRuns(range.end, droppedRunEndByStart, rightSkipCache);
+    range.functionForm = isWord(characterAt(text, left - codePointWidthBefore(text, left))) || isWord(characterAt(text, right));
   }
   return ranges;
 }
 
-function findDelimiters(text: string, codeRanges: CodeRange[], urls: UrlRange[]): Delimiter[] {
+function findDelimiters(text: string, codeRanges: CodeRange[], urls: UrlRange[], opaque: OpaqueRange[]): Delimiter[] {
   const delimiters: Delimiter[] = [];
   let index = 0;
   let codeIndex = 0;
   let urlIndex = 0;
+  let opaqueIndex = 0;
   while (index < text.length) {
     while (codeIndex < codeRanges.length && codeRanges[codeIndex].end <= index) codeIndex += 1;
     while (urlIndex < urls.length && urls[urlIndex].end <= index) urlIndex += 1;
+    while (opaqueIndex < opaque.length && opaque[opaqueIndex].end <= index) opaqueIndex += 1;
     const code = codeRanges[codeIndex];
     const url = urls[urlIndex];
+    const hidden = opaque[opaqueIndex];
     if (code && index >= code.start && index < code.end) {
       index = code.end;
       continue;
     }
     if (url && index >= url.start && index < url.end) {
       index = url.end;
+      continue;
+    }
+    if (hidden && index >= hidden.start && index < hidden.end) {
+      index = hidden.end;
       continue;
     }
     if ((text[index] !== "*" && text[index] !== "_") || isEscaped(text, index)) {
@@ -594,29 +753,60 @@ function findDelimiters(text: string, codeRanges: CodeRange[], urls: UrlRange[])
     const start = index;
     while (index < text.length && text[index] === marker) index += 1;
     const width = index - start;
-    if (width === 1 || width === 2) {
+    if (width === 1 || width === 2 || width === 3) {
       delimiters.push({ index: start, marker, width, open: canOpen(text, start, width), close: canClose(text, start, width) });
     }
   }
   return delimiters;
 }
 
-function findClosing(delimiters: Map<string, number[]>, start: number, marker: string, width: number): number {
-  const positions = delimiters.get(`${marker}${width}`) ?? [];
-  let low = 0;
-  let high = positions.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (positions[middle] < start) low = middle + 1;
-    else high = middle;
+function opaqueRanges(
+  markdownLinks: readonly MarkdownLinkRange[],
+  wikilinks: readonly WikilinkRange[],
+  images: readonly ImageRange[],
+): OpaqueRange[] {
+  const ranges = [
+    markdownLinks.map(({ start, end }) => ({ start, end })),
+    wikilinks.map(({ start, end }) => ({ start, end })),
+    images.map(({ start, end }) => ({ start, end })),
+  ].flat();
+  ranges.sort((left, right) => left.start - right.start);
+  const result: OpaqueRange[] = [];
+  for (const range of ranges) {
+    const previous = result[result.length - 1];
+    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    else result.push({ ...range });
   }
-  return positions[low] ?? -1;
+  return result;
+}
+
+function skipDroppedRuns(position: number, runEnds: ReadonlyMap<number, number>, cache: Map<number, number>): number {
+  const cached = cache.get(position);
+  if (cached !== undefined) return cached;
+
+  const path: number[] = [];
+  let current = position;
+  while (true) {
+    const known = cache.get(current);
+    if (known !== undefined) {
+      current = known;
+      break;
+    }
+    const next = runEnds.get(current);
+    if (next === undefined) break;
+    path.push(current);
+    current = next;
+  }
+  for (const skipped of path) cache.set(skipped, current);
+  cache.set(position, current);
+  return current;
 }
 
 function canOpen(text: string, index: number, width: number): boolean {
   const next = characterAt(text, index + width);
-  const previous = characterAt(text, index - codePointWidthBefore(text, index));
   if (!next || /\s/u.test(next)) return false;
+  if (text[index] === "*") return true;
+  const previous = characterAt(text, index - codePointWidthBefore(text, index));
   return !(isWord(previous) && isWord(next));
 }
 
@@ -624,6 +814,7 @@ function canClose(text: string, index: number, width: number): boolean {
   const previous = characterAt(text, index - codePointWidthBefore(text, index));
   const next = characterAt(text, index + width);
   if (!previous || /\s/u.test(previous)) return false;
+  if (text[index] === "*") return true;
   return !(isWord(previous) && isWord(next));
 }
 

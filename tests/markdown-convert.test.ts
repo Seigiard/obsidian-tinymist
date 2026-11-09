@@ -1141,13 +1141,13 @@ test("C33: Typst-only line breaks count as indentation before line-start markers
   assert.deepEqual(outputLines(conversion.typ).slice(3), [" \\= x", " \\+"]);
 });
 
-test("C34: Devanagari combining marks follow Typst's intraword emphasis rule", () => {
+test("C34/E3: Devanagari neighbours take the function form", () => {
   // #given
   const text = sourceNote(["typst: true"], ["हि**ब**", "**ब**ी"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ["हि\\*\\*ब\\*\\*", "\\*\\*ब\\*\\*ी"]);
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["हि#std.strong[ब];", "#std.strong[ब];ी"]);
 });
 
 test("C37: malformed bracketed flow arrays leave their properties empty and report non-fatal problems", () => {
@@ -1265,13 +1265,22 @@ test("C51: hashes in flow arrays remain data while comment-only values are empty
   );
 });
 
-test("C52: delimiter runs wider than strong or emphasis stay literal", () => {
+test("C52: runs wider than three stay literal while closed width-three runs become combined emphasis", () => {
   // #given
   const text = sourceNote(["typst: true"], ["Name: ____ Date: ____", "Name: ______", "a ****** b", "***x***", "**a** *b*"]);
   // #when
   const conversion = convert(text, { templates: {}, defaultTemplate: "" });
   // #then
-  assert.deepEqual(outputLines(conversion.typ).slice(3), ["Name: \\_\\_\\_\\_ Date: \\_\\_\\_\\_", "Name: \\_\\_\\_\\_\\_\\_", "a \\*\\*\\*\\*\\*\\* b", "\\*\\*\\*x\\*\\*\\*", "*a* _b_"]);
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["Name: \\_\\_\\_\\_ Date: \\_\\_\\_\\_", "Name: \\_\\_\\_\\_\\_\\_", "a \\*\\*\\*\\*\\*\\* b", "*_x_*", "*a* _b_"]);
+});
+
+test("C52: an unclosed width-three run stays literal", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["***x"]);
+  // #when
+  const conversion = convert(text, { templates: {}, defaultTemplate: "" });
+  // #then
+  assert.deepEqual(outputLines(conversion.typ).slice(3), ["\\*\\*\\*x"]);
 });
 
 test("C53: nested list item text receives prose line-start escaping", () => {

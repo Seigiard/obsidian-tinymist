@@ -1,5 +1,6 @@
 interface FenceOpening {
   indentation: string;
+  delimiter: "`" | "~";
   ticks: number;
   kind: "typ" | "other";
   word: string;
@@ -18,24 +19,25 @@ export function parseFenceOpening(line: string): FenceOpening | undefined {
   let index = 0;
   while (index < line.length && line[index] === " " && index < 3) index += 1;
   const indentation = line.slice(0, index);
-  if (line[index] !== "`") return undefined;
+  const delimiter = line[index];
+  if (delimiter !== "`" && delimiter !== "~") return undefined;
   const tickStart = index;
-  while (index < line.length && line[index] === "`") index += 1;
+  while (index < line.length && line[index] === delimiter) index += 1;
   const ticks = index - tickStart;
   if (ticks < 3) return undefined;
   const info = line.slice(index);
-  if (info.includes("`")) return undefined;
+  if (delimiter === "`" && info.includes("`")) return undefined;
   const trimmed = info.trim();
-  if (trimmed === "typ") return { indentation, ticks, kind: "typ", word: "" };
+  if (trimmed === "typ") return { indentation, delimiter, ticks, kind: "typ", word: "" };
   const firstWord = trimmed.split(/\s+/u, 1)[0];
   const word = FENCE_WORD.test(firstWord) ? firstWord : "";
-  return { indentation, ticks, kind: "other", word };
+  return { indentation, delimiter, ticks, kind: "other", word };
 }
 
 export function analyzeFence(lines: readonly string[], openingLine: number, opening: FenceOpening): FenceState {
   let closeLine = -1;
   for (let line = openingLine + 1; line < lines.length; line += 1) {
-    if (isFenceClose(lines[line], opening.ticks)) {
+    if (isFenceClose(lines[line], opening.ticks, opening.delimiter)) {
       closeLine = line;
       break;
     }
@@ -53,14 +55,18 @@ export function analyzeFence(lines: readonly string[], openingLine: number, open
   };
 }
 
-function isFenceClose(line: string, minimumTicks: number): boolean {
+function isFenceClose(line: string, minimumTicks: number, delimiter: "`" | "~"): boolean {
   let index = 0;
   while (index < line.length && line[index] === " " && index < 3) index += 1;
-  if (line[index] !== "`") return false;
+  if (line[index] !== delimiter) return false;
   const start = index;
-  while (index < line.length && line[index] === "`") index += 1;
+  while (index < line.length && line[index] === delimiter) index += 1;
   if (index - start < minimumTicks) return false;
   return /^[ \t]*$/u.test(line.slice(index));
+}
+
+export function isFenceDelimiterLine(line: string): boolean {
+  return parseFenceOpening(line) !== undefined;
 }
 
 function longestBacktickRun(line: string): number {

@@ -582,7 +582,7 @@ test("Y1: terminated internal-link blocks keep adjacent emphasis outside word te
   const conversion = convert(text, null);
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    "*#[Note];*s",
+    "#std.strong[#[Note];];s",
     "See #[Note];_draft_",
     "_u_#[Note];",
     "_a_#[x];",

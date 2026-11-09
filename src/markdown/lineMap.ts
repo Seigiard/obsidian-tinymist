@@ -8,6 +8,8 @@ interface Piece {
   sourceStart: number;
   sourceLength: number;
   identity: boolean;
+  dropped?: boolean;
+  mapsSourceEnd?: boolean;
 }
 
 const FORBIDDEN_LINE_BREAKS = new Set(["\r", "\u000b", "\f", "\u0085", "\u2028", "\u2029"]);
@@ -23,6 +25,16 @@ export class MappedLineBuilder {
   appendMapped(text: string, sourceStart: number, sourceLength: number): void {
     if (text.length === 0) return;
     this.pieces.push({ text, sourceStart, sourceLength, identity: false });
+  }
+
+  appendDropped(sourceStart: number, sourceLength: number): void {
+    if (sourceLength === 0) return;
+    this.pieces.push({ text: "", sourceStart, sourceLength, identity: false, dropped: true });
+  }
+
+  appendMappedAtSourceEnd(text: string, sourceEnd: number): void {
+    if (text.length === 0) return;
+    this.pieces.push({ text, sourceStart: sourceEnd, sourceLength: 0, identity: false, mapsSourceEnd: true });
   }
 
   appendEscaped(character: string, sourceStart: number): void {
@@ -46,10 +58,15 @@ export class MappedLineBuilder {
 
     for (const piece of this.pieces) {
       const outputLength = piece.text.length;
-      if (piece.sourceLength === 0) {
+      if (piece.dropped) {
+        for (let column = 0; column <= piece.sourceLength; column += 1) {
+          toTyp[piece.sourceStart + column] = outputOffset;
+        }
+      } else if (piece.sourceLength === 0) {
         for (let column = 0; column <= outputLength; column += 1) {
           toMd[outputOffset + column] = piece.sourceStart;
         }
+        if (piece.mapsSourceEnd) toTyp[piece.sourceStart] = outputOffset + outputLength;
       } else if (piece.identity) {
         for (let column = 0; column <= outputLength; column += 1) {
           toMd[outputOffset + column] = piece.sourceStart + column;
