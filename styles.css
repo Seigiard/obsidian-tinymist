@@ -677,6 +677,7 @@ SOFTWARE.
 }
 .tinymist-note-frontmatter-problems {
   border-inline-start: 2px solid var(--text-error);
+  padding-inline-start: var(--size-4-2);
   color: var(--text-error);
   font-family: var(--font-text);
   font-size: var(--font-text-size, 16px);
