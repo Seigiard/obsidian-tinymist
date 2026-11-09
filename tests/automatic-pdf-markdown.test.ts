@@ -176,7 +176,7 @@ test("manual Markdown rebuild supplies the converted virtual source to the expor
       },
       {
         request: {
-          entryPath: join(h.root, "Notes/A.md.typ"),
+          entryPath: join(h.root, ".typst-cache/notes/Notes/A.md.typ"),
           root: h.root,
           sourceInput: undefined,
           hasOpen: true,
@@ -322,7 +322,7 @@ test("a fatal Markdown conversion fails without exporting a virtual-address noti
         receipt,
         requests: h.plugin.exporter.requests.length,
         notices: [...Notice.shown],
-        virtualAddressMentioned: stored.includes(".md.typ") || Notice.shown.some((notice) => notice.includes(".md.typ")),
+        virtualAddressMentioned: stored.includes(".typst-cache/notes/") || Notice.shown.some((notice) => notice.includes(".typst-cache/notes/")),
       },
       {
         receipt: { outcome: "failed", generation: 1, pdfPath: "Notes/A.pdf", status: "error" },
@@ -393,7 +393,7 @@ test("a Markdown export failure reports the note path and never stores its virtu
   // #given
   const h = await harness();
   h.note("Notes/A.md");
-  h.plugin.exporter.responses.push(new Error(`${join(h.root, "Notes/A.md.typ")}:5: unknown variable`));
+  h.plugin.exporter.responses.push(new Error(`${join(h.root, ".typst-cache/notes/Notes/A.md.typ")}:5: unknown variable`));
   Notice.shown.length = 0;
 
   // #when
@@ -407,7 +407,7 @@ test("a Markdown export failure reports the note path and never stores its virtu
         receipt,
         hasOpen: typeof h.plugin.exporter.requests[0]?.open === "function",
         notices: [...Notice.shown],
-        virtualAddressMentioned: stored.includes(".md.typ") || Notice.shown.some((notice) => notice.includes(".md.typ")),
+        virtualAddressMentioned: stored.includes(".typst-cache/notes/") || Notice.shown.some((notice) => notice.includes(".typst-cache/notes/")),
       },
       {
         receipt: { outcome: "failed", generation: 1, pdfPath: "Notes/A.pdf", status: "error" },
@@ -641,12 +641,12 @@ process.stdin.on("data", (chunk) => {
   chmodSync(binary, 0o755);
   const exporter = new NativeAutomaticPdfExporter(binary, root);
   const request = {
-    entryPath: join(root, "Notes/A.md.typ"),
+    entryPath: join(root, ".typst-cache/notes/Notes/A.md.typ"),
     root,
     sourceInput: "/Notes/A.md",
     open: (client: LspClient) => {
-      client.didOpen(join(root, "Notes/A.md.typ"), "= Converted note");
-      return { close: () => client.didClose(join(root, "Notes/A.md.typ")) };
+      client.didOpen(join(root, ".typst-cache/notes/Notes/A.md.typ"), "= Converted note");
+      return { close: () => client.didClose(join(root, ".typst-cache/notes/Notes/A.md.typ")) };
     },
   };
   const previousLog = process.env.AUTOMATIC_PDF_LSP_LOG;

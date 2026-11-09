@@ -6,6 +6,8 @@
 // loads `state.file` when it is another file. Notices are recorded in `Notice.shown`;
 // setIcon records the icon in `data-icon`.
 
+import { StateEffect, StateField } from "@codemirror/state";
+
 type Callback = (...args: unknown[]) => unknown;
 
 type EventCallback = (...args: unknown[]) => unknown;
@@ -74,9 +76,26 @@ export class TFile extends TAbstractFile {
   }
 }
 
+export const setEditorInfo = StateEffect.define<{ file: TFile | null }>();
+
+export const editorInfoField = StateField.define<{ file: TFile | null }>({
+  create: () => ({ file: null }),
+  update(value, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setEditorInfo)) value = effect.value;
+    }
+    return value;
+  },
+});
+
 export class TFolder extends TAbstractFile {}
 
 export class FileSystemAdapter {
+  readonly mkdirs: string[] = [];
+  readonly removes: string[] = [];
+  readonly rmdirs: Array<{ path: string; recursive: boolean }> = [];
+  failNextRmdir: Error | null = null;
+
   constructor(
     private basePath = "/vault",
     private files: Map<string, string> = new Map(),
@@ -94,6 +113,28 @@ export class FileSystemAdapter {
 
   async write(path: string, data: string): Promise<void> {
     this.files.set(path, data);
+  }
+
+  async mkdir(path: string): Promise<void> {
+    this.mkdirs.push(path);
+  }
+
+  async remove(path: string): Promise<void> {
+    this.removes.push(path);
+    this.files.delete(path);
+  }
+
+  async rmdir(path: string, recursive: boolean): Promise<void> {
+    this.rmdirs.push({ path, recursive });
+    if (this.failNextRmdir) {
+      const error = this.failNextRmdir;
+      this.failNextRmdir = null;
+      throw error;
+    }
+    const prefix = path.endsWith("/") ? path : `${path}/`;
+    for (const candidate of this.files.keys()) {
+      if (candidate === path || candidate.startsWith(prefix)) this.files.delete(candidate);
+    }
   }
 }
 
@@ -330,6 +371,8 @@ export class TestWorkspace {
     this.layoutSaves++;
   }
 
+  updateOptions(): void {}
+
   getActiveViewOfType(): null {
     return null;
   }
@@ -450,6 +493,7 @@ export class MarkdownView extends Component {
 
 export class Plugin extends Component {
   readonly commands: unknown[] = [];
+  readonly editorExtensions: unknown[] = [];
 
   constructor(
     public app: TestApp,
@@ -468,6 +512,9 @@ export class Plugin extends Component {
 
   registerView(_type: string, _creator: Callback): void {}
   registerExtensions(_extensions: string[], _type: string): void {}
+  registerEditorExtension(extension: unknown): void {
+    this.editorExtensions.push(extension);
+  }
   addCommand(command: unknown): void { this.commands.push(command); }
   addSettingTab(_tab: unknown): void {}
 

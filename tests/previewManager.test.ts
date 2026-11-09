@@ -110,6 +110,67 @@ function pendingStartHarness(): {
   };
 }
 
+test("Markdown preview keeps the note file name as the page title", async () => {
+  // #given
+  let startArgs: string[] = [];
+  const held: TypstSource = {
+    file: "Notes/Plan.md",
+    entry: "/vault/.typst-cache/notes/Notes/Plan.md.typ",
+    document: "/vault/.typst-cache/notes/Notes/Plan.md.typ",
+    inputs: undefined,
+    pinnable: false,
+    exportable: true,
+    pdf: "Notes/Plan.pdf",
+    open: () => ({ close: () => {} }),
+    toSource: (position) => position,
+    toEntry: (position) => position,
+    reveal: async () => {},
+    describe: String,
+    on: () => () => {},
+    release: () => {},
+  };
+  const plugin = {
+    lsp: {
+      status: "running",
+      mainFile: null,
+      onNotification: () => {},
+      setPreviewSource: () => {},
+      pinMain: () => {},
+      executeCommand: async (command: string, args: unknown[]) => {
+        if (command === "tinymist.doStartPreview") {
+          startArgs = args[0] as string[];
+          return { staticServerPort: 4321 };
+        }
+        return {};
+      },
+    },
+    settings: { invertPreviewColors: "never" },
+    vaultBasePath: () => "/vault",
+    sources: {
+      hold: async () => held,
+      byDocument: () => null,
+      mayBeSource: () => true,
+    },
+    jumpToSource: () => {},
+  } as unknown as TinymistPlugin;
+  const manager = new PreviewManager(plugin);
+
+  // #when
+  await manager.start("/vault/Notes/Plan.md");
+
+  // #then
+  try {
+    assert.deepEqual(startArgs.slice(-3), [
+      "--page-title",
+      "Plan.md",
+      "/vault/.typst-cache/notes/Notes/Plan.md.typ",
+    ]);
+  } finally {
+    await manager.stop();
+    manager.dispose();
+  }
+});
+
 test("starting a renamed preview launches the requested path instead of reusing the old task", async () => {
   // #given
   const root = mkdtempSync(join(tmpdir(), "typst-preview-manager-"));

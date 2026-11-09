@@ -6,7 +6,7 @@ export function vaultPath(root: string, vaultRelativePath: string): string {
 }
 
 export function virtualAddress(root: string, vaultPath: string): string {
-  return `${join(root, vaultPath)}.typ`;
+  return join(root, ".typst-cache", "notes", `${vaultPath}.typ`);
 }
 
 export function fileUri(path: string): string {

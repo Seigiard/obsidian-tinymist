@@ -152,20 +152,71 @@ test("M4/M8/Y1: wikilinks and internal Markdown links use terminated content blo
 test("M5/M8: image embeds and Markdown images use std.image with supplied dimensions", () => {
   // #given
   const text = sourceNote(["typst: true"], [
-    "![[a.png]]",
+    "![[fig.png]]",
     "![[image/Dungeon World - crystallization.jpg|400]]",
-    "![[a.png|300x200]]",
-    "![alt](a.jpg)",
+    "![[fig.png|300x200]]",
+    "![](fig.png)",
+    "![alt](sub/fig.jpg)",
   ]);
   // #when
-  const conversion = convert(text, null);
+  const conversion = convert(text, null, { vaultPath: "Notes/Page.md" });
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
-    '#std.image("a.png");',
-    '#std.image("image/Dungeon World - crystallization.jpg", width: 400pt);',
-    '#std.image("a.png", width: 300pt, height: 200pt);',
-    '#std.image("a.jpg");',
+    '#std.image("/Notes/fig.png");',
+    '#std.image("/Notes/image/Dungeon World - crystallization.jpg", width: 400pt);',
+    '#std.image("/Notes/fig.png", width: 300pt, height: 200pt);',
+    '#std.image("/Notes/fig.png");',
+    '#std.image("/Notes/sub/fig.jpg");',
   ]);
+});
+
+test("image targets at the vault root stay root-absolute without changing line maps", () => {
+  // #given
+  const text = sourceNote(["typst: true"], ["![[fig.png]]"]);
+
+  // #when
+  const conversion = convert(text, null, { vaultPath: "Plan.md" });
+
+  // #then
+  assert.deepEqual(
+    {
+      line: conversion.typ.split("\n")[3],
+      toMd: [conversion.toMd(3, 0), conversion.toMd(3, 23)],
+      toTyp: [conversion.toTyp(3, 0), conversion.toTyp(3, 12)],
+    },
+    {
+      line: '#std.image("/fig.png");',
+      toMd: [0, 0],
+      toTyp: [0, 0],
+    },
+  );
+});
+
+test("image parent segments resolve lexically but a target that escapes the vault stays unchanged", () => {
+  // #given
+  const text = sourceNote(["typst: true"], [
+    "![](../fig.png)",
+    "![](sub/../diagram.svg)",
+    "![](../../../outside.png)",
+    "![](/assets/logo.png)",
+  ]);
+
+  // #when
+  const conversion = convert(text, null, { vaultPath: "Notes/Chapters/Plan.md" });
+
+  // #then
+  assert.deepEqual(
+    { lines: conversion.typ.split("\n").slice(3), problems: conversion.problems },
+    {
+      lines: [
+        '#std.image("/Notes/fig.png");',
+        '#std.image("/Notes/Chapters/diagram.svg");',
+        '#std.image("../../../outside.png");',
+        '#std.image("/assets/logo.png");',
+      ],
+      problems: [],
+    },
+  );
 });
 
 test("M6/M9: inline, block, and unclosed comments leave only text outside the comment", () => {
@@ -312,14 +363,14 @@ test("N3: a plain quote body passes a typ fence through and keeps its list as ma
 
 test("N4: remote Markdown images become links and report non-fatal problems", () => {
   // #given
-  const text = sourceNote(["typst: true"], ["![alt](https://x.y/a.png)", "![](https://x.y/a.png)"]);
+  const text = sourceNote(["typst: true"], ["![alt](http://x.y/a.png)", "![](https://x.y/a.png)"]);
   // #when
-  const conversion = convert(text, null);
+  const conversion = convert(text, null, { vaultPath: "Notes/Page.md" });
   // #then
   assert.deepEqual(
     { lines: conversion.typ.split("\n").slice(3), problems: conversion.problems },
     {
-      lines: ['#std.link("https://x.y/a.png")[alt];', '#std.link("https://x.y/a.png");'],
+      lines: ['#std.link("http://x.y/a.png")[alt];', '#std.link("https://x.y/a.png");'],
       problems: [
         { line: 3, message: "Remote image has no Typst form", fatal: false },
         { line: 4, message: "Remote image has no Typst form", fatal: false },
@@ -332,9 +383,9 @@ test("N5: Markdown link and image titles are omitted from their targets", () => 
   // #given
   const text = sourceNote(["typst: true"], ['[t](https://x.y/a "Title")', '![a](a.png "Title")']);
   // #when
-  const conversion = convert(text, null);
+  const conversion = convert(text, null, { vaultPath: "Notes/Page.md" });
   // #then
-  assert.deepEqual(conversion.typ.split("\n").slice(3), ['#std.link("https://x.y/a")[t];', '#std.image("a.png");']);
+  assert.deepEqual(conversion.typ.split("\n").slice(3), ['#std.link("https://x.y/a")[t];', '#std.image("/Notes/a.png");']);
 });
 
 test("N6: table cells and callout titles escape Markdown line-start markers", () => {
@@ -450,12 +501,12 @@ test("R1: generated inline calls terminate before adjacent Typst postfix syntax"
     "end<br>.hidden",
   ]);
   // #when
-  const conversion = convert(text, null);
+  const conversion = convert(text, null, { vaultPath: "Notes/Page.md" });
   // #then
   assert.deepEqual(conversion.typ.split("\n").slice(3), [
     "Total#std.linebreak();(approx.)",
     '#std.link("https://x.com")[docs];(see)',
-    '#std.image("pic.png");(figure 1)',
+    '#std.image("/Notes/pic.png");(figure 1)',
     "end#std.linebreak();.hidden",
   ]);
 });
