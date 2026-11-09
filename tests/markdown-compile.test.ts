@@ -86,6 +86,27 @@ test("M1–M10/N3/N4: a note with every Markdown construct compiles with tinymis
   }
 });
 
+test("a converted note at its shadow address compiles an image beside the note", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
+  // #given
+  const vault = mkdtempSync(join(tmpdir(), "tinymist-markdown-shadow-image-"));
+  const shadow = join(vault, ".typst-cache", "notes", "Notes", "Plan.md.typ");
+  mkdirSync(join(vault, ".typst-cache", "notes", "Notes"), { recursive: true });
+  mkdirSync(join(vault, "Notes"), { recursive: true });
+  writeFileSync(join(vault, "Notes", "fig.png"), onePixelPng());
+  const conversion = convert("---\ntypst: true\n---\n![[fig.png]]", { templates: {}, defaultTemplate: "" }, { vaultPath: "Notes/Plan.md" });
+  writeFileSync(shadow, conversion.typ);
+
+  try {
+    // #when
+    const result = spawnSync(BIN!, ["compile", "--root", vault, shadow], { cwd: vault, encoding: "utf8" });
+
+    // #then
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+  }
+});
+
 test("Q1: a quote that begins with a non-Typst fence compiles", { skip: !BIN && "tinymist not found", timeout: 120000 }, () => {
   // #given
   const directory = mkdtempSync(join(tmpdir(), "tinymist-markdown-quote-fence-"));

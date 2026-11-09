@@ -31,11 +31,15 @@ export interface Conversion {
   problems: Problem[];
 }
 
+export interface ConvertOptions {
+  vaultPath?: string;
+}
+
 const BUILT_INS =
   "#let template(body, ..args) = body; #let callout(kind: none, title: none, body) = std.block(inset: 6pt, stroke: 0.5pt)[*#title* #body]; ";
 
 /** The caller strips BOM and CRLF before this call; lines are zero-based and columns are UTF-16 code units. */
-export function convert(text: string, kit: KitView | null): Conversion {
+export function convert(text: string, kit: KitView | null, options: ConvertOptions = {}): Conversion {
   const input = typeof text === "string" ? text : String(text ?? "");
   const rawLines = input.split("\n");
   const lines = rawLines.map(sanitizeLine);
@@ -79,7 +83,7 @@ export function convert(text: string, kit: KitView | null): Conversion {
   addGeneratedLine(outputLines, maps, ")", lines[frontmatterEnd].length);
 
   let fence: FenceState | undefined;
-  const inlineState: InlineState = { commentOpen: false };
+  const inlineState: InlineState = { commentOpen: false, vaultPath: options.vaultPath };
   for (let line = frontmatterEnd + 1; line < lines.length; line += 1) {
     const sourceLine = lines[line];
     const builder = new MappedLineBuilder();

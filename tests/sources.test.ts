@@ -11,6 +11,7 @@ import {
   type SourceAdapter,
   type TypstSource,
 } from "../src/sources";
+import { virtualAddress } from "./support/virtualAddress";
 
 function source(path: string, release: () => void): TypstSource {
   return {
@@ -29,6 +30,60 @@ function source(path: string, release: () => void): TypstSource {
     on: () => () => {},
     release,
   } as TypstSource & { exportable: boolean };
+}
+
+function movingSource(
+  path: string,
+  release: () => void,
+): { source: TypstSource; move(path: string): void; disposals(): number } {
+  let file = path;
+  let disposeCalls = 0;
+  const moved = new Set<() => void>();
+  return {
+    source: {
+      get file(): string {
+        return file;
+      },
+      get entry(): string {
+        return virtualAddress("/vault", file);
+      },
+      get document(): string {
+        return virtualAddress("/vault", file);
+      },
+      inputs: undefined,
+      pinnable: false,
+      exportable: true,
+      get pdf(): string {
+        return `${file}.pdf`;
+      },
+      open: () => ({ close: () => {} }),
+      toSource: (position) => position,
+      toEntry: (position) => position,
+      reveal: async () => {},
+      describe: String,
+      on: (event, listener) => {
+        if (event === "moved") moved.add(listener);
+        return () => moved.delete(listener);
+      },
+      release,
+      dispose: () => {
+        disposeCalls++;
+      },
+    },
+    move: (nextPath) => {
+      file = nextPath;
+      for (const listener of moved) listener();
+    },
+    disposals: () => disposeCalls,
+  };
+}
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 test("pdfDestination replaces only the final extension of the final path segment", () => {
@@ -214,6 +269,112 @@ test("SourceRegistry ignores a release after the held source is evicted", async 
   } finally {
     second.release();
   }
+});
+
+test("SourceRegistry rekeys a moved source for new and old path holds", async () => {
+  // #given
+  const created: Array<ReturnType<typeof movingSource>> = [];
+  const createPaths: string[] = [];
+  const adapter: SourceAdapter = {
+    mayBe: () => true,
+    create: async (path, release) => {
+      createPaths.push(path);
+      const fixture = movingSource(path, release);
+      created.push(fixture);
+      return fixture.source;
+    },
+  };
+  const registry = new SourceRegistry([adapter]);
+  const first = await registry.hold("Notes/A.md");
+  assert.ok(first, "expected the adapter to create the original source");
+  created[0].move("Archive/B.md");
+
+  // #when
+  const movedHold = await registry.hold("Archive/B.md");
+  const foundByDocument = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
+  const oldPathHold = await registry.hold("Notes/A.md");
+  assert.ok(movedHold && oldPathHold, "expected both post-rename holds to resolve");
+  first.release();
+  movedHold.release();
+  const movedAfterReleases = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
+  const movedDisposals = created[0].disposals();
+  oldPathHold.release();
+
+  // #then
+  assert.deepEqual(
+    {
+      movedHoldIsOriginal: movedHold === first,
+      foundByDocumentIsOriginal: foundByDocument === first,
+      oldPathCreatedAnotherSource: oldPathHold !== first,
+      createPaths,
+      movedAfterReleases,
+      movedDisposals,
+      oldPathDisposals: created[1]?.disposals(),
+    },
+    {
+      movedHoldIsOriginal: true,
+      foundByDocumentIsOriginal: true,
+      oldPathCreatedAnotherSource: true,
+      createPaths: ["Notes/A.md", "Notes/A.md"],
+      movedAfterReleases: null,
+      movedDisposals: 1,
+      oldPathDisposals: 1,
+    },
+  );
+});
+
+test("SourceRegistry joins a pending destination hold to a source moved there", async () => {
+  // #given
+  const destinationCreation = deferred();
+  const created: Array<ReturnType<typeof movingSource>> = [];
+  const adapter: SourceAdapter = {
+    mayBe: () => true,
+    create: async (path, release) => {
+      const fixture = movingSource(path, release);
+      created.push(fixture);
+      if (path === "Archive/B.md") await destinationCreation.promise;
+      return fixture.source;
+    },
+  };
+  const registry = new SourceRegistry([adapter]);
+  const original = await registry.hold("Notes/A.md");
+  assert.ok(original, "expected the adapter to create the original source");
+  const firstPending = registry.hold("Archive/B.md");
+  const secondPending = registry.hold("Archive/B.md");
+  await Promise.resolve();
+  created[0].move("Archive/B.md");
+
+  // #when
+  destinationCreation.resolve();
+  const [firstJoined, secondJoined] = await Promise.all([firstPending, secondPending]);
+  assert.ok(firstJoined && secondJoined, "expected both destination holds to resolve");
+  const foundBeforeRelease = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
+  original.release();
+  firstJoined.release();
+  const foundBeforeFinalRelease = registry.byDocument(virtualAddress("/vault", "Archive/B.md"));
+  secondJoined.release();
+
+  // #then
+  assert.deepEqual(
+    {
+      firstJoinedIsOriginal: firstJoined === original,
+      secondJoinedIsOriginal: secondJoined === original,
+      foundBeforeReleaseIsOriginal: foundBeforeRelease === original,
+      foundBeforeFinalReleaseIsOriginal: foundBeforeFinalRelease === original,
+      foundAfterFinalRelease: registry.byDocument(virtualAddress("/vault", "Archive/B.md")),
+      movedDisposals: created[0].disposals(),
+      competingDisposals: created[1].disposals(),
+    },
+    {
+      firstJoinedIsOriginal: true,
+      secondJoinedIsOriginal: true,
+      foundBeforeReleaseIsOriginal: true,
+      foundBeforeFinalReleaseIsOriginal: true,
+      foundAfterFinalRelease: null,
+      movedDisposals: 1,
+      competingDisposals: 1,
+    },
+  );
 });
 
 test("the typ adapter follows a wrapper created after the source is held", async () => {

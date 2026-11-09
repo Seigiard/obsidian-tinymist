@@ -146,6 +146,11 @@ export class LspClient {
     return this.proc?.pid ?? null;
   }
 
+  /** Whether initialization completed and the client can accept documents. */
+  get started(): boolean {
+    return this.status === "running";
+  }
+
   async start(): Promise<void> {
     this.setStatus("starting");
     this.proc = spawn(this.binPath, ["lsp"], {

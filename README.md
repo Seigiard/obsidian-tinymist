@@ -129,6 +129,19 @@ uses the saved paths. No compiler restart or render-cache invalidation happens f
 
 Set **Kit manifest** to a vault path and **Default template** to a template id. The manifest supplies the Markdown templates and additional font paths. Those manifest font paths are added to the list sent to Tinymist without changing the **Font paths** setting. Notes stay blocked while a configured kit is loading or has failed.
 
+## Markdown / Typst notes
+
+Add `typst: true` to a Markdown note's frontmatter to use it as a Typst note. Tinymist diagnostics are underlined in the note editor, and the message is available in the underline's tooltip.
+Tinymist compiles the focused Typst note only. Activating a Typst note makes it
+the compile target unless a preview pins another file; diagnostics from other
+files are cleared until you focus them again.
+While a Typst note is open on the language server, an empty
+`.typst-cache/notes/<note path>.typ` file exists in the vault because Tinymist
+needs the compile target on disk, and it is removed afterwards; the whole
+`.typst-cache` folder may be deleted at any time, and relative paths in raw
+`/typst` blocks resolve from that folder, so file paths in raw Typst start with
+`/`.
+
 ## Optional AI completion
 
 Install and configure [YOLO](https://github.com/qiulinfan/obsidian-yolo), then

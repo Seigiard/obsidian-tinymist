@@ -49,6 +49,7 @@ export interface SourceAdapter {
 interface HeldSource {
   source: TypstSource;
   holders: number;
+  removeMoved: () => void;
 }
 
 interface PendingSource {
@@ -80,14 +81,30 @@ export class SourceRegistry {
       return await pending.promise;
     }
 
-    const release = (): void => this.release(vaultPath);
+    let created: TypstSource | null = null;
+    const release = (): void => {
+      if (created) this.releaseSource(created);
+    };
     const state: PendingSource = {
       holders: 1,
       promise: this.create(vaultPath, release).then(
         (source) => {
           this.pending.delete(vaultPath);
           if (!source) return null;
-          this.held.set(vaultPath, { source, holders: state.holders });
+          created = source;
+          const existing = this.held.get(vaultPath);
+          if (existing) {
+            existing.holders += state.holders;
+            source.dispose?.();
+            return existing.source;
+          }
+          const held: HeldSource = {
+            source,
+            holders: state.holders,
+            removeMoved: () => {},
+          };
+          held.removeMoved = source.on("moved", () => this.rekey(source));
+          this.held.set(vaultPath, held);
           return source;
         },
         (error: unknown) => {
@@ -122,12 +139,32 @@ export class SourceRegistry {
     return null;
   }
 
-  private release(vaultPath: string): void {
-    const held = this.held.get(vaultPath);
+  private rekey(source: TypstSource): void {
+    for (const [path, held] of this.held) {
+      if (held.source !== source) continue;
+      if (path !== source.file) {
+        this.held.delete(path);
+        this.held.set(source.file, held);
+      }
+      return;
+    }
+  }
+
+  private releaseSource(source: TypstSource): void {
+    let path: string | undefined;
+    let held: HeldSource | undefined;
+    for (const [candidate, candidateHeld] of this.held) {
+      if (candidateHeld.source === source) {
+        path = candidate;
+        held = candidateHeld;
+        break;
+      }
+    }
     if (!held) return;
     held.holders--;
     if (held.holders === 0) {
-      this.held.delete(vaultPath);
+      this.held.delete(path!);
+      held.removeMoved();
       held.source.dispose?.();
     }
   }

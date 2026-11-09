@@ -660,6 +660,22 @@ SOFTWARE.
   margin: 0 auto;
 }
 
+/* Diagnostics on Typst-enabled Markdown notes. */
+.tinymist-note-diagnostic-error,
+.tinymist-note-diagnostic-warning,
+.tinymist-note-diagnostic-info {
+  text-decoration-skip-ink: none;
+}
+.tinymist-note-diagnostic-error {
+  text-decoration: underline wavy var(--text-error);
+}
+.tinymist-note-diagnostic-warning {
+  text-decoration: underline wavy var(--text-warning);
+}
+.tinymist-note-diagnostic-info {
+  text-decoration: underline wavy var(--text-muted);
+}
+
 /* Preview pane */
 .tym-preview-content {
   padding: 0;
