@@ -170,9 +170,8 @@ compiles as `#show: template.with(theme: "forest", columns: 2)` with the kit's
 `reference` template imported. The kit manifest lists the templates and the
 parameters each one accepts.
 
-Frontmatter problems appear in the preview's problems list and, in source mode,
-as underlines on the property line. Live Preview shows the Properties panel in
-place of those lines, so the underline is hidden there.
+Frontmatter problems appear in the preview's problems list and as a banner above
+the note's first body line. Source mode also underlines the property line.
 Tinymist compiles the focused Typst note only. Activating a Typst note makes it
 the compile target unless a preview pins another file; diagnostics from other
 files are cleared until you focus them again.

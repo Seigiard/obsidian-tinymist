@@ -1,5 +1,6 @@
 import { StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { findFrontmatterEnd } from "../markdown/frontmatter";
 import type { NoteDiagnostic } from "./noteDiagnostics";
 
 export const setNoteDiagnostics = StateEffect.define<readonly NoteDiagnostic[]>();
@@ -18,7 +19,35 @@ function offset(
   };
 }
 
-function decorations(doc: Text, diagnostics: readonly NoteDiagnostic[]): DecorationSet {
+class FrontmatterProblemsWidget extends WidgetType {
+  constructor(readonly messages: readonly string[]) {
+    super();
+  }
+
+  eq(other: FrontmatterProblemsWidget): boolean {
+    return this.messages.length === other.messages.length
+      && this.messages.every((message, index) => message === other.messages[index]);
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const root = view.dom.ownerDocument.createElement("div");
+    root.className = "tinymist-note-frontmatter-problems";
+    root.replaceChildren(...this.messages.map((message) => {
+      const row = view.dom.ownerDocument.createElement("div");
+      row.textContent = message;
+      return row;
+    }));
+    return root;
+  }
+}
+
+interface DiagnosticsState {
+  marks: DecorationSet;
+  banner: DecorationSet;
+  bannerMessages: readonly string[];
+}
+
+function diagnosticMarks(doc: Text, diagnostics: readonly NoteDiagnostic[]): DecorationSet {
   const ranges: { from: number; to: number; decoration: Decoration }[] = [];
   for (const diagnostic of diagnostics) {
     const from = offset(doc, diagnostic.from);
@@ -52,6 +81,37 @@ function decorations(doc: Text, diagnostics: readonly NoteDiagnostic[]): Decorat
   return Decoration.set(ranges.map(({ from, to, decoration }) => decoration.range(from, to)));
 }
 
+function frontmatterMessages(doc: Text, diagnostics: readonly NoteDiagnostic[]): readonly string[] {
+  const lines = doc.toString().split("\n");
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  if (frontmatterEnd < 0) return [];
+
+  const messages: string[] = [];
+  const seen = new Set<string>();
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.severity !== "error" || diagnostic.from.line < 0 || diagnostic.from.line > frontmatterEnd) continue;
+    if (seen.has(diagnostic.message)) continue;
+    seen.add(diagnostic.message);
+    messages.push(diagnostic.message);
+  }
+  return messages;
+}
+
+function frontmatterBanner(doc: Text, messages: readonly string[]): DecorationSet {
+  if (messages.length === 0) return Decoration.none;
+
+  const lines = doc.toString().split("\n");
+  const frontmatterEnd = findFrontmatterEnd(lines);
+  if (frontmatterEnd < 0) return Decoration.none;
+
+  const position = frontmatterEnd + 1 < lines.length ? doc.line(frontmatterEnd + 2).from : doc.length;
+  return Decoration.set([Decoration.widget({
+    widget: new FrontmatterProblemsWidget(messages),
+    block: true,
+    side: frontmatterEnd + 1 < lines.length ? -1 : 1,
+  }).range(position, position)]);
+}
+
 export function editorDiagnostics(
   resolveFile: (view: EditorView) => string | null,
   holder: {
@@ -60,15 +120,33 @@ export function editorDiagnostics(
     documentChanged?(view: EditorView): void;
   },
 ): Extension {
-  const field = StateField.define<DecorationSet>({
-    create: () => Decoration.none,
+  const field = StateField.define<DiagnosticsState>({
+    create: () => ({ marks: Decoration.none, banner: Decoration.none, bannerMessages: [] }),
     update(value, transaction) {
       for (const effect of transaction.effects) {
-        if (effect.is(setNoteDiagnostics)) return decorations(transaction.newDoc, effect.value);
+        if (effect.is(setNoteDiagnostics)) {
+          const bannerMessages = frontmatterMessages(transaction.newDoc, effect.value);
+          return {
+            marks: diagnosticMarks(transaction.newDoc, effect.value),
+            banner: frontmatterBanner(transaction.newDoc, bannerMessages),
+            bannerMessages,
+          };
+        }
       }
-      return transaction.docChanged ? value.map(transaction.changes) : value;
+      if (!transaction.docChanged) return value;
+      const marks = value.marks.map(transaction.changes);
+      return {
+        marks,
+        banner: value.bannerMessages.length > 0
+          ? frontmatterBanner(transaction.newDoc, value.bannerMessages)
+          : Decoration.none,
+        bannerMessages: value.bannerMessages,
+      };
     },
-    provide: (fieldValue) => EditorView.decorations.from(fieldValue),
+    provide: (fieldValue) => [
+      EditorView.decorations.from(fieldValue, (value) => value.marks),
+      EditorView.decorations.from(fieldValue, (value) => value.banner),
+    ],
   });
 
   class DiagnosticsView {

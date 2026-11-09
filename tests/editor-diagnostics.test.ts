@@ -41,6 +41,322 @@ function makeView(doc: string, extension: Extension): EditorView {
   });
 }
 
+function diagnostic(
+  message: string,
+  line: number,
+  severity: Diagnostic["severity"] = "error",
+): Diagnostic {
+  return {
+    from: { line, character: 0 },
+    to: { line, character: Number.MAX_SAFE_INTEGER },
+    message,
+    severity,
+  };
+}
+
+function frontmatterBanner(view: EditorView): HTMLElement | null {
+  return view.contentDOM.querySelector<HTMLElement>(".tinymist-note-frontmatter-problems");
+}
+
+function bannerRows(banner: HTMLElement | null): string[] {
+  return banner === null ? [] : [...banner.children].map((row) => row.textContent ?? "");
+}
+
+test("a fatal frontmatter problem renders directly before the first body line in source mode", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---\nFirst body line\nSecond body line",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+
+  // #then
+  try {
+    const banner = frontmatterBanner(view);
+    assert.deepEqual({
+      rows: bannerRows(banner),
+      previousLine: banner?.previousElementSibling?.textContent ?? null,
+      nextLine: banner?.nextElementSibling?.textContent ?? null,
+    }, {
+      rows: ["Unknown Typst template missing"],
+      previousLine: "---",
+      nextLine: "First body line",
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
+test("distinct fatal frontmatter problems render one row each in first-seen order", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\ntypst-count: [1,,2]\n---\nBody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([
+    diagnostic("Property count has a malformed list", 2),
+    diagnostic("Unknown Typst template missing", 1),
+  ]) });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), [
+      "Property count has a malformed list",
+      "Unknown Typst template missing",
+    ]);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("equal fatal frontmatter problem messages collapse to their first row", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\ntypst-layout: missing\n---\nBody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([
+    diagnostic("Unknown Typst template missing", 1),
+    diagnostic("Unknown Typst template missing", 2),
+  ]) });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), ["Unknown Typst template missing"]);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a frontmatter problem after a final closing delimiter renders at document end", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Closing frontmatter problem", 2)]) });
+
+  // #then
+  try {
+    const banner = frontmatterBanner(view);
+    assert.deepEqual({
+      rows: bannerRows(banner),
+      previousLine: banner?.previousElementSibling?.textContent ?? null,
+      nextElement: banner?.nextElementSibling?.textContent ?? null,
+    }, {
+      rows: ["Closing frontmatter problem"],
+      previousLine: "---",
+      nextElement: null,
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a final-delimiter banner stays above text inserted after it", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+
+  // #when
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "\nHello" } });
+
+  // #then
+  try {
+    const banner = frontmatterBanner(view);
+    assert.deepEqual({
+      rows: bannerRows(banner),
+      previousLine: banner?.previousElementSibling?.textContent ?? null,
+      nextLine: banner?.nextElementSibling?.textContent ?? null,
+    }, {
+      rows: ["Unknown Typst template missing"],
+      previousLine: "---",
+      nextLine: "Hello",
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a frontmatter banner stays above the body after its blank line is deleted", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---\n\nbody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+
+  // #when
+  view.dispatch({ changes: { from: view.state.doc.line(3).to, to: view.state.doc.line(4).to } });
+
+  // #then
+  try {
+    const banner = frontmatterBanner(view);
+    assert.deepEqual({
+      rows: bannerRows(banner),
+      previousLine: banner?.previousElementSibling?.textContent ?? null,
+      nextLine: banner?.nextElementSibling?.textContent ?? null,
+    }, {
+      rows: ["Unknown Typst template missing"],
+      previousLine: "---",
+      nextLine: "body",
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a frontmatter banner disappears when its opening delimiter is deleted", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---\n\nbody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+
+  // #when
+  view.dispatch({ changes: { from: 0, to: view.state.doc.line(2).from } });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("an empty diagnostics publication removes an existing frontmatter problem widget", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---\nBody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+  const before = bannerRows(frontmatterBanner(view));
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([]) });
+
+  // #then
+  try {
+    assert.deepEqual({ before, after: bannerRows(frontmatterBanner(view)) }, {
+      before: ["Unknown Typst template missing"],
+      after: [],
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
+test("frontmatter warnings and infos do not render a problem widget", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\ntypst-count: maybe\n---\nBody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([
+    diagnostic("Template selection warning", 1, "warning"),
+    diagnostic("Property count information", 2, "info"),
+  ]) });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("a body-line error does not render a frontmatter problem widget", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: article\n---\nBroken body",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Body cannot compile", 3)]) });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("an error in a document without frontmatter does not render a frontmatter problem widget", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "Broken body",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Body cannot compile", 0)]) });
+
+  // #then
+  try {
+    assert.deepEqual(bannerRows(frontmatterBanner(view)), []);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("the frontmatter line keeps its exact error mark when the problem widget renders", async () => {
+  // #given
+  const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
+  const view = makeView(
+    "---\ntypst-template: missing\n---\nBody",
+    editorDiagnostics(() => null, { attach: () => {}, detach: () => {} }),
+  );
+
+  // #when
+  view.dispatch({ effects: setNoteDiagnostics.of([diagnostic("Unknown Typst template missing", 1)]) });
+
+  // #then
+  try {
+    assert.deepEqual({
+      rows: bannerRows(frontmatterBanner(view)),
+      marks: marks(view),
+    }, {
+      rows: ["Unknown Typst template missing"],
+      marks: [{
+        from: 4,
+        to: 27,
+        className: "tinymist-note-diagnostic-error",
+        title: "Unknown Typst template missing",
+      }],
+    });
+  } finally {
+    view.destroy();
+  }
+});
+
 test("diagnostics create exact error marks whose title carries the message", async () => {
   // #given
   const { editorDiagnostics, setNoteDiagnostics } = await import("../src/underlines/editorDiagnostics");
