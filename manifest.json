@@ -1,7 +1,7 @@
 {
   "id": "typst-live",
   "name": "Typst Live",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "minAppVersion": "1.13.7",
   "description": "Edit Typst documents with language-server completion, project-aware math rendering, and an incremental preview.",
   "author": "Qiulin Fan",
