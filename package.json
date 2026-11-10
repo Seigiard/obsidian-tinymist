@@ -1,6 +1,6 @@
 {
   "name": "obsidian-tinymist",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Tinymist-grade Typst editing and live preview for Obsidian, backed by the Tinymist language server",
   "main": "main.js",
   "scripts": {
