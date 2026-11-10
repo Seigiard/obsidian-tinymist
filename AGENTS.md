@@ -432,3 +432,35 @@
   Changing public identity does not authorize reading, copying, or migrating
   personal vault configuration. Preserve older local installations unless
   the user specifically requests their migration.
+
+<!-- bmad:context -->
+<!-- Verified 2026-11-10 against f802dfb. Managed by bmad-project-context; edits inside this block are replaced on refresh. Keep anything you want preserved outside the markers. -->
+
+## Fork: Typst notes written in Markdown
+
+This fork of `qiulinfan/obsidian-tinymist` adds Markdown notes marked `typst: true`, converted to Typst in `src/markdown/`. Before changing behaviour under `src/markdown/`, in the sibling `../obsidian-typst/` repository find the ticket with `backlog search <topic>` and read `_bmad-output/planning-artifacts/architecture/*/ARCHITECTURE-SPINE.md`.
+
+## Policy
+
+- Never open a pull request against upstream `qiulinfan/obsidian-tinymist`; pass `--repo Seigiard/obsidian-tinymist` to every `gh` command that accepts it and spell out `repos/Seigiard/obsidian-tinymist/...` in `gh api` paths, because `gh` resolves this checkout to upstream.
+
+## Running and verifying
+
+- Run one `npm test` at a time per `node_modules`: `scripts/run-tests.mjs` deletes `node_modules/.cache/test-build` on start, so the other run fails falsely. For a parallel run, use a worktree with its own `node_modules` (`npm ci`); a symlinked one shares the cache.
+- When verifying changes under `src/markdown/`, confirm the `npm test` log shows no `tinymist not found` skip for `tests/markdown-compile.test.ts` or `tests/automatic-pdf-markdown-lsp.test.ts`. Otherwise set `TINYMIST_BIN` and rerun, or report compile verification as blocked when no binary is available.
+- Build virtual addresses with `tests/support/virtualAddress.ts`; hard-coded `/` passes locally and fails on Windows CI.
+- Size a time-bound test against quadratic behaviour so it goes red on a quadratic implementation and green on the correct one; observe both.
+- Never pass a DOM element to `node:assert`; on failure it formats the whole jsdom tree and hangs until the module timeout. Compare strings.
+
+## Conventions that differ from defaults
+
+- The converter follows CommonMark. Judge its output by the compiled PDF, never by Live Preview, whose parser pairs `*` across link boundaries.
+- Generated function calls go through `std.` and end with `;` (`#std.strong[x];`): a note or kit binding named `strong` breaks a bare call, and a following `(` or `[` would extend it.
+- Never emit same-kind nested emphasis; Typst toggles it and the inner word prints upright. Flatten instead (`_a _b_ c_` → `_a b c_`).
+- Never emit `*` or `_` markup with a word character on its outer side (`foo*bar*`); Typst prints it literally. Use the `std.` call form instead.
+
+## Known pitfalls
+
+- Never rely on a mark on a frontmatter line to reach the author; Live Preview replaces those lines with the Properties panel. Use the banner in `src/underlines/editorDiagnostics.ts`.
+
+<!-- /bmad:context -->
