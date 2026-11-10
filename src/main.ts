@@ -304,6 +304,9 @@ export default class TinymistPlugin extends Plugin {
       retainNoteSession();
       this.refreshNoteHolder();
     }));
+    this.registerEvent(this.app.vault.on("rename", () => {
+      retainNoteSession();
+    }));
     const metadataCache = (this.app as unknown as {
       metadataCache?: { on(name: string, callback: (file: TFile) => void): { detach(): void } };
     }).metadataCache;

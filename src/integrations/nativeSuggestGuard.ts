@@ -38,11 +38,15 @@ export function installNativeSuggestGuard(
       const cursor = editor.getCursor();
       const line = editor.getLine(cursor.line);
       if (isTypstNote(file) && cursor.ch >= "/typst".length && line.startsWith("/typst")) {
-        const conversion = convert(editor.getValue(), null);
+        const suffix = line.length === "/typst".length ? " #" : "";
+        const conversion = convert(
+          suffix ? appendToLine(editor.getValue(), cursor.line, suffix) : editor.getValue(),
+          null,
+        );
         const isTypstLine =
           !conversion.source ||
           (conversion.toTyp(cursor.line, "/typst".length) === 0 &&
-            (line.length === "/typst".length || conversion.toTyp(cursor.line, line.length) > 0));
+            conversion.toTyp(cursor.line, line.length + suffix.length) > 0);
         if (isTypstLine) {
           suggest.close();
           return undefined;
@@ -52,4 +56,11 @@ export function installNativeSuggestGuard(
     },
   );
   return patch ? () => patch.restore() : null;
+}
+
+function appendToLine(value: string, lineNumber: number, suffix: string): string {
+  const lines = value.split("\n");
+  if (lineNumber < 0 || lineNumber >= lines.length) return value;
+  lines[lineNumber] += suffix;
+  return lines.join("\n");
 }

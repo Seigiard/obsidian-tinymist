@@ -98,6 +98,7 @@ export interface NoteSessionHost {
 export class NoteSessions {
   private active: ActiveSession | null = null;
   private disposed = false;
+  private retainedPath: string | null | undefined;
   private operation: Promise<void> = Promise.resolve();
 
   constructor(private readonly host: NoteSessionHost) {}
@@ -111,6 +112,7 @@ export class NoteSessions {
     await previous;
     try {
       if (this.disposed) return null;
+      if (this.retainedPath !== undefined && this.retainedPath !== vaultPath) return null;
       const client = this.host.client();
       if (this.active?.vaultPath === vaultPath && this.active.client === client) {
         return this.active.session;
@@ -180,6 +182,7 @@ export class NoteSessions {
     });
     await previous;
     try {
+      this.retainedPath = vaultPath;
       if (this.disposed) return;
       if (!vaultPath || this.active?.vaultPath !== vaultPath) this.closeActive();
     } finally {
