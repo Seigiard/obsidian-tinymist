@@ -47,6 +47,9 @@
   the arbiter's `tabFallback`. Obsidian hotkeys that would swallow editor
   keys go through the view's `Scope` (`registerEditorScope`); Mod-S and
   Mod-F keep their Obsidian meaning.
+- Exception: Markdown note editors have no `keyArbiter`, so
+  `noteCompletionExtension` adds the autocompletion keymap and one Enter guard
+  that falls through to the host editor.
 - `src/editor/shared/` is shared with obsidian-latex-live and must stay
   byte-identical there; this repository holds the canonical copy. Shared
   modules may only `import type` from `obsidian` (tests bundle them without

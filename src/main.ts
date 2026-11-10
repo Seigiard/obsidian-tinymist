@@ -26,6 +26,7 @@ import {
 } from "./automatic-pdf";
 import { HistoryCache } from "./editor/shared/editorKit";
 import { YoloBridge } from "./editor/shared/yoloBridge";
+import { NoteSessions, noteCompletionExtension } from "./editor/noteCompletions";
 import { FileEvent, TypstRender } from "./editor/typstRender";
 import { LspTextEdit, TypstView, VIEW_TYPE_TYPST } from "./editor/typstView";
 import { Kit, type KitStateView } from "./kit/kit";
@@ -35,6 +36,7 @@ import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
 import { installExportRedirect } from "./integrations/exportRedirect";
+import { installNativeSuggestGuard } from "./integrations/nativeSuggestGuard";
 import { installPropertySuggestions, type PropertySuggestionKit } from "./integrations/propertySuggestions";
 import {
   mdAdapter,
@@ -79,6 +81,7 @@ export default class TinymistPlugin extends Plugin {
   /** Formula renders for the hover, cached across views. */
   typstRender: TypstRender | null = null;
   noteHolder: NoteHolder | null = null;
+  private noteSessions: NoteSessions | null = null;
   private automaticPdfController: AutomaticPdfController | null = null;
 
   private diagListeners = new Set<(uri: string) => void>();
@@ -248,6 +251,10 @@ export default class TinymistPlugin extends Plugin {
     if (restoreExportRedirect) this.register(restoreExportRedirect);
     const restorePropertySuggestions = installPropertySuggestions(this.app, () => this.propertySuggestionKit());
     if (restorePropertySuggestions) this.register(restorePropertySuggestions);
+    const restoreNativeSuggestGuard = installNativeSuggestGuard(this.app, (file) =>
+      file ? this.sources.mayBeSource(file.path) : false,
+    );
+    if (restoreNativeSuggestGuard) this.register(restoreNativeSuggestGuard);
 
     this.noteHolder = new NoteHolder({
       registry: this.sources,
@@ -270,6 +277,18 @@ export default class TinymistPlugin extends Plugin {
       (view) => view.state.field(editorInfoField, false)?.file?.path ?? null,
       this.noteHolder,
     ));
+    this.noteSessions = new NoteSessions({
+      hold: (path) => this.sources.hold(path),
+      client: () => this.client(),
+    });
+    this.registerEditorExtension(noteCompletionExtension({
+      notePath: (state) => {
+        const path = state.field(editorInfoField, false)?.file?.path;
+        return path && this.sources.mayBeSource(path) ? path : null;
+      },
+      session: (path) => this.noteSessions?.session(path) ?? Promise.resolve(null),
+      triggerCharacters: () => this.lsp?.completionTriggerCharacters() ?? [],
+    }));
     this.registerEvent(this.app.workspace.on("file-open", () => {
       this.refreshNoteHolder();
     }));
@@ -370,6 +389,8 @@ export default class TinymistPlugin extends Plugin {
     this.automaticPdfController?.dispose();
     this.automaticPdfController = null;
     this.automaticPdfListeners.clear();
+    this.noteSessions?.dispose();
+    this.noteSessions = null;
     this.noteHolder?.dispose();
     this.noteHolder = null;
     this.yolo.destroy();

@@ -133,6 +133,9 @@ Set **Kit manifest** to a vault path and **Default template** to a template id. 
 
 Add `typst: true` to a Markdown note's frontmatter to use it as a Typst note. Tinymist diagnostics are underlined in the note editor, and the message is available in the underline's tooltip.
 
+On a `/typst` line, type `#` or a name to ask Tinymist for completions from the note's template. The completion is inserted into the Markdown source at the matching position.
+Every editor suggestion list stays closed on `/typst` lines, including tags, links, and lists from other plugins.
+
 ### Note properties
 
 The frontmatter drives the conversion. Only properties whose name starts with
