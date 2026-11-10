@@ -57,11 +57,18 @@ test("kit settings default to empty values and survive loading and saving", asyn
   );
 });
 
-test("the normative manifest makes root Typst template paths and absolute font paths", async () => {
+test("the normative manifest keeps template parameters while making root Typst template paths and absolute font paths", async () => {
   // #given
   const manifest = {
     version: 1,
-    templates: [{ id: "reference", path: "reference.typ" }],
+    templates: [{
+      id: "reference",
+      path: "reference.typ",
+      params: {
+        columns: { type: "int" },
+        theme: { type: "enum", values: ["ink", "forest"] },
+      },
+    }],
     "font-paths": ["../fonts/files"],
   };
 
@@ -72,6 +79,42 @@ test("the normative manifest makes root Typst template paths and absolute font p
   assert.deepEqual(parsed, {
     templates: { reference: "/kit/md/reference.typ" },
     fontPaths: [join(VAULT_BASE, "kit/md", "../fonts/files")],
+    params: {
+      reference: {
+        columns: { type: "int" },
+        theme: { type: "enum", values: ["ink", "forest"] },
+      },
+    },
+  });
+});
+
+test("a manifest drops malformed parameter declarations without rejecting its templates", () => {
+  // #given
+  const manifest = {
+    version: 1,
+    templates: [{
+      id: "reference",
+      path: "reference.typ",
+      params: {
+        columns: { type: "int" },
+        invalidType: { type: "date" },
+        invalidEnum: { type: "enum", values: ["ink", 3] },
+      },
+    }, {
+      id: "letter",
+      path: "letter.typ",
+      params: "not an object",
+    }],
+  };
+
+  // #when
+  const parsed = parseManifest(manifest, "kit/md", VAULT_BASE);
+
+  // #then
+  assert.deepEqual(parsed, {
+    templates: { reference: "/kit/md/reference.typ", letter: "/kit/md/letter.typ" },
+    fontPaths: [],
+    params: { reference: { columns: { type: "int" } }, letter: {} },
   });
 });
 
@@ -79,7 +122,7 @@ test("a kit moves from none through loading to ready or failed and exposes its c
   // #given
   let settings = { kitManifest: "", defaultTemplate: "reference" };
   const reads: string[] = [];
-  let next: ParsedManifest | Error = { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] };
+  let next: ParsedManifest | Error = { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH], params: { reference: {} } };
   const kit = new Kit({
     vaultBase: VAULT_BASE,
     bin: () => "/bin/tinymist",
@@ -130,11 +173,11 @@ test("a kit moves from none through loading to ready or failed and exposes its c
         ],
         states: [
           { kind: "loading" },
-          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] } },
-          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] } },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH], params: { reference: {} } } },
+          { kind: "ready", manifest: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH], params: { reference: {} } } },
           {
             kind: "loading",
-            previous: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH] },
+            previous: { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [KIT_FONT_PATH], params: { reference: {} } },
           },
           { kind: "failed", reason: "manifest is invalid" },
         ],
@@ -196,6 +239,7 @@ test("a setting change during a manifest read discards it and loads the later se
       return {
         templates: { letter: letterReads === 1 ? "/kit/md/initial-letter.typ" : "/kit/md/reloaded-letter.typ" },
         fontPaths: [],
+        params: { letter: {} },
       };
     },
   });
@@ -206,7 +250,7 @@ test("a setting change during a manifest read discards it and loads the later se
   const first = kit.reload();
   settings = { kitManifest: "kit/md/letter.typ", defaultTemplate: "" };
   const second = kit.reload();
-  finishReference?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] });
+  finishReference?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [], params: { reference: {} } });
   await Promise.all([first, second]);
 
   // #then
@@ -215,7 +259,7 @@ test("a setting change during a manifest read discards it and loads the later se
       { reads, state: kit.state, loadingPath: Reflect.get(kit, "loadedManifestPath") },
       {
         reads: [manifestPath("kit/md/letter.typ"), manifestPath("kit/md/reference.typ"), manifestPath("kit/md/letter.typ")],
-        state: { kind: "ready", manifest: { templates: { letter: "/kit/md/reloaded-letter.typ" }, fontPaths: [] } },
+        state: { kind: "ready", manifest: { templates: { letter: "/kit/md/reloaded-letter.typ" }, fontPaths: [], params: { letter: {} } } },
         loadingPath: "kit/md/letter.typ",
       },
     );
@@ -239,7 +283,7 @@ test("a missing manifest supersedes an in-flight read and keeps its failure", as
   const reload = kit.reload();
   const loadingPath = Reflect.get(kit, "loadedManifestPath");
   kit.markManifestMissing("kit/md/manifest.typ");
-  finishRead?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] });
+  finishRead?.({ templates: { reference: "/kit/md/reference.typ" }, fontPaths: [], params: { reference: {} } });
   await reload;
 
   // #then
@@ -273,7 +317,7 @@ test("plugin reload triggers read only for the configured manifest and preserves
     readManifest: async (_bin, _vault, path) => {
       reads.push(path);
       if (failReads) throw new Error("manifest is invalid");
-      return { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [] };
+      return { templates: { reference: "/kit/md/reference.typ" }, fontPaths: [], params: { reference: {} } };
     },
   });
   plugin.startLsp = async () => {};

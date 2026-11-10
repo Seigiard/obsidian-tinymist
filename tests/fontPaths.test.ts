@@ -230,7 +230,7 @@ test("effective font paths append deduplicated ready-kit paths without changing 
   // #when
   const reload = plugin.kit.reload();
   const loading = plugin.resolveFontPaths(VAULT_BASE);
-  finishRead?.({ templates: {}, fontPaths: [SHARED_FONT_PATH, KIT_FONT_PATH, KIT_FONT_PATH] });
+  finishRead?.({ templates: {}, fontPaths: [SHARED_FONT_PATH, KIT_FONT_PATH, KIT_FONT_PATH], params: {} });
   await reload;
   const ready = plugin.resolveFontPaths(VAULT_BASE);
 
@@ -263,7 +263,7 @@ test("effective font paths retain the ready kit fonts while a forced reload is l
     settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
     readManifest: async () => {
       reads += 1;
-      if (reads === 1) return { templates: {}, fontPaths: [KIT_FONT_PATH] };
+      if (reads === 1) return { templates: {}, fontPaths: [KIT_FONT_PATH], params: {} };
       return await new Promise<ParsedManifest>((resolve) => { finishReload = resolve; });
     },
   });
@@ -273,7 +273,7 @@ test("effective font paths retain the ready kit fonts while a forced reload is l
   const reload = plugin.kit.reload(true);
   const loading = plugin.resolveFontPaths(VAULT_BASE);
   const state = plugin.kit.state;
-  finishReload?.({ templates: {}, fontPaths: [KIT_FONT_PATH] });
+  finishReload?.({ templates: {}, fontPaths: [KIT_FONT_PATH], params: {} });
   await reload;
 
   // #then
@@ -281,7 +281,7 @@ test("effective font paths retain the ready kit fonts while a forced reload is l
     assert.deepEqual(
       { state, loading, ready: plugin.resolveFontPaths(VAULT_BASE) },
       {
-        state: { kind: "loading", previous: { templates: {}, fontPaths: [KIT_FONT_PATH] } },
+        state: { kind: "loading", previous: { templates: {}, fontPaths: [KIT_FONT_PATH], params: {} } },
         loading: [SETTINGS_FONT_PATH, KIT_FONT_PATH],
         ready: [SETTINGS_FONT_PATH, KIT_FONT_PATH],
       },
@@ -319,7 +319,7 @@ test("a real Kit loading then ready restarts once only when the merged list diff
 
     // #when
     const reload = plugin.kit.reload();
-    finishRead?.({ templates: {}, fontPaths: [KIT_FONT_PATH] });
+    finishRead?.({ templates: {}, fontPaths: [KIT_FONT_PATH], params: {} });
     await reload;
     await Promise.all(changes);
 
@@ -357,7 +357,7 @@ test("restart-language-server invalidates fragment renders and refreshes automat
       vaultBase: VAULT_BASE,
       bin: () => "/bin/tinymist",
       settings: () => ({ kitManifest: "kit/md/manifest.typ", defaultTemplate: "" }),
-      readManifest: async () => ({ templates: {}, fontPaths: [KIT_FONT_PATH] }),
+      readManifest: async () => ({ templates: {}, fontPaths: [KIT_FONT_PATH], params: {} }),
     });
     await plugin.kit.reload();
     plugin.vaultBasePath = () => VAULT_BASE;

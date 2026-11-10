@@ -340,6 +340,7 @@ export class TestFileManager {
 
 export class TestWorkspace {
   layoutSaves = 0;
+  activeFile: TFile | null = null;
   private events = new Map<string, Set<EventCallback>>();
   private layoutReady: Callback[] = [];
 
@@ -377,6 +378,10 @@ export class TestWorkspace {
     return null;
   }
 
+  getActiveFile(): TFile | null {
+    return this.activeFile;
+  }
+
   getLeavesOfType(): WorkspaceLeaf[] {
     return [];
   }
@@ -384,11 +389,16 @@ export class TestWorkspace {
 
 export class TestMetadataCache {
   private readonly values = new Map<string, Record<string, unknown>>();
+  frontmatterPropertyValues: string[] = [];
   private readonly events = new Map<string, Set<EventCallback>>();
 
   getCache(path: string): { frontmatter: Record<string, unknown> } | null {
     const frontmatter = this.values.get(path);
     return frontmatter ? { frontmatter } : null;
+  }
+
+  getFrontmatterPropertyValuesForKey(_key: string): string[] {
+    return this.frontmatterPropertyValues;
   }
 
   setFrontmatter(path: string, frontmatter: Record<string, unknown>): void {
@@ -407,12 +417,42 @@ export class TestMetadataCache {
   }
 }
 
+export interface TestPropertyEntry {
+  name: string;
+  widget: string;
+  occurrences: number;
+}
+
+export class TestMetadataTypeManager {
+  assignedWidgets: Record<string, string> = {};
+  properties: Record<string, TestPropertyEntry> = {};
+  saveCalls = 0;
+  setTypeCalls = 0;
+
+  getAllProperties(): Record<string, TestPropertyEntry> {
+    return this.properties;
+  }
+
+  getAssignedWidget(name: string): string {
+    return this.assignedWidgets[name] ?? "text";
+  }
+
+  save(): void {
+    this.saveCalls += 1;
+  }
+
+  setType(): void {
+    this.setTypeCalls += 1;
+  }
+}
+
 export interface TestApp {
   vault: TestVault;
   scope: Scope;
   workspace: TestWorkspace;
   fileManager: TestFileManager;
   metadataCache: TestMetadataCache;
+  metadataTypeManager: TestMetadataTypeManager;
   plugins: { plugins: Record<string, unknown> };
   pluginData: Record<string, unknown>;
 }
@@ -425,6 +465,7 @@ export function testApp(basePath = "/vault"): TestApp {
     workspace: new TestWorkspace(),
     fileManager: new TestFileManager(vault),
     metadataCache: new TestMetadataCache(),
+    metadataTypeManager: new TestMetadataTypeManager(),
     plugins: { plugins: {} },
     pluginData: {},
   };

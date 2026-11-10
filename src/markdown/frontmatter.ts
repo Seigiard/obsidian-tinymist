@@ -6,6 +6,7 @@ interface FrontmatterPropertyEntry {
   value: string;
   multiline: boolean;
   empty: boolean;
+  sequence?: string[];
 }
 
 interface FrontmatterLineEntry {
@@ -93,7 +94,16 @@ export function readFrontmatter(lines: readonly string[], end: number): Frontmat
     if (property) {
       const multiline = isBlockValue(property.value) || hasContinuation(lines, line, end, property.value);
       if (property.kind === "flag") entries.push({ line, value: property.value, multiline, empty: property.empty, flag: true });
-      else entries.push({ line, name: property.name, value: property.value, multiline, empty: property.empty });
+      else entries.push({
+        line,
+        name: property.name,
+        value: property.value,
+        multiline,
+        empty: property.empty,
+        sequence: property.name === "template" || property.value.trim() !== ""
+          ? undefined
+          : readSequence(lines, line, end),
+      });
     } else {
       entries.push({ line });
     }
@@ -181,7 +191,11 @@ export function convertProperty(entry: FrontmatterPropertyEntry): PropertyConver
     }
     return { kind: "skip" };
   }
-  const parsed = entry.multiline ? { failure: "multiline" as const } : parseValue(entry.value);
+  const parsed = entry.sequence !== undefined
+    ? parseSequence(entry.sequence)
+    : entry.multiline
+      ? { failure: "multiline" as const }
+      : parseValue(entry.value);
   if ("failure" in parsed) return { kind: "problem", message: propertyFailureMessage(entry.name, parsed) };
   return { kind: "value", literal: parsed.literal };
 }
@@ -218,6 +232,27 @@ function hasContinuation(lines: readonly string[], line: number, end: number, va
     return /^[ \t]+\S/u.test(lines[next]);
   }
   return false;
+}
+
+function readSequence(lines: readonly string[], line: number, end: number): string[] | undefined {
+  const items: string[] = [];
+  let blockScalar = false;
+  for (let next = line + 1; next < end; next += 1) {
+    const trimmed = lines[next].trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const marker = /^[ \t]*-([ \t]|$)/u.exec(lines[next]);
+    if (blockScalar && marker === null && /^[ \t]+\S/u.test(lines[next])) continue;
+    blockScalar = false;
+    if (marker !== null) {
+      const item = stripYamlComment(lines[next].slice(marker[0].length));
+      items.push(item);
+      blockScalar = isBlockValue(item.trim());
+      continue;
+    }
+    if (/^[ \t]+\S/u.test(lines[next])) return undefined;
+    break;
+  }
+  return items.length === 0 ? undefined : items;
 }
 
 function unquoteTemplateId(value: string): string {
@@ -280,6 +315,19 @@ function parseArray(value: string, depth: number): ValueResult {
   const literals: string[] = [];
   for (const item of items) {
     const parsed = parseValue(item, depth + 1);
+    if ("failure" in parsed) {
+      return parsed.failure === "deep" || parsed.failure === "escape" ? parsed : { failure: "malformed" };
+    }
+    literals.push(parsed.literal);
+  }
+  return { literal: `(${literals.join(", ")},)` };
+}
+
+function parseSequence(items: readonly string[]): ValueResult {
+  if (items.some((item) => item.trim() === "")) return { failure: "malformed" };
+  const literals: string[] = [];
+  for (const item of items) {
+    const parsed = parseValue(item, 1);
     if ("failure" in parsed) {
       return parsed.failure === "deep" || parsed.failure === "escape" ? parsed : { failure: "malformed" };
     }

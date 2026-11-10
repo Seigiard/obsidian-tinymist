@@ -577,25 +577,81 @@ test("C78: a bare URL has one call form and converts stripped punctuation as pro
   ]);
 });
 
-test("C79: column-zero YAML sequences make an empty property multi-line", () => {
+test("C79: YAML sequences make non-template properties into the same arrays as flow values", () => {
   // #given
-  const tags = sourceNote(["typst: true", "typst-tags:", "- a", "- b"]);
+  const indented = sourceNote(["typst: true", "typst-authors:", "  - a", '  - "b, c"', "  - 2"]);
+  const columnZero = sourceNote(["typst: true", "typst-authors:", "- a", '- "b, c"', "- 2"]);
+  const flow = sourceNote(["typst: true", 'typst-authors: [a, "b, c", 2]']);
   const template = sourceNote(["typst: true", "typst-template:", "- a"]);
   const templateKit = { templates: { a: "/a.typ", b: "/b.typ" }, defaultTemplate: "b" };
   // #when
-  const conversions = [convert(tags, { templates: {}, defaultTemplate: "" }), convert(template, templateKit)];
+  const conversions = [
+    convert(indented, { templates: {}, defaultTemplate: "" }),
+    convert(columnZero, { templates: {}, defaultTemplate: "" }),
+    convert(flow, { templates: {}, defaultTemplate: "" }),
+    convert(template, templateKit),
+  ];
   // #then
   assert.deepEqual(
     conversions.map((conversion) => ({ lines: outputLines(conversion.typ), problems: conversion.problems })),
     [
       {
-        lines: [`${BUILT_INS}#show: template.with(`, "", "", "", "", ")"],
-        problems: [{ line: 2, message: "Property tags has a multi-line value", fatal: false }],
+        lines: [`${BUILT_INS}#show: template.with(`, "", 'authors: ("a", "b, c", 2,),', "", "", "", ")"],
+        problems: [],
+      },
+      {
+        lines: [`${BUILT_INS}#show: template.with(`, "", 'authors: ("a", "b, c", 2,),', "", "", "", ")"],
+        problems: [],
+      },
+      {
+        lines: [`${BUILT_INS}#show: template.with(`, "", 'authors: ("a", "b, c", 2,),', ")"],
+        problems: [],
       },
       {
         lines: [`${BUILT_INS}#import "/b.typ": *; #show: template.with(`, "", "", "", ")"],
         problems: [{ line: 2, message: "Property template has a multi-line value", fatal: false }],
       },
+    ],
+  );
+});
+
+test("C79: each YAML sequence line keeps commas and brackets inside one array item", () => {
+  // #given
+  const comma = sourceNote(["typst: true", "typst-authors:", "- a, b", "- c"]);
+  const bracket = sourceNote(["typst: true", "typst-authors:", "- x]", "- y"]);
+
+  // #when
+  const conversions = [comma, bracket].map((text) => convert(text, { templates: {}, defaultTemplate: "" }));
+
+  // #then
+  assert.deepEqual(
+    conversions.map((conversion) => ({ argument: outputLines(conversion.typ)[2], problems: conversion.problems })),
+    [
+      { argument: 'authors: ("a, b", "c",),', problems: [] },
+      { argument: 'authors: ("x]", "y",),', problems: [] },
+    ],
+  );
+});
+
+test("C79: invalid YAML sequence items stay dropped with their existing warning kinds", () => {
+  // #given
+  const emptyItem = sourceNote(["typst: true", "typst-authors:", "  - a", "  - "]);
+  const blockItem = sourceNote(["typst: true", "typst-authors:", "  - |", "    a"]);
+  const nonSequence = sourceNote(["typst: true", "typst-authors:", "  continued"]);
+
+  // #when
+  const conversions = [emptyItem, blockItem, nonSequence].map((text) => convert(text, { templates: {}, defaultTemplate: "" }));
+
+  // #then
+  assert.deepEqual(
+    conversions.map((conversion) => ({
+      argument: outputLines(conversion.typ)[2],
+      problems: conversion.problems,
+    })),
+    [
+      { argument: "", problems: [{ line: 2, message: "Property authors has a malformed list", fatal: false }] },
+      { argument: "", problems: [{ line: 2, message: "Property authors has a malformed list", fatal: false }] },
+      { argument: "", problems: [{ line: 2, message: "Property authors has a multi-line value", fatal: false }] },
     ],
   );
 });

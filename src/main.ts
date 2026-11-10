@@ -35,6 +35,7 @@ import { TypstFragmentRenderer } from "./lsp/fragmentRenderer";
 import { PreviewManager, SourceJump } from "./preview/previewManager";
 import { PreviewView, VIEW_TYPE_TYPST_PREVIEW } from "./preview/previewView";
 import { installExportRedirect } from "./integrations/exportRedirect";
+import { installPropertySuggestions, type PropertySuggestionKit } from "./integrations/propertySuggestions";
 import {
   mdAdapter,
   pdfDestination,
@@ -245,6 +246,8 @@ export default class TinymistPlugin extends Plugin {
     registerNoteControls(this);
     const restoreExportRedirect = installExportRedirect(this);
     if (restoreExportRedirect) this.register(restoreExportRedirect);
+    const restorePropertySuggestions = installPropertySuggestions(this.app, () => this.propertySuggestionKit());
+    if (restorePropertySuggestions) this.register(restorePropertySuggestions);
 
     this.noteHolder = new NoteHolder({
       registry: this.sources,
@@ -977,6 +980,12 @@ export default class TinymistPlugin extends Plugin {
     return defaultTemplate === ""
       ? { ready: true, kit: null }
       : { ready: true, kit: { templates: {}, defaultTemplate } };
+  }
+
+  private propertySuggestionKit(): PropertySuggestionKit | null {
+    const kit = this.kitOrNull();
+    if (!kit || kit.state.kind !== "ready") return null;
+    return { manifest: kit.state.manifest, defaultTemplate: this.settings.defaultTemplate };
   }
 
   private scheduleKitReload(): void {
