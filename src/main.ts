@@ -48,6 +48,7 @@ import {
   type Position,
 } from "./sources";
 import { registerNoteControls } from "./integrations/noteControls";
+import { NoteSettingsModal } from "./integrations/noteSettingsModal";
 import { editorDiagnostics } from "./underlines/editorDiagnostics";
 import { NoteHolder } from "./underlines/noteHolder";
 import {
@@ -240,6 +241,26 @@ export default class TinymistPlugin extends Plugin {
         if (!cm || !this.settings.yoloTabCompletion) return false;
         if (!checking && !this.yolo.triggerNow(cm)) {
           new Notice(`Tinymist: no AI completion here (${this.yolo.describe()}).`);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "edit-note-settings",
+      name: "Edit Typst note settings",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const file = view?.file;
+        const frontmatter = file ? this.app.metadataCache.getCache(file.path)?.frontmatter : null;
+        if (!file || frontmatter?.typst !== true) return false;
+        if (!checking) {
+          new NoteSettingsModal(
+            this.app,
+            file,
+            { state: this.kit.state, defaultTemplate: this.settings.defaultTemplate },
+            frontmatter as Record<string, unknown>,
+          ).open();
         }
         return true;
       },

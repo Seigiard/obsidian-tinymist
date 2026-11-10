@@ -1,4 +1,5 @@
 import { patchMethod } from "./exportRedirect";
+import { selectedTemplate } from "./noteSettings";
 import type { ParsedManifest, TemplateParam } from "../kit/manifest";
 
 export interface PropertySuggestionKit {
@@ -55,8 +56,8 @@ export function installPropertySuggestions(
         const result: Record<string, PropertyEntry> = {};
         if (typstNote && readyKit) {
           addProperty(result, native, "typst-template", "text");
-          const template = selectedTemplate(frontmatter, readyKit);
-          if (template) {
+          const template = selectedTemplate(frontmatter, readyKit.defaultTemplate);
+          if (Object.prototype.hasOwnProperty.call(readyKit.manifest.templates, template)) {
             for (const [name, parameter] of Object.entries(readyKit.manifest.params[template] ?? {})) {
               addProperty(result, native, `typst-${name.toLowerCase()}`, widgetForParam(parameter), `typst-${name}`);
             }
@@ -87,8 +88,10 @@ export function installPropertySuggestions(
         const readyKit = kit();
         if (frontmatter?.typst !== true || !readyKit) return original.apply(this, args);
         if (lowerName === "typst-template") return "text";
-        const template = selectedTemplate(frontmatter, readyKit);
-        if (!template || !lowerName.startsWith("typst-")) return original.apply(this, args);
+        const template = selectedTemplate(frontmatter, readyKit.defaultTemplate);
+        if (!Object.prototype.hasOwnProperty.call(readyKit.manifest.templates, template) || !lowerName.startsWith("typst-")) {
+          return original.apply(this, args);
+        }
         const parameterName = lowerName.slice("typst-".length);
         const parameter = Object.entries(readyKit.manifest.params[template] ?? {})
           .find(([candidate]) => candidate.toLowerCase() === parameterName)?.[1];
@@ -108,8 +111,10 @@ export function installPropertySuggestions(
         if (frontmatter?.typst !== true || !readyKit) return original.apply(this, args);
         const lowerName = name.toLowerCase();
         if (lowerName === "typst-template") return Object.keys(readyKit.manifest.templates);
-        const template = selectedTemplate(frontmatter, readyKit);
-        if (!template || !lowerName.startsWith("typst-")) return original.apply(this, args);
+        const template = selectedTemplate(frontmatter, readyKit.defaultTemplate);
+        if (!Object.prototype.hasOwnProperty.call(readyKit.manifest.templates, template) || !lowerName.startsWith("typst-")) {
+          return original.apply(this, args);
+        }
         const parameterName = lowerName.slice("typst-".length);
         const parameter = Object.entries(readyKit.manifest.params[template] ?? {})
           .find(([candidate]) => candidate.toLowerCase() === parameterName)?.[1];
@@ -135,15 +140,6 @@ function hasPropertyNameFocus(): boolean {
   const scope = globalThis as typeof globalThis & { activeDocument?: { activeElement?: { closest?: (selector: string) => unknown } | null } };
   const active = (scope.activeDocument ?? scope.document)?.activeElement;
   return typeof active?.closest === "function" && active.closest(".metadata-property-key") !== null;
-}
-
-function selectedTemplate(frontmatter: Record<string, unknown>, kit: PropertySuggestionKit): string | null {
-  const explicit = frontmatter["typst-template"];
-  const candidate = typeof explicit === "string" && explicit.trim() !== "" ? explicit : kit.defaultTemplate;
-  if (typeof candidate !== "string") return null;
-  const id = candidate.trim();
-  if (id === "" || !Object.prototype.hasOwnProperty.call(kit.manifest.templates, id)) return null;
-  return id;
 }
 
 function addProperty(
