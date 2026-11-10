@@ -127,7 +127,7 @@ uses the saved paths. No compiler restart or render-cache invalidation happens f
 
 ## Kit manifests
 
-Set **Kit manifest** to a vault path and **Default template** to a template id. The manifest supplies the Markdown templates and additional font paths. Those manifest font paths are added to the list sent to Tinymist without changing the **Font paths** setting. Notes stay blocked while a configured kit is loading or has failed.
+Set **Kit manifest** to a vault path and **Default template** to a template id. The manifest supplies the Markdown templates, their parameters, and additional font paths. A template's `params` map uses entries such as `columns: { type: "int" }` or `theme: { type: "enum", values: ["ink", "forest"] }`; supported types are `str`, `int`, `float`, `bool`, `enum`, and `array`. These parameters drive the Note properties suggestions. Those manifest font paths are added to the list sent to Tinymist without changing the **Font paths** setting. Notes stay blocked while a configured kit is loading or has failed.
 
 ## Markdown / Typst notes
 
@@ -153,9 +153,17 @@ The frontmatter drives the conversion. Only properties whose name starts with
   id is fixed. Without a kit the note compiles with a pass-through template
   that accepts and ignores every argument.
 - A repeated property, an empty value, a multi-line value (a `|` or `>` block,
-  an indented continuation, a `- ` list) or a name that is not an identifier
-  is a warning on that line; the property is dropped and the rest of the note
-  compiles.
+  an indented continuation, or a `- ` list for `typst-template`) or a name that
+  is not an identifier is a warning on that line; the property is dropped and
+  the rest of the note compiles.
+- For other `typst-<name>` properties, an empty value followed by indented or
+  column-zero `- item` lines becomes the same array as the flow form `[a, b]`.
+  Empty items and block-scalar items are malformed-list warnings.
+
+When a kit is ready, the Note properties panel suggests `typst-template`, the
+selected template's `typst-<name>` parameters, and their manifest values. It
+also uses matching fields for numbers, booleans, and arrays. Without a ready
+kit, it only adds the `typst` flag suggestion.
 
 ```yaml
 ---

@@ -4,7 +4,16 @@ import { LspClient } from "../lsp/client";
 export interface ParsedManifest {
   templates: Record<string, string>;
   fontPaths: string[];
+  params: Record<string, Record<string, TemplateParam>>;
 }
+
+export type TemplateParam =
+  | { type: "str" }
+  | { type: "int" }
+  | { type: "float" }
+  | { type: "bool" }
+  | { type: "enum"; values: string[] }
+  | { type: "array" };
 
 const activeClients = new Set<LspClient>();
 
@@ -22,6 +31,7 @@ export function parseManifest(
   }
 
   const templates: Record<string, string> = {};
+  const params: Record<string, Record<string, TemplateParam>> = {};
   for (const template of value.templates) {
     if (!isRecord(template) || typeof template.id !== "string" || typeof template.path !== "string") {
       return { error: "Manifest template must have string id and path" };
@@ -30,6 +40,7 @@ export function parseManifest(
       return { error: `Manifest template id is duplicated: ${template.id}` };
     }
     templates[template.id] = `/${posix.join(manifestVaultDir.replaceAll("\\", "/"), template.path)}`;
+    params[template.id] = parseTemplateParams(template.params);
   }
 
   const rawFontPaths = value["font-paths"];
@@ -39,7 +50,7 @@ export function parseManifest(
   const fontPaths = (rawFontPaths as string[] | undefined ?? []).map((path) =>
     join(vaultBase, manifestVaultDir, path),
   );
-  return { templates, fontPaths };
+  return { templates, fontPaths, params };
 }
 
 /** Read a manifest through an isolated Tinymist client without writing an export. */
@@ -76,4 +87,27 @@ export function stopManifestReads(): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseTemplateParams(value: unknown): Record<string, TemplateParam> {
+  if (!isRecord(value)) return {};
+  const params: Record<string, TemplateParam> = {};
+  for (const [name, declaration] of Object.entries(value)) {
+    if (!isRecord(declaration) || typeof declaration.type !== "string") continue;
+    switch (declaration.type) {
+      case "str":
+      case "int":
+      case "float":
+      case "bool":
+      case "array":
+        params[name] = { type: declaration.type };
+        break;
+      case "enum":
+        if (Array.isArray(declaration.values) && declaration.values.every((item) => typeof item === "string")) {
+          params[name] = { type: "enum", values: declaration.values };
+        }
+        break;
+    }
+  }
+  return params;
 }
