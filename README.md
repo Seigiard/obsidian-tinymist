@@ -168,14 +168,14 @@ kit, it only adds the `typst` flag suggestion.
 ```yaml
 ---
 typst: true
-typst-template: reference
+typst-template: default
 typst-theme: forest
 typst-columns: 2
 ---
 ```
 
 compiles as `#show: template.with(theme: "forest", columns: 2)` with the kit's
-`reference` template imported. The kit manifest lists the templates and the
+`default` template imported. The kit manifest lists the templates and the
 parameters each one accepts.
 
 Frontmatter problems appear in the preview's problems list and as a banner above
