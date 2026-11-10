@@ -20,7 +20,6 @@ import type { LspClient, LspCompletionContext, LspPosition } from "../lsp/client
 import type { Position, TypstSource } from "../sources/typst";
 
 export interface NoteCompletionSession {
-  readonly entry: string;
   toEntry(position: Position): Position;
   toSource(position: Position): Position;
   refresh?(): Promise<void>;
@@ -48,8 +47,6 @@ export function noteCompletionSource(host: NoteCompletionHost): CompletionSource
     },
   };
   const source = lspCompletionSource(backend, {
-    activate: (_context, info) => info.trigger !== null || info.word.length >= 2,
-    validFor: () => /^[#A-Za-z0-9_-]*$/,
     augment: (_item, _option, edit) => !/[\r\n]/.test(edit.text),
   });
 
@@ -152,9 +149,6 @@ export class NoteSessions {
         return null;
       }
       const session: NoteCompletionSession = {
-        get entry(): string {
-          return source!.entry;
-        },
         toEntry: (position) => source!.toEntry(position),
         toSource: (position) => source!.toSource(position),
         refresh: source.refresh ? () => source!.refresh!() : undefined,
@@ -173,6 +167,21 @@ export class NoteSessions {
       });
       this.active = active;
       return session;
+    } finally {
+      finish();
+    }
+  }
+
+  async retain(vaultPath: string | null): Promise<void> {
+    let finish!: () => void;
+    const previous = this.operation;
+    this.operation = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    await previous;
+    try {
+      if (this.disposed) return;
+      if (!vaultPath || this.active?.vaultPath !== vaultPath) this.closeActive();
     } finally {
       finish();
     }

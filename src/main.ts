@@ -289,10 +289,19 @@ export default class TinymistPlugin extends Plugin {
       session: (path) => this.noteSessions?.session(path) ?? Promise.resolve(null),
       triggerCharacters: () => this.lsp?.completionTriggerCharacters() ?? [],
     }));
+    const retainNoteSession = (): void => {
+      const sessions = this.noteSessions;
+      if (!sessions) return;
+      void sessions.retain(this.app.workspace.getActiveFile()?.path ?? null).catch((error: unknown) => {
+        console.error("[tinymist] note completion session retention failed:", error);
+      });
+    };
     this.registerEvent(this.app.workspace.on("file-open", () => {
+      retainNoteSession();
       this.refreshNoteHolder();
     }));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      retainNoteSession();
       this.refreshNoteHolder();
     }));
     const metadataCache = (this.app as unknown as {

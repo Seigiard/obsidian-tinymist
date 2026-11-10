@@ -34,7 +34,6 @@ function sessionFor(doc: string, response: unknown | (() => Promise<unknown>)) {
   const conversion = convert(doc, null);
   const calls: CompletionCall[] = [];
   const session: NoteCompletionSession = {
-    entry: "/vault/.typst-cache/notes/Note.md.typ",
     toEntry: (position) => ({ line: position.line, character: conversion.toTyp(position.line, position.character) }),
     toSource: (position) => ({ line: position.line, character: conversion.toMd(position.line, position.character) }),
     completion: async (position, context) => {
@@ -402,6 +401,36 @@ test("additional edits outside the /typst line are dropped while same-line edits
   }
 });
 
+test("a second adjacent hash requests completions at its current generated position", async () => {
+  // #given
+  const doc = "---\ntypst: true\n---\n/typst #cal";
+  const fixture = sessionFor(doc, [{ label: "callout" }]);
+  const view = new EditorView({
+    state: EditorState.create({
+      doc,
+      selection: { anchor: doc.indexOf("#") + 1 },
+      extensions: [noteCompletionExtension(hostFor(fixture.session))],
+    }),
+    parent: document.body,
+  });
+
+  // #when
+  try {
+    startCompletion(view);
+    await settle(view);
+    type(view, "#");
+    await settle(view);
+
+    // #then
+    assert.deepEqual(fixture.calls.map((call) => call.position), [
+      { line: 3, character: 2 },
+      { line: 3, character: 3 },
+    ]);
+  } finally {
+    view.destroy();
+  }
+});
+
 interface TrackedSource {
   source: TypstSource;
   end(): void;
@@ -513,6 +542,60 @@ test("disposing a held note session closes and releases its source", async () =>
     "close /vault/.typst-cache/notes/Note.md.typ",
     "release /vault/.typst-cache/notes/Note.md.typ",
   ]);
+});
+
+test("retaining another note after a pending session closes it and later reopens the released note", async () => {
+  // #given
+  const held = trackedSource("/vault/.typst-cache/notes/First.md.typ");
+  let releaseHold!: () => void;
+  const holdStarted = new Promise<void>((resolve) => {
+    releaseHold = resolve;
+  });
+  const holds: string[] = [];
+  const client = { completion: async () => null } as never;
+  const sessions = new NoteSessions({
+    hold: async (path) => {
+      holds.push(path);
+      if (holds.length === 1) await holdStarted;
+      return held.source;
+    },
+    client: () => client,
+  });
+
+  // #when
+  const pending = sessions.session("Notes/First.md");
+  const retainingAnother = sessions.retain("Notes/Second.md");
+  releaseHold();
+  await Promise.all([pending, retainingAnother]);
+  await sessions.session("Notes/First.md");
+  await sessions.retain("Notes/First.md");
+  const beforeDispose = { holds: [...holds], events: [...held.events] };
+  sessions.dispose();
+
+  // #then
+  assert.deepEqual(
+    { beforeDispose, holds, events: held.events },
+    {
+      beforeDispose: {
+        holds: ["Notes/First.md", "Notes/First.md"],
+        events: [
+          "open /vault/.typst-cache/notes/First.md.typ",
+          "close /vault/.typst-cache/notes/First.md.typ",
+          "release /vault/.typst-cache/notes/First.md.typ",
+          "open /vault/.typst-cache/notes/First.md.typ",
+        ],
+      },
+      holds: ["Notes/First.md", "Notes/First.md"],
+      events: [
+        "open /vault/.typst-cache/notes/First.md.typ",
+        "close /vault/.typst-cache/notes/First.md.typ",
+        "release /vault/.typst-cache/notes/First.md.typ",
+        "open /vault/.typst-cache/notes/First.md.typ",
+        "close /vault/.typst-cache/notes/First.md.typ",
+        "release /vault/.typst-cache/notes/First.md.typ",
+      ],
+    },
+  );
 });
 
 test("note sessions reuse a held note and close and release it when switched, ended, or disposed", async () => {
