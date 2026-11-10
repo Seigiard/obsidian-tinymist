@@ -153,6 +153,39 @@ test("a literal /typst line in a fence or comment preserves the native suggester
   }
 });
 
+test("a bare /typst line inside a comment preserves the native suggester", () => {
+  // #given
+  const h = suggestHarness();
+  const restore = installNativeSuggestGuard(h.app, (file) => file?.path === "Notes/Plan.md");
+  const file = { path: "Notes/Plan.md" };
+  const comment = editorIn("---\ntypst: true\n---\n%%\n/typst\n%%", 4, 6);
+  const real = editorIn("---\ntypst: true\n---\n/typst", 3, 6);
+
+  // #when
+  const results = [
+    h.suggest.trigger(comment, file, true),
+    h.suggest.trigger(real, file, true),
+  ];
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        results,
+        calls: h.calls.map((call) => ({ cursor: call.editor.getCursor(), line: call.editor.getLine(call.editor.getCursor().line) })),
+        closes: h.closes,
+      },
+      {
+        results: ["native-result", undefined],
+        calls: [{ cursor: { line: 4, ch: 6 }, line: "/typst" }],
+        closes: [1],
+      },
+    );
+  } finally {
+    restore?.();
+  }
+});
+
 test("a real /typst line after a fenced %% closes the native suggester", () => {
   // #given
   const h = suggestHarness();

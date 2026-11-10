@@ -567,8 +567,8 @@ test("retaining another note after a pending session closes it and later reopens
   const retainingAnother = sessions.retain("Notes/Second.md");
   releaseHold();
   await Promise.all([pending, retainingAnother]);
-  await sessions.session("Notes/First.md");
   await sessions.retain("Notes/First.md");
+  await sessions.session("Notes/First.md");
   const beforeDispose = { holds: [...holds], events: [...held.events] };
   sessions.dispose();
 
@@ -576,6 +576,69 @@ test("retaining another note after a pending session closes it and later reopens
   assert.deepEqual(
     { beforeDispose, holds, events: held.events },
     {
+      beforeDispose: {
+        holds: ["Notes/First.md", "Notes/First.md"],
+        events: [
+          "open /vault/.typst-cache/notes/First.md.typ",
+          "close /vault/.typst-cache/notes/First.md.typ",
+          "release /vault/.typst-cache/notes/First.md.typ",
+          "open /vault/.typst-cache/notes/First.md.typ",
+        ],
+      },
+      holds: ["Notes/First.md", "Notes/First.md"],
+      events: [
+        "open /vault/.typst-cache/notes/First.md.typ",
+        "close /vault/.typst-cache/notes/First.md.typ",
+        "release /vault/.typst-cache/notes/First.md.typ",
+        "open /vault/.typst-cache/notes/First.md.typ",
+        "close /vault/.typst-cache/notes/First.md.typ",
+        "release /vault/.typst-cache/notes/First.md.typ",
+      ],
+    },
+  );
+});
+
+test("completion sessions only reopen the note last retained by the writer", async () => {
+  // #given
+  const held = trackedSource("/vault/.typst-cache/notes/First.md.typ");
+  const holds: string[] = [];
+  const client = { completion: async () => null } as never;
+  const sessions = new NoteSessions({
+    hold: async (path) => {
+      holds.push(path);
+      return held.source;
+    },
+    client: () => client,
+  });
+
+  // #when
+  await sessions.retain("Notes/First.md");
+  const initiallyOpened = await sessions.session("Notes/First.md");
+  await sessions.retain("Notes/Second.md");
+  const afterOtherNote = await sessions.session("Notes/First.md");
+  await sessions.retain(null);
+  const afterNoNote = await sessions.session("Notes/First.md");
+  await sessions.retain("Notes/First.md");
+  const reopened = await sessions.session("Notes/First.md");
+  const beforeDispose = { holds: [...holds], events: [...held.events] };
+  sessions.dispose();
+
+  // #then
+  assert.deepEqual(
+    {
+      initiallyOpened: initiallyOpened !== null,
+      afterOtherNote,
+      afterNoNote,
+      reopened: reopened !== null,
+      beforeDispose,
+      holds,
+      events: held.events,
+    },
+    {
+      initiallyOpened: true,
+      afterOtherNote: null,
+      afterNoNote: null,
+      reopened: true,
       beforeDispose: {
         holds: ["Notes/First.md", "Notes/First.md"],
         events: [
