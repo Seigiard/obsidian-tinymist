@@ -1,8 +1,10 @@
 import { patchMethod } from "./exportRedirect";
+import { convert } from "../markdown/convert";
 
 interface NativeEditor {
   getCursor(): { line: number; ch: number };
   getLine(line: number): string;
+  getValue(): string;
 }
 
 interface NativeFile {
@@ -36,8 +38,15 @@ export function installNativeSuggestGuard(
       const cursor = editor.getCursor();
       const line = editor.getLine(cursor.line);
       if (isTypstNote(file) && cursor.ch >= "/typst".length && line.startsWith("/typst")) {
-        suggest.close();
-        return undefined;
+        const conversion = convert(editor.getValue(), null);
+        const isTypstLine =
+          !conversion.source ||
+          (conversion.toTyp(cursor.line, "/typst".length) === 0 &&
+            (line.length === "/typst".length || conversion.toTyp(cursor.line, line.length) > 0));
+        if (isTypstLine) {
+          suggest.close();
+          return undefined;
+        }
       }
       return original.apply(this, args);
     },
