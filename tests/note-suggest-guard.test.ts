@@ -5,6 +5,7 @@ import { installNativeSuggestGuard } from "../src/integrations/nativeSuggestGuar
 interface FakeEditor {
   getCursor(): { line: number; ch: number };
   getLine(line: number): string;
+  getValue(): string;
 }
 
 interface FakeFile {
@@ -24,9 +25,14 @@ interface FakeSuggest {
 }
 
 function editorAt(line: string, ch: number): FakeEditor {
+  return editorIn(line, 0, ch);
+}
+
+function editorIn(value: string, line: number, ch: number): FakeEditor {
   return {
-    getCursor: () => ({ line: 0, ch }),
-    getLine: (number) => number === 0 ? line : "",
+    getCursor: () => ({ line, ch }),
+    getLine: (number) => value.split("\n")[number] ?? "",
+    getValue: () => value,
   };
 }
 
@@ -107,6 +113,59 @@ test("ordinary, prefix, and non-typst note calls preserve native trigger argumen
         closes: [],
       },
     );
+  } finally {
+    restore?.();
+  }
+});
+
+test("a literal /typst line in a fence or comment preserves the native suggester", () => {
+  // #given
+  const h = suggestHarness();
+  const restore = installNativeSuggestGuard(h.app, (file) => file?.path === "Notes/Plan.md");
+  const file = { path: "Notes/Plan.md" };
+  const editors = [
+    editorIn("---\ntypst: true\n---\n```typ\n/typst #callout\n```", 4, 6),
+    editorIn("---\ntypst: true\n---\n%%\n/typst #callout\n%%", 4, 6),
+  ];
+
+  // #when
+  const results = editors.map((editor) => h.suggest.trigger(editor, file, true));
+
+  // #then
+  try {
+    assert.deepEqual(
+      {
+        results,
+        calls: h.calls.map((call) => ({ cursor: call.editor.getCursor(), line: call.editor.getLine(call.editor.getCursor().line) })),
+        closes: h.closes,
+      },
+      {
+        results: ["native-result", "native-result"],
+        calls: [
+          { cursor: { line: 4, ch: 6 }, line: "/typst #callout" },
+          { cursor: { line: 4, ch: 6 }, line: "/typst #callout" },
+        ],
+        closes: [],
+      },
+    );
+  } finally {
+    restore?.();
+  }
+});
+
+test("a real /typst line after a fenced %% closes the native suggester", () => {
+  // #given
+  const h = suggestHarness();
+  const restore = installNativeSuggestGuard(h.app, (file) => file?.path === "Notes/Plan.md");
+  const editor = editorIn("---\ntypst: true\n---\n```\n%%\n```\n/typst #a", 6, 6);
+  const file = { path: "Notes/Plan.md" };
+
+  // #when
+  const result = h.suggest.trigger(editor, file, true);
+
+  // #then
+  try {
+    assert.deepEqual({ result, calls: h.calls, closes: h.closes }, { result: undefined, calls: [], closes: [1] });
   } finally {
     restore?.();
   }
