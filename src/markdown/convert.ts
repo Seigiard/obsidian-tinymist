@@ -4,6 +4,8 @@ import { convertProperty, findFrontmatterEnd, hasSourceFlag, quoteString, readFr
 import { convertProseLine, type InlineState } from "./inline";
 import { hasForbiddenLineBreak, MappedLineBuilder, sanitizeLine, type LineMap } from "./lineMap";
 
+export { sanitizeLine };
+
 /** The kit templates available to the markdown converter: template id to Typst import path; defaultTemplate is an id, or empty for no import. */
 export interface KitView {
   templates: Record<string, string>;
