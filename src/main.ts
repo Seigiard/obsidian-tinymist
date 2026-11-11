@@ -259,7 +259,6 @@ export default class TinymistPlugin extends Plugin {
             this.app,
             file,
             { state: this.kit.state, defaultTemplate: this.settings.defaultTemplate },
-            frontmatter as Record<string, unknown>,
           ).open();
         }
         return true;

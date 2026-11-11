@@ -34,6 +34,11 @@ type ValueResult = { literal: string } | FailedValueResult;
 
 type TemplateConversion = { kind: "value"; path: string | undefined } | { kind: "problem"; line: number; message: string };
 
+export interface FrontmatterValue {
+  value: string;
+  quoted: boolean;
+}
+
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 const INVALID_PROPERTY_NAMES = new Set([
@@ -134,6 +139,25 @@ export function selectTemplate(entries: readonly FrontmatterEntry[], kit: KitVie
     return { kind: "problem", line: 0, message: `Unknown default Typst template ${defaultTemplate}` };
   }
   return { kind: "value", path };
+}
+
+export function readFrontmatterValue(value: string): FrontmatterValue {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && isCompleteQuotedScalar(trimmed)) {
+    const decoded = decodeDoubleQuoted(trimmed.slice(1, -1));
+    return { value: "escape" in decoded ? trimmed : decoded.value, quoted: true };
+  }
+  if (trimmed.startsWith("'") && isCompleteQuotedScalar(trimmed)) {
+    return { value: trimmed.slice(1, -1).replaceAll("''", "'"), quoted: true };
+  }
+  return { value: trimmed, quoted: false };
+}
+
+export function unquoteTemplateId(value: string): string {
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 export function quoteString(value: string): string {
@@ -253,13 +277,6 @@ function readSequence(lines: readonly string[], line: number, end: number): stri
     break;
   }
   return items.length === 0 ? undefined : items;
-}
-
-function unquoteTemplateId(value: string): string {
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-    return value.slice(1, -1);
-  }
-  return value;
 }
 
 function propertyFailureMessage(name: string, result: FailedValueResult): string {
