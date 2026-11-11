@@ -7,6 +7,7 @@ const MANIFEST: ParsedManifest = {
   templates: {
     reference: "/kit/md/reference.typ",
     letter: "/kit/md/letter.typ",
+    "2024": "/kit/md/2024.typ",
   },
   fontPaths: [],
   params: {
@@ -21,6 +22,9 @@ const MANIFEST: ParsedManifest = {
     letter: {
       recipient: { type: "str" },
     },
+    "2024": {
+      edition: { type: "str" },
+    },
   },
 };
 
@@ -28,12 +32,16 @@ function readyKit(defaultTemplate = "reference"): { state: { kind: "ready"; mani
   return { state: { kind: "ready", manifest: MANIFEST }, defaultTemplate };
 }
 
+function note(...properties: string[]): string {
+  return ["---", "typst: true", ...properties, "---", "Body", ""].join("\n");
+}
+
 test("reports why a kit with no manifest cannot show note settings", () => {
   // #given
   const kit = { state: { kind: "none" } as const, defaultTemplate: "reference" };
 
   // #when
-  const form = noteSettingsForm(kit, { typst: true });
+  const form = noteSettingsForm(kit, note());
 
   // #then
   assert.deepEqual(form, {
@@ -47,7 +55,7 @@ test("reports when a kit manifest is still loading", () => {
   const kit = { state: { kind: "loading", previous: MANIFEST } as const, defaultTemplate: "reference" };
 
   // #when
-  const form = noteSettingsForm(kit, { typst: true });
+  const form = noteSettingsForm(kit, note());
 
   // #then
   assert.deepEqual(form, {
@@ -61,7 +69,7 @@ test("reports the kit manifest load failure", () => {
   const kit = { state: { kind: "failed", reason: "manifest.yaml is invalid" } as const, defaultTemplate: "reference" };
 
   // #when
-  const form = noteSettingsForm(kit, { typst: true });
+  const form = noteSettingsForm(kit, note());
 
   // #then
   assert.deepEqual(form, {
@@ -70,60 +78,351 @@ test("reports the kit manifest load failure", () => {
   });
 });
 
-test("lists the explicit template parameters in manifest order with their frontmatter values", () => {
+test("lists explicit template parameters in manifest order with text values and absent values", () => {
   // #given
-  const frontmatter = {
-    typst: true,
-    "typst-template": "reference",
-    "typst-title": "Field notes",
-    "typst-columns": 2,
-    "typst-draft": false,
-  };
+  const text = note(
+    "typst-template: reference",
+    "typst-title: Field notes",
+    "typst-columns: 2",
+    "typst-draft: false",
+  );
 
   // #when
-  const form = noteSettingsForm(readyKit(), frontmatter);
+  const form = noteSettingsForm(readyKit(), text);
 
   // #then
   assert.deepEqual(form, {
     kind: "form",
-    template: { current: "reference", options: ["reference", "letter"] },
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
     params: [
       { name: "title", param: { type: "str" }, value: "Field notes" },
-      { name: "columns", param: { type: "int" }, value: 2 },
+      { name: "columns", param: { type: "int" }, value: "2" },
       { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
       { name: "ratio", param: { type: "float" }, value: undefined },
-      { name: "draft", param: { type: "bool" }, value: false },
+      { name: "draft", param: { type: "bool" }, value: "false" },
       { name: "authors", param: { type: "array" }, value: undefined },
     ],
   });
 });
 
-test("uses the default template when frontmatter has no string template", () => {
+test("reads CRLF frontmatter with the same template and values as LF frontmatter", () => {
   // #given
-  const frontmatter = { typst: true, "typst-template": false, "typst-recipient": "Ada" };
+  const text = note("typst-template: letter", "typst-recipient: Ada").replaceAll("\n", "\r\n");
 
   // #when
-  const form = noteSettingsForm(readyKit("letter"), frontmatter);
+  const form = noteSettingsForm(readyKit(), text);
 
   // #then
   assert.deepEqual(form, {
     kind: "form",
-    template: { current: "letter", options: ["reference", "letter"] },
+    template: { current: "letter", options: ["reference", "letter", "2024"], explicit: true },
     params: [{ name: "recipient", param: { type: "str" }, value: "Ada" }],
   });
 });
 
-test("keeps an empty resolved template as the default selection", () => {
+test("reads frontmatter after a leading BOM", () => {
   // #given
-  const frontmatter = { typst: true };
+  const text = `\uFEFF${note("typst-template: letter", "typst-recipient: Ada")}`;
 
   // #when
-  const form = noteSettingsForm(readyKit(""), frontmatter);
+  const form = noteSettingsForm(readyKit(), text);
 
   // #then
   assert.deepEqual(form, {
     kind: "form",
-    template: { current: "", options: ["reference", "letter"] },
+    template: { current: "letter", options: ["reference", "letter", "2024"], explicit: true },
+    params: [{ name: "recipient", param: { type: "str" }, value: "Ada" }],
+  });
+});
+
+test("trims an unquoted explicit template id", () => {
+  // #given
+  const text = note("typst-template:   letter  ");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "letter", options: ["reference", "letter", "2024"], explicit: true },
+    params: [{ name: "recipient", param: { type: "str" }, value: undefined }],
+  });
+});
+
+test("preserves padding inside a quoted template id and reports the converter problem", () => {
+  // #given
+  const text = note('typst-template: " letter "');
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: {
+      current: " letter ",
+      options: ["reference", "letter", "2024"],
+      explicit: true,
+      problem: "Unknown Typst template  letter ",
+    },
+    params: [],
+  });
+});
+
+test("selects a numeric-looking template id from its YAML text", () => {
+  // #given
+  const text = note("typst-template: 2024");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "2024", options: ["reference", "letter", "2024"], explicit: true },
+    params: [{ name: "edition", param: { type: "str" }, value: undefined }],
+  });
+});
+
+test("reports a boolean-looking template id as the converter reads it", () => {
+  // #given
+  const text = note("typst-template: true");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: {
+      current: "true",
+      options: ["reference", "letter", "2024"],
+      explicit: true,
+      problem: "Unknown Typst template true",
+    },
+    params: [],
+  });
+});
+
+test("uses the default template but keeps the converter problem for an empty template property", () => {
+  // #given
+  const text = note("typst-template:");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: {
+      current: "reference",
+      options: ["reference", "letter", "2024"],
+      explicit: false,
+      problem: "Property template has no value",
+    },
+    params: [
+      { name: "title", param: { type: "str" }, value: undefined },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: undefined },
+    ],
+  });
+});
+
+test("reports an unknown default template when an empty template property falls back to it", () => {
+  // #given
+  const text = note("typst-template:");
+
+  // #when
+  const form = noteSettingsForm(readyKit("missing"), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: {
+      current: "missing",
+      options: ["reference", "letter", "2024"],
+      explicit: false,
+      problem: "Unknown default Typst template missing",
+    },
+    params: [],
+  });
+});
+
+test("keeps the form empty when both the note and settings omit a template", () => {
+  // #given
+  const text = note();
+
+  // #when
+  const form = noteSettingsForm(readyKit(""), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "", options: ["reference", "letter", "2024"], explicit: false },
+    params: [],
+  });
+});
+
+test("keeps an empty parameter value and reports its converter problem", () => {
+  // #given
+  const text = note("typst-template: reference", "typst-title:");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
+    params: [
+      { name: "title", param: { type: "str" }, value: "", problem: "Property title has no value" },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: undefined },
+    ],
+  });
+});
+
+test("keeps a null-like parameter as the converter's literal value text", () => {
+  // #given
+  const text = note("typst-template: reference", "typst-title: ~");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
+    params: [
+      { name: "title", param: { type: "str" }, value: "~" },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: undefined },
+    ],
+  });
+});
+
+test("decodes a quoted enum value and records that it remains a string", () => {
+  // #given
+  const text = note("typst-template: reference", 'typst-theme: "forest"');
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
+    params: [
+      { name: "title", param: { type: "str" }, value: undefined },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: "forest", quoted: true },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: undefined },
+    ],
+  });
+});
+
+test("decodes double-quoted escapes and records the quoted string type", () => {
+  // #given
+  const text = note("typst-template: letter", 'typst-recipient: "say \\"hi\\"\\nnext"');
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "letter", options: ["reference", "letter", "2024"], explicit: true },
+    params: [{ name: "recipient", param: { type: "str" }, value: 'say "hi"\nnext', quoted: true }],
+  });
+});
+
+test("decodes doubled apostrophes in a single-quoted value", () => {
+  // #given
+  const text = note("typst-template: letter", "typst-recipient: 'It''s here'");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "letter", options: ["reference", "letter", "2024"], explicit: true },
+    params: [{ name: "recipient", param: { type: "str" }, value: "It's here", quoted: true }],
+  });
+});
+
+test("keeps a block sequence as the array parameter's current value", () => {
+  // #given
+  const text = note("typst-template: reference", "typst-authors:", "- Alice", "- Bob");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
+    params: [
+      { name: "title", param: { type: "str" }, value: undefined },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: ["Alice", "Bob"] },
+    ],
+  });
+});
+
+test("decodes every quoted block-sequence item as the array parameter's current value", () => {
+  // #given
+  const text = note("typst-template: reference", "typst-authors:", '- "Alice"', "- 'O''Brien'");
+
+  // #when
+  const form = noteSettingsForm(readyKit(), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: true },
+    params: [
+      { name: "title", param: { type: "str" }, value: undefined },
+      { name: "columns", param: { type: "int" }, value: undefined },
+      { name: "theme", param: { type: "enum", values: ["ink", "forest"] }, value: undefined },
+      { name: "ratio", param: { type: "float" }, value: undefined },
+      { name: "draft", param: { type: "bool" }, value: undefined },
+      { name: "authors", param: { type: "array" }, value: ["Alice", "O'Brien"] },
+    ],
+  });
+});
+
+test("reports an unknown trimmed default template on the converter's line zero", () => {
+  // #given
+  const text = note();
+
+  // #when
+  const form = noteSettingsForm(readyKit("  missing  "), text);
+
+  // #then
+  assert.deepEqual(form, {
+    kind: "form",
+    template: {
+      current: "missing",
+      options: ["reference", "letter", "2024"],
+      explicit: false,
+      problem: "Unknown default Typst template missing",
+    },
     params: [],
   });
 });
@@ -136,74 +435,13 @@ test("keeps a valid template form empty when the manifest declares no parameters
   };
 
   // #when
-  const form = noteSettingsForm(kit, { typst: true });
+  const form = noteSettingsForm(kit, note());
 
   // #then
   assert.deepEqual(form, {
     kind: "form",
-    template: { current: "reference", options: ["reference", "letter"] },
+    template: { current: "reference", options: ["reference", "letter", "2024"], explicit: false },
     params: [],
-  });
-});
-
-test("uses the trimmed default template when the explicit template is empty", () => {
-  // #given
-  const frontmatter = { typst: true, "typst-template": "" };
-
-  // #when
-  const form = noteSettingsForm(readyKit("  letter  "), frontmatter);
-
-  // #then
-  assert.deepEqual(form, {
-    kind: "form",
-    template: { current: "letter", options: ["reference", "letter"] },
-    params: [{ name: "recipient", param: { type: "str" }, value: undefined }],
-  });
-});
-
-test("uses a trimmed explicit template id", () => {
-  // #given
-  const frontmatter = { typst: true, "typst-template": "  letter  " };
-
-  // #when
-  const form = noteSettingsForm(readyKit(), frontmatter);
-
-  // #then
-  assert.deepEqual(form, {
-    kind: "form",
-    template: { current: "letter", options: ["reference", "letter"] },
-    params: [{ name: "recipient", param: { type: "str" }, value: undefined }],
-  });
-});
-
-test("uses a trimmed default template when frontmatter has no string template", () => {
-  // #given
-  const frontmatter = { typst: true, "typst-template": false };
-
-  // #when
-  const form = noteSettingsForm(readyKit("  letter  "), frontmatter);
-
-  // #then
-  assert.deepEqual(form, {
-    kind: "form",
-    template: { current: "letter", options: ["reference", "letter"] },
-    params: [{ name: "recipient", param: { type: "str" }, value: undefined }],
-  });
-});
-
-test("retains an unknown selected template without inventing parameters", () => {
-  // #given
-  const frontmatter = { typst: true, "typst-template": "missing" };
-
-  // #when
-  const form = noteSettingsForm(readyKit(), frontmatter);
-
-  // #then
-  assert.deepEqual(form, {
-    kind: "form",
-    template: { current: "missing", options: ["reference", "letter"] },
-    params: [],
-    unknownTemplate: true,
   });
 });
 

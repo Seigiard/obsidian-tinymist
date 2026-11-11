@@ -189,6 +189,7 @@ export class Menu {
 /** An in-memory vault; `writes` records every modify in order. */
 export class TestVault {
   files = new Map<string, string>();
+  reads: string[] = [];
   binaryFiles = new Map<string, Uint8Array>();
   writes: { path: string; data: string }[] = [];
   binaryWrites: { path: string; data: Uint8Array }[] = [];
@@ -206,6 +207,7 @@ export class TestVault {
   }
 
   async read(file: TFile): Promise<string> {
+    this.reads.push(file.path);
     return this.files.get(file.path) ?? "";
   }
   async modify(file: TFile, data: string): Promise<void> {
@@ -316,6 +318,13 @@ export class TestFileManager {
 
   constructor(private vault: TestVault) {}
 
+  async processFrontMatter(file: TFile, update: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+    const source = this.vault.files.get(file.path) ?? "";
+    const parsed = parseFrontmatterDocument(source);
+    update(parsed.frontmatter);
+    await this.vault.modify(file, serializeFrontmatterDocument(parsed, parsed.frontmatter));
+  }
+
   async renameFile(file: TFile, newPath: string): Promise<void> {
     const oldPath = file.path;
     this.renames.push({ from: oldPath, to: newPath });
@@ -336,6 +345,75 @@ export class TestFileManager {
     }
     file.path = newPath;
   }
+}
+
+interface ParsedFrontmatterDocument {
+  before: string[];
+  after: string[];
+  frontmatter: Record<string, unknown>;
+  propertyOrder: string[];
+  trailingNewline: boolean;
+}
+
+function parseFrontmatterDocument(source: string): ParsedFrontmatterDocument {
+  const trailingNewline = source.endsWith("\n");
+  const lines = source.split("\n");
+  const end = lines[0] === "---" ? lines.indexOf("---", 1) : -1;
+  if (end < 0) {
+    return { before: ["---"], after: ["---", ...lines], frontmatter: {}, propertyOrder: [], trailingNewline };
+  }
+
+  const frontmatter: Record<string, unknown> = {};
+  const propertyOrder: string[] = [];
+  for (const line of lines.slice(1, end)) {
+    const match = /^([^:]+):(?:[ \t]*(.*))?$/u.exec(line);
+    if (!match) continue;
+    const name = match[1].trim();
+    propertyOrder.push(name);
+    frontmatter[name] = parseFrontmatterScalar(match[2] ?? "");
+  }
+  return {
+    before: ["---"],
+    after: lines.slice(end),
+    frontmatter,
+    propertyOrder,
+    trailingNewline,
+  };
+}
+
+function parseFrontmatterScalar(raw: string): unknown {
+  const value = raw.trim();
+  if (value === "" || value === "null" || value === "~") return null;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/u.test(value)) return Number(value);
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function serializeFrontmatterDocument(
+  document: ParsedFrontmatterDocument,
+  frontmatter: Record<string, unknown>,
+): string {
+  const names = [...document.propertyOrder];
+  for (const name of Object.keys(frontmatter)) {
+    if (!names.includes(name)) names.push(name);
+  }
+  const properties = names
+    .filter((name, index) => names.indexOf(name) === index && Object.prototype.hasOwnProperty.call(frontmatter, name))
+    .map((name) => `${name}: ${serializeFrontmatterScalar(frontmatter[name])}`.trimEnd());
+  const lines = [...document.before, ...properties, ...document.after];
+  const text = lines.join("\n");
+  return document.trailingNewline && !text.endsWith("\n") ? `${text}\n` : text;
+}
+
+function serializeFrontmatterScalar(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value === "" ? '""' : value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }
 
 export class TestWorkspace {
@@ -565,15 +643,30 @@ export class Plugin extends Component {
 }
 
 export class Modal extends Component {
+  modalEl = document.createElement("div");
   titleEl = document.createElement("div");
   contentEl = document.createElement("div");
 
   constructor(public app: TestApp) {
     super();
+    this.modalEl.className = "modal";
+    this.titleEl.className = "modal-title";
+    this.contentEl.className = "modal-content";
+    this.modalEl.append(this.titleEl, this.contentEl);
   }
 
-  open(): void {}
-  close(): void {}
+  onOpen(): void | Promise<void> {}
+  onClose(): void | Promise<void> {}
+
+  open(): void {
+    document.body.appendChild(this.modalEl);
+    void this.onOpen();
+  }
+
+  close(): void {
+    void this.onClose();
+    this.modalEl.remove();
+  }
 }
 
 export class PluginSettingTab extends Component {
@@ -588,13 +681,106 @@ export class PluginSettingTab extends Component {
 }
 
 export class Setting {
-  constructor(_containerEl: HTMLElement) {}
-  setName(_name: string): this { return this; }
-  setDesc(_description: string): this { return this; }
+  readonly settingEl = document.createElement("div");
+  readonly nameEl = document.createElement("div");
+  readonly descEl = document.createElement("div");
+  readonly controlEl = document.createElement("div");
+
+  constructor(containerEl: HTMLElement) {
+    this.settingEl.className = "setting-item";
+    const infoEl = document.createElement("div");
+    infoEl.className = "setting-item-info";
+    this.nameEl.className = "setting-item-name";
+    this.descEl.className = "setting-item-description";
+    this.controlEl.className = "setting-item-control";
+    infoEl.append(this.nameEl, this.descEl);
+    this.settingEl.append(infoEl, this.controlEl);
+    containerEl.appendChild(this.settingEl);
+  }
+
+  setName(name: string): this {
+    this.nameEl.textContent = name;
+    return this;
+  }
+
+  setDesc(description: string | DocumentFragment): this {
+    this.descEl.replaceChildren();
+    if (typeof description === "string") this.descEl.textContent = description;
+    else this.descEl.appendChild(description);
+    return this;
+  }
+
   setHeading(): this { return this; }
-  addText(_configure: Callback): this { return this; }
+
+  addText(configure: (component: TextComponent) => void): this {
+    const component = new TextComponent();
+    this.controlEl.appendChild(component.inputEl);
+    configure(component);
+    return this;
+  }
+
   addToggle(_configure: Callback): this { return this; }
-  addDropdown(_configure: Callback): this { return this; }
+
+  addDropdown(configure: (component: DropdownComponent) => void): this {
+    const component = new DropdownComponent();
+    this.controlEl.appendChild(component.selectEl);
+    configure(component);
+    return this;
+  }
+}
+
+class TextComponent {
+  readonly inputEl = document.createElement("input");
+
+  setValue(value: string): this {
+    this.inputEl.value = value;
+    return this;
+  }
+
+  getValue(): string {
+    return this.inputEl.value;
+  }
+
+  setPlaceholder(value: string): this {
+    this.inputEl.placeholder = value;
+    return this;
+  }
+
+  onChange(callback: (value: string) => void): this {
+    this.inputEl.addEventListener("input", () => callback(this.inputEl.value));
+    return this;
+  }
+}
+
+class DropdownComponent {
+  readonly selectEl = document.createElement("select");
+
+  addOption(value: string, label: string): this {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    this.selectEl.appendChild(option);
+    return this;
+  }
+
+  addOptions(options: Record<string, string>): this {
+    for (const [value, label] of Object.entries(options)) this.addOption(value, label);
+    return this;
+  }
+
+  setValue(value: string): this {
+    this.selectEl.value = value;
+    return this;
+  }
+
+  getValue(): string {
+    return this.selectEl.value;
+  }
+
+  onChange(callback: (value: string) => void): this {
+    this.selectEl.addEventListener("change", () => callback(this.selectEl.value));
+    return this;
+  }
 }
 
 export class ItemView extends Component {
