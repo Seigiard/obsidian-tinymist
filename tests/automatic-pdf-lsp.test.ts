@@ -1,5 +1,6 @@
 import "./support/dom";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { rm } from "node:fs/promises";
@@ -92,6 +93,30 @@ test("native PDF export returns in-memory bytes and creates no sibling file", { 
         files: ["chapter.typ"],
       },
     );
+  } finally {
+    lsp.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
+  }
+});
+
+test("native PDF export of an unchanged source is byte-identical across seconds", { skip: !BIN && "tinymist not found", timeout: 30000 }, async () => {
+  // #given
+  const root = mkdtempSync(join(tmpdir(), "tinymist-pdf-repeat-"));
+  const source = join(root, "chapter.typ");
+  writeFileSync(source, "= Repeatable PDF export\n");
+  const lsp = new LspClient(BIN!, root, () => {});
+  const digest = (result: { data?: string } | null | undefined): string | null =>
+    result?.data ? createHash("sha256").update(Buffer.from(result.data, "base64")).digest("hex") : null;
+  try {
+    await lsp.start();
+    const first = digest(await lsp.exportPdf(source));
+
+    // #when
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const second = digest(await lsp.exportPdf(source));
+
+    // #then
+    assert.equal(second, first);
   } finally {
     lsp.stop();
     await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 50 });
