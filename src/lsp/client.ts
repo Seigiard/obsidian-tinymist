@@ -440,11 +440,16 @@ export class LspClient {
     return this.executeCommand("tinymist.exportSvg", [path, opts, { write: false }], timeoutMs);
   }
 
-  /** Decode-only native PDF export. Tinymist receives write:false as its third argument. */
+  /**
+   * Decode-only native PDF export. Tinymist receives write:false as its third argument.
+   * The fixed creation timestamp keeps the bytes a function of the source: otherwise
+   * every export stamps the current time, and a synced vault sees each rebuild on
+   * another machine as a foreign PDF.
+   */
   exportPdf(path: string, timeoutMs = 30000): Promise<ExportPdfResult | null> {
     return this.executeCommand<ExportPdfResult>(
       "tinymist.exportPdf",
-      [path, {}, { write: false }],
+      [path, { creationTimestamp: "0" }, { write: false }],
       timeoutMs,
     );
   }
