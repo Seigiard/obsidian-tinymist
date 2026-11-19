@@ -31,7 +31,7 @@ Tinymist's real compiler and incremental preview.
 | Live reading mode | Rendered math and text constructs, with source revealed when you edit them. |
 | Math and paper hovers | Project-aware formula rendering and previews of content calls such as figures and theorem boxes. |
 | Incremental preview | Tinymist's SVG preview in a side pane, including unsaved changes. |
-| Automatic sibling PDF | Opt in per `.typ` file from its source menu or the open preview header to build a same-stem PDF beside it after saved changes, with confirmation before replacing existing or externally changed bytes. |
+| Automatic sibling PDF | Opt in per `.typ` file from its source menu or the open preview header to build a same-stem PDF beside it after saved changes, with confirmation before replacing existing or externally changed bytes. The PDF carries a fixed creation date, so an unchanged source builds the same bytes, and a sibling that already matches the fresh build is kept without a prompt or a write, as in a vault synced between machines. |
 | Source navigation | Move the editor cursor to scroll the preview; click the preview to return to the corresponding source. |
 | Multi-file books | Chapters can use the book main's imports and a project-owned preview template. |
 | Optional YOLO bridge | AI ghost text in `.typ` files using your separately configured YOLO plugin; off by default. |

@@ -681,6 +681,30 @@ export class AutomaticPdfController {
       job.outcome = "failed";
       return;
     }
+
+    // A foreign PDF that equals the fresh export is this source's output built
+    // elsewhere, such as a synced vault on another machine: adopt it instead of
+    // asking. A remembered decline still wins, and agent builds stay prompt-free
+    // without exporting first.
+    let bytes: Uint8Array | null = null;
+    if (job.interactive && this.wouldAskToReplace(job, entry, initial)) {
+      bytes = await this.exportHeld(job, entry, source, root);
+      if (!bytes) return;
+      const reread = await this.readDestination(destinationPath);
+      if (!this.isCurrent(job, entry)) {
+        this.markNotCurrent(job, entry);
+        return;
+      }
+      if (!reread.error && reread.hash === hashBytes(bytes)) {
+        this.recordOwnership(entry, destinationPath, reread.hash);
+        entry.status = "current";
+        entry.errorNotified = false;
+        job.outcome = "published";
+        await this.persist();
+        return;
+      }
+    }
+
     const authorized = await this.authorizeInitial(job, entry, initial);
     if (!authorized) {
       if (!this.isCurrent(job, entry)) this.markNotCurrent(job, entry);
@@ -692,27 +716,8 @@ export class AutomaticPdfController {
       return;
     }
 
-    let bytes: Uint8Array;
-    try {
-      bytes = await this.getExporter().exportPdf({
-        entryPath: source.entry,
-        root,
-        sourceInput: source.inputs,
-        open: (client) => source.open(client),
-      });
-    } catch (error) {
-      if (!this.isCurrent(job, entry)) {
-        this.markNotCurrent(job, entry);
-        return;
-      }
-      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${source.describe(error)}`);
-      job.outcome = "failed";
-      return;
-    }
-    if (!this.isCurrent(job, entry)) {
-      this.markNotCurrent(job, entry);
-      return;
-    }
+    bytes ??= await this.exportHeld(job, entry, source, root);
+    if (!bytes) return;
 
     try {
       await source.refresh?.();
@@ -740,9 +745,16 @@ export class AutomaticPdfController {
     }
 
     try {
+      // Rewriting identical bytes only bumps the mtime, which a synced vault
+      // then carries to every other machine.
       const file = this.host.vault.getAbstractFileByPath(destinationPath);
-      if (file instanceof TFile) await this.host.vault.modifyBinary(file, arrayBuffer(bytes));
-      else await this.host.vault.createBinary(destinationPath, arrayBuffer(bytes));
+      if (file instanceof TFile) {
+        if (finalAuthorization.hash !== hashBytes(bytes)) {
+          await this.host.vault.modifyBinary(file, arrayBuffer(bytes));
+        }
+      } else {
+        await this.host.vault.createBinary(destinationPath, arrayBuffer(bytes));
+      }
     } catch (error) {
       if (!this.isCurrent(job, entry)) {
         this.markNotCurrent(job, entry);
@@ -758,13 +770,7 @@ export class AutomaticPdfController {
     // request may have been superseded while the async write was pending, but
     // the bytes that landed remain plugin-owned at the path where they landed.
     if (this.entries.get(job.sourcePath) === entry) {
-      entry.ownedHash = hashBytes(bytes);
-      entry.ownedPath = destinationPath;
-      entry.destinationPath = destinationPath;
-      entry.declinedPath = undefined;
-      entry.declinedHash = undefined;
-      entry.authorizedPath = undefined;
-      entry.authorizedHash = undefined;
+      this.recordOwnership(entry, destinationPath, hashBytes(bytes));
     }
 
     if (this.isCurrent(job, entry)) {
@@ -775,6 +781,57 @@ export class AutomaticPdfController {
       this.markNotCurrent(job, entry);
     }
     await this.persist();
+  }
+
+  /** Exports the held source; null means the job already settled as failed or superseded. */
+  private async exportHeld(
+    job: PendingJob,
+    entry: Entry,
+    source: TypstSource,
+    root: string,
+  ): Promise<Uint8Array | null> {
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.getExporter().exportPdf({
+        entryPath: source.entry,
+        root,
+        sourceInput: source.inputs,
+        open: (client) => source.open(client),
+      });
+    } catch (error) {
+      if (!this.isCurrent(job, entry)) {
+        this.markNotCurrent(job, entry);
+        return null;
+      }
+      this.markFailure(entry, `PDF export failed for ${job.sourcePath}: ${source.describe(error)}`);
+      job.outcome = "failed";
+      return null;
+    }
+    if (!this.isCurrent(job, entry)) {
+      this.markNotCurrent(job, entry);
+      return null;
+    }
+    return bytes;
+  }
+
+  /** Mirrors authorizeInitial: true when it would show the replacement prompt. */
+  private wouldAskToReplace(job: PendingJob, entry: Entry, observed: DestinationSnapshot): boolean {
+    if (!observed.exists) return false;
+    if (observed.path === entry.ownedPath && observed.hash === entry.ownedHash) return false;
+    if (!job.manual && entry.declinedPath === observed.path && entry.declinedHash === observed.hash) {
+      return false;
+    }
+    return !(entry.authorizedPath === observed.path && entry.authorizedHash === observed.hash);
+  }
+
+  private recordOwnership(entry: Entry, destinationPath: string, hash: string): void {
+    entry.ownedHash = hash;
+    entry.ownedPath = destinationPath;
+    entry.destinationPath = destinationPath;
+    entry.declinedPath = undefined;
+    entry.declinedHash = undefined;
+    entry.authorizedPath = undefined;
+    entry.authorizedHash = undefined;
   }
 
   private async authorizeInitial(

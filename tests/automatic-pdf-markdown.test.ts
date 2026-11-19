@@ -220,7 +220,7 @@ test("automatic Markdown export rebuilds saves and declines a foreign sibling PD
       {
         rebuilt: true,
         conflicted: true,
-        openCallbacks: [true, true],
+        openCallbacks: [true, true, true],
         ownedHash: {
           entries: {
             "Notes/A.md": {
